@@ -1,0 +1,11 @@
+{
+  "domain": "miser",
+  "name": "Miser PV System Optimiser",
+  "version": "1.0.0",
+  "documentation": "https://github.com/fboundy/miser", 
+  "requirements": ["pandas", "requests"],
+  "dependencies": ["solcast_solar"],
+  "codeowners": ["@yourusername"],
+  "iot_class": "local_polling",
+  "config_flow": true
+}
