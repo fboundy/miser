@@ -1,21 +1,10 @@
-from homeassistant.components.sensor import (
-    SensorStateClass,
-    SensorDeviceClass,
-)
-
-from homeassistant.const import (
-    UnitOfPower,
-    UnitOfApparentPower,
-    UnitOfEnergy,
-    UnitOfElectricCurrent,
-    UnitOfElectricPotential,
-    UnitOfTemperature,
-    UnitOfFrequency,
-    UnitOfReactivePower,
-    UnitOfTime,
-    PERCENTAGE,
-)
-
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.const import (PERCENTAGE, UnitOfApparentPower,
+                                 UnitOfElectricCurrent,
+                                 UnitOfElectricPotential, UnitOfEnergy,
+                                 UnitOfFrequency, UnitOfPower,
+                                 UnitOfReactivePower, UnitOfTemperature,
+                                 UnitOfTime)
 from homeassistant.helpers.entity import DeviceInfo
 
 # from homeassistant.helpers.instance_id import async_get

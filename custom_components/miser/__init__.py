@@ -1,21 +1,22 @@
-from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.helpers.event import async_track_time_interval
-import pandas as pd
+import logging
 from datetime import datetime, timedelta
 from functools import partial
-import logging
-
-from .const import DOMAIN, DATETIME_FORMAT_LONG, IMPORT_EXPORT, get_instance_id
-from .octopus import get_octopus_integration_data, get_octopus_info_from_account
-
-import logging
 from logging.handlers import RotatingFileHandler
+
+import pandas as pd
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.event import async_track_time_interval
+
+from .const import DATETIME_FORMAT_LONG, DOMAIN, IMPORT_EXPORT, get_instance_id
+from .octopus import (get_octopus_info_from_account,
+                      get_octopus_integration_data)
 
 LOG_FILENAME = f"/config/{DOMAIN}.log"
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+VERSION = "0.0.1"
 
 
 def setup_custom_logging():

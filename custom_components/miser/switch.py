@@ -1,8 +1,9 @@
-from homeassistant.components.switch import SwitchEntity
-from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
-
-import logging
 import asyncio
+import logging
+
+from homeassistant.components.switch import SwitchEntity
+from homeassistant.helpers.entity_registry import \
+    async_get as async_get_entity_registry
 
 _LOGGER = logging.getLogger(__name__)
 

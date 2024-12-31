@@ -1,31 +1,20 @@
+import logging
 from typing import Any, Dict, List, Union
 
-from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.const import CONF_NAME
-from homeassistant.loader import async_get_custom_components
-from homeassistant.helpers import entity_registry as er
-from homeassistant.loader import async_get_integration
-
-
 import voluptuous as vol
-import logging
+from homeassistant import config_entries
+from homeassistant.const import CONF_NAME
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import (async_get_custom_components,
+                                  async_get_integration)
 
-from .const import (
-    DOMAIN,
-    NAME,
-    DEFAULT_BATTERY_CAPACITY,
-    DEFAULT_INVERTER_POWER,
-    DEFAULT_CHARGER_POWER,
-    DEFAULT_INVERTER_EFFICIENCY,
-    DEFAULT_CHARGER_EFFICIENCY,
-    CONF_BATTERY_CAPACITY,
-    CONF_INVERTER_POWER,
-    CONF_CHARGER_POWER,
-    CONF_INVERTER_EFFICIENCY,
-    CONF_CHARGER_EFFICIENCY,
-    CONFIG,
-)
+from .const import (CONF_BATTERY_CAPACITY, CONF_CHARGER_EFFICIENCY,
+                    CONF_CHARGER_POWER, CONF_INVERTER_EFFICIENCY,
+                    CONF_INVERTER_POWER, CONFIG, DEFAULT_BATTERY_CAPACITY,
+                    DEFAULT_CHARGER_EFFICIENCY, DEFAULT_CHARGER_POWER,
+                    DEFAULT_INVERTER_EFFICIENCY, DEFAULT_INVERTER_POWER,
+                    DOMAIN, NAME)
 
 _LOGGER = logging.getLogger(__name__)
 
