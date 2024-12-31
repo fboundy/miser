@@ -16,6 +16,7 @@ from logging.handlers import RotatingFileHandler
 LOG_FILENAME = f"/config/{DOMAIN}.log"
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+VERSION = "0.0.1"
 
 
 def setup_custom_logging():
