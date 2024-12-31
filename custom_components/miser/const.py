@@ -16,14 +16,23 @@ from homeassistant.const import (
     PERCENTAGE,
 )
 
-from uuid import uuid4
+from homeassistant.helpers.entity import DeviceInfo
+
+# from homeassistant.helpers.instance_id import async_get
+
+
+async def get_instance_id(hass):
+    """
+    Example to retrieve Home Assistant instance ID.
+    """
+    instance_id = await hass.helpers.instance_id.async_get()
+    return instance_id[-8:]
+
 
 DOMAIN = "miser"
 NAME = "Miser PV System Optimiser"
 VERSION = "1.0.0"
-MANUFACTURER = "Your Company"
-UUID = uuid4().__str__()[-12:]
-
+MANUFACTURER = "foboundy"
 # Configuration keys
 CONF_BATTERY_CAPACITY = "battery_capacity"
 CONF_INVERTER_POWER = "inverter_power"
@@ -38,44 +47,51 @@ DEFAULT_CHARGER_POWER = 3000  # W
 DEFAULT_INVERTER_EFFICIENCY = 97  # Percent
 DEFAULT_CHARGER_EFFICIENCY = 91  # Percent
 
+DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
+
+IMPORT_EXPORT = ["import", "export"]
+
+OCTOPUS_ACCOUNT_URL = "https://api.octopus.energy/v1/accounts/"
+
 # Switch entities
 SWITCH_ENTITIES = {
-    "read_only": {"default": False},
-    "include_export": {"default": False},
-    "optimise_discharging": {"default": False},
-    "use_solar": {"default": True},
-    "use_consumption_history": {"default": True},
+    "Read only": {"default": False},
+    "Include export": {"default": False},
+    "Optimise discharging": {"default": False},
+    "Use solar": {"default": True},
+    "Use consumption history": {"default": True},
 }
+
 
 # Number entities
 NUMBER_ENTITIES = {
-    "optimiser_frequency": {
+    "Optimiser frequency": {
         "min": 5,
         "max": 30,
         "step": 5,
         "default": 10,
     },
-    "solcast_confidence": {
+    "Solcast confidence": {
         "min": 10,
         "max": 90,
         "step": 10,
         "default": 50,
     },
-    "history_days": {
+    "History days": {
         "min": 1,
         "max": 14,
         "step": 1,
         "default": 7,
     },
-    "load_margin": {
+    "Load margin": {
         "min": 0,
         "max": 25,
         "step": 5,
         "default": 10,
         "unit": PERCENTAGE,
     },
-    "weekday_weighting": {"min": 0, "max": 100, "step": 10, "default": 50, "unit": PERCENTAGE},
-    "power_resolution": {
+    "Weekday weighting": {"min": 0, "max": 100, "step": 10, "default": 50, "unit": PERCENTAGE},
+    "Power resolution": {
         "min": 0,
         "max": 500,
         "step": 100,
@@ -83,7 +99,7 @@ NUMBER_ENTITIES = {
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "sleep_soc": {
+    "Sleep SOC": {
         "min": 0,
         "max": 20,
         "step": 1,
@@ -92,7 +108,7 @@ NUMBER_ENTITIES = {
         "device_class": SensorDeviceClass.BATTERY,
     },
     # Configurable battery/inverter parameters
-    "battery_capacity": {
+    "Battery capacity": {
         "min": 1000,
         "max": 20000,
         "step": 100,
@@ -100,7 +116,7 @@ NUMBER_ENTITIES = {
         "unit": UnitOfEnergy.WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
     },
-    "inverter_power": {
+    "Inverter power": {
         "min": 1000,
         "max": 10000,
         "step": 100,
@@ -108,7 +124,7 @@ NUMBER_ENTITIES = {
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "charger_power": {
+    "Charger power": {
         "min": 1000,
         "max": 5000,
         "step": 100,
@@ -116,18 +132,73 @@ NUMBER_ENTITIES = {
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "inverter_efficiency": {
+    "Inverter efficiency": {
         "min": 50,
         "max": 100,
         "step": 1,
         "default": DEFAULT_INVERTER_EFFICIENCY,
         "unit": PERCENTAGE,
     },
-    "charger_efficiency": {
+    "Charger efficiency": {
         "min": 50,
         "max": 100,
         "step": 1,
         "default": DEFAULT_CHARGER_EFFICIENCY,
         "unit": PERCENTAGE,
+    },
+}
+
+
+class MiserEntity:
+    def __init__(
+        self,
+        config_entry,
+        unique_id: str,
+        name: str,
+        icon=None,
+        device_class=None,
+    ) -> None:
+        self.unique_id = unique_id
+        self.has_entity_name = True
+        self._attr_name = name
+        self._attr_device_class = device_class
+        self._config_entry = config_entry
+        self._icon = icon
+
+    @property
+    def should_poll(self):
+        return False
+
+    @property
+    def device_info(self) -> DeviceInfo | None:
+        """Return a device description for device registry."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, NAME)},
+            name="Miser",
+            manufacturer=MANUFACTURER,
+            entry_type="service",
+        )
+
+
+CONFIG = {
+    "solis": {
+        "solis": {
+            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+        },
+        "solax_modbus": {
+            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+        },
+        "solisconnect": {
+            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
+            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+        },
     },
 }

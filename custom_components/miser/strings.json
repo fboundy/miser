@@ -1,0 +1,87 @@
+{
+    "title": "Energy Management Integration",
+    "config": {
+      "step": {
+        "user": {
+          "title": "Select Inverter Brand",
+          "data": {
+            "inverter_brand": "Select the brand of inverter that you are using"
+          }
+        },
+        "select_controller": {
+          "title": "Select Inverter Controller",
+          "data": {
+            "inverter_integration": "Select which of the installed integrations to use to control your inverter"
+          }
+        },
+        "tariff_source": {
+          "title": "Select Tariff Source",
+          "description": "Specify how import and export tariffs will be configured.",
+          "data": {
+            "tariff_source": "Tariff Source"
+          }
+        },
+        "octopus_account": {
+          "title": "Enter Octopus Account Details",
+          "description": "Provide your Octopus Energy Account ID and API Key to retrieve tariff codes automatically.",
+          "data": {
+            "account_id": "Octopus Account ID",
+            "api_key": "Octopus API Key"
+          }
+        },
+        "tariff_codes": {
+          "title": "Enter Tariff Codes",
+          "description": "Manually enter your import and export tariff codes.",
+          "data": {
+            "import_code": "Import Tariff Code",
+            "export_code": "Export Tariff Code"
+          }
+        },
+        "system_parameters": {
+          "title": "Enter System Parameters",
+          "description": "Provide the specifications for your energy system, such as battery capacity and efficiency. These are initial values and can be edited via the Miser UI.",
+          "data": {
+            "battery_capacity": "Battery Capacity (kWh)",
+            "inverter_power": "Inverter Power (kW)",
+            "charger_power": "Charger Power (kW)",
+            "inverter_efficiency": "Inverter Efficiency (%)",
+            "charger_efficiency": "Charger Efficiency (%)"
+          }
+        },
+        "consumption_source": {
+          "title": "Select Consumption Data Source",
+          "description": "Choose how your energy consumption data will be derived.",
+          "data": {
+            "consumption_source": "Consumption Source"
+          }
+        },
+        "daily_amount": {
+          "title": "Enter Daily Consumption",
+          "description": "Specify the daily energy consumption and the scaling method.",
+          "data": {
+            "daily_amount": "Daily Energy Consumption (kWh)",
+            "scaling_option": "Scaling Option"
+          }
+        }
+      },
+      "error": {
+        "solcast_solar_not_installed": "The Solcast Solar integration is required but not installed.",
+        "no_supported_integrations_found": "No compatible inverter controller integrations were found.",
+        "invalid_selection": "Your selection is invalid.",
+        "missing_credentials": "Both Account ID and API Key are required.",
+        "missing_codes": "Both import and export tariff codes are required.",
+        "missing_parameters": "All system parameters must be provided.",
+        "missing_fields": "All required fields must be completed."
+      },
+      "option": {
+        "init": {
+          "title": "Configure Options",
+          "description": "Update the configuration options for this integration.",
+          "data": {
+            "name": "Integration Name"
+          }
+        }
+      }
+    }
+  }
+  

@@ -1,8 +1,12 @@
+from typing import Any, Dict, List, Union
+
 from homeassistant import config_entries
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.const import CONF_NAME
-from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.loader import async_get_custom_components
+from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import async_get_integration
+
 
 import voluptuous as vol
 import logging
@@ -10,7 +14,6 @@ import logging
 from .const import (
     DOMAIN,
     NAME,
-    VERSION,
     DEFAULT_BATTERY_CAPACITY,
     DEFAULT_INVERTER_POWER,
     DEFAULT_CHARGER_POWER,
@@ -21,100 +24,170 @@ from .const import (
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
     CONF_CHARGER_EFFICIENCY,
+    CONFIG,
 )
-import logging
 
 _LOGGER = logging.getLogger(__name__)
 
-AVAILABLE_INTEGRATIONS = ["solis", "solax_modbus", "solisconnect", "solarman"]
+
+async def _get_integration_name(hass: HomeAssistant, domain: str) -> str:
+    """
+    Retrieve the name of an integration from its manifest.json file.
+    """
+    try:
+        integration = await async_get_integration(hass, domain)
+        return integration.name  # This is the 'name' field in manifest.json
+    except Exception as e:
+        _LOGGER.error(f"Failed to get name for integration '{domain}': {e}")
+        return "Unknown Integration"
 
 
-async def _is_installed(hass, integration: str) -> bool:
+async def _is_installed(hass: HomeAssistant, integration: str) -> bool:
+    """
+    Helper function to check if a given integration is installed as a custom component.
+    """
     try:
         integrations = await async_get_custom_components(hass)
-        _LOGGER.debug(f"Integrations: {integrations}")
         result = integration in integrations
         _LOGGER.debug(f"{integration}: {result}")
         return result
-
     except Exception:
+        # Return False if there's any issue checking integrations
         return False
 
 
-async def _discover_installed_integrations(hass):
+async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: str) -> List[str]:
     """
-    Discover which of the known inverter integrations are installed.
+    Discover which of the known inverter integrations for a given brand are installed.
+    Log the config_entry and associated entities for each discovered integration to the debug logger.
     """
-
     try:
+        # Get all custom components installed in Home Assistant
         custom_components = await async_get_custom_components(hass)
+
+        # Find installed integrations for the specified inverter brand
         installed_integrations = [
-            integration for integration in AVAILABLE_INTEGRATIONS if integration in custom_components
+            integration for integration in CONFIG.get(inverter_brand, []) if integration in custom_components
         ]
+
+        # Log configuration entries and associated entities for each installed integration
+        for integration in installed_integrations:
+            config_entries = hass.config_entries.async_entries(integration)
+            if config_entries:
+                for entry in config_entries:
+                    _LOGGER.debug(f"Config entry for integration '{integration}': {entry.as_dict()}")
+
+            else:
+                _LOGGER.debug(f"No config entries found for integration '{integration}'")
+
         return installed_integrations
-    except Exception:
+    except Exception as e:
+        # Log any errors during the discovery process
+        _LOGGER.error(f"Error discovering integrations for brand '{inverter_brand}': {e}")
         return []
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
-    Handle a config flow for the integration.
+    Handle the configuration flow for the integration.
     """
 
     VERSION = 1
 
     def __init__(self):
-        self._discovered_integrations = []
-        self._use_octopus_energy = False
-        self._tariff_source = None
+        # Initialize instance variables to track user input across steps
+        self._discovered_integrations = []  # List of discovered integrations
+        self._use_octopus_energy = False  # Whether the Octopus Energy integration is used
+        self._data = {}
+        self._options = {}
 
     async def async_step_user(self, user_input=None):
         """
-        Step 1: Select inverter controller integration.
+        Step 1: Select inverter brand.
         """
         errors = {}
 
-        # Check if Solcast Solar is installed
+        # Check if the required Solcast Solar integration is installed
         if not await _is_installed(self.hass, "solcast_solar"):
             return self.async_abort(reason="solcast_solar_not_installed")
 
         if user_input is not None:
-            # Validate user input
-            selected_integration = user_input.get("inverter_integration")
-            if selected_integration in self._discovered_integrations:
+            # Save the selected inverter brand and proceed to the next step
+            self._data["inverter_brand"] = user_input.get("inverter_brand").lower()
+            return await self.async_step_select_controller()
+
+        # Display a form for selecting the inverter brand
+        schema = vol.Schema({vol.Required("inverter_brand"): vol.In([brand.title() for brand in CONFIG.keys()])})
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+
+    async def async_step_select_controller(self, user_input=None):
+        """
+        Step 2: Select an inverter controller integration.
+        """
+        errors = {}
+        names = {}
+        if user_input is not None:
+            self._options["integration_name"] = user_input.get("inverter_integration")
+            lookup = {self._names[i]: i for i in self._names}
+            self._options["integration"] = lookup.get(self._options["integration_name"], "")
+
+            if self._options["integration"] in self._discovered_integrations:
+                config_entries = self.hass.config_entries.async_entries(self._options["integration"])
+                if config_entries:
+                    selected_config_entry = config_entries[0]
+
+                    # Add the selected config entry to user_input for saving
+                    user_input["controller_config_entry"] = selected_config_entry.data
+
+                    entity_registry = er.async_get(hass=self.hass)
+                    associated_entities = [
+                        entity
+                        for entity in entity_registry.entities.values()
+                        if entity.config_entry_id == selected_config_entry.entry_id
+                    ]
+                    if associated_entities:
+                        _LOGGER.debug(
+                            f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                        )
+
                 self._use_octopus_energy = await _is_installed(self.hass, "octopus_energy")
                 return await self.async_step_tariff_source()
             else:
                 errors["base"] = "invalid_selection"
 
-        # Discover installed integrations
-        self._discovered_integrations = await _discover_installed_integrations(self.hass)
+        self._discovered_integrations = await _discover_installed_integrations(
+            self.hass, inverter_brand=self._data["inverter_brand"]
+        )
 
         if not self._discovered_integrations:
             return self.async_abort(reason="no_supported_integrations_found")
+        else:
+            for integration in self._discovered_integrations:
+                name = await _get_integration_name(self.hass, integration)
+                names[integration] = name
+            self._names = names
 
-        # Build the input schema
-        schema = vol.Schema({vol.Required("inverter_integration"): vol.In(self._discovered_integrations)})
-
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        schema = vol.Schema({vol.Required("inverter_integration"): vol.In(names.values())})
+        return self.async_show_form(step_id="select_controller", data_schema=schema, errors=errors)
 
     async def async_step_tariff_source(self, user_input=None):
         """
-        Step 2: Determine how import and export tariffs will be specified.
+        Step 3: Determine how import and export tariffs will be specified.
         """
         errors = {}
 
         if user_input is not None:
-            self._tariff_source = user_input.get("tariff_source")
-            if self._tariff_source == "Specify Octopus Account ID and API Key":
+            self._options["tariff_source"] = user_input.get("tariff_source")
+            if self._options["tariff_source"] == "Specify Octopus Account ID and API Key":
                 return await self.async_step_octopus_account()
-            elif self._tariff_source == "Specify Octopus import and export tariff codes directly":
+            elif self._options["tariff_source"] == "Specify Octopus import and export tariff codes directly":
                 return await self.async_step_tariff_codes()
-            elif self._tariff_source:
+            elif self._options["tariff_source"]:
                 return await self.async_step_system_parameters()
             else:
                 errors["base"] = "invalid_selection"
 
+        # Options for selecting the tariff source
         options = [
             "Get tariff codes from Octopus Energy integration",
             "Specify Octopus Account ID and API Key",
@@ -123,80 +196,81 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         ]
 
         if not self._use_octopus_energy:
+            # Remove the option if Octopus Energy is not installed
             options.remove("Get tariff codes from Octopus Energy integration")
 
-        # Build the input schema
+        # Display a form for selecting the tariff source
         schema = vol.Schema({vol.Required("tariff_source"): vol.In(options)})
-
         return self.async_show_form(step_id="tariff_source", data_schema=schema, errors=errors)
 
     async def async_step_octopus_account(self, user_input=None):
         """
-        Step to enter Octopus Account ID and API Key.
+        Step 4a: Enter Octopus Account ID and API Key.
         """
         errors = {}
 
         if user_input is not None:
-            account_id = user_input.get("account_id")
-            api_key = user_input.get("api_key")
-            if account_id and api_key:
-                return await self.async_step_system_parameters(
-                    data={"tariff_source": self._tariff_source, "account_id": account_id, "api_key": api_key}
-                )
+            # Collect account credentials
+            self._data["account_id"] = user_input.get("account_id")
+            self._data["api_key"] = user_input.get("api_key")
+            if self._data["account_id"] and self._data["api_key"]:
+                return await self.async_step_system_parameters()
             else:
                 errors["base"] = "missing_credentials"
 
+        # Display a form for entering Octopus account credentials
         schema = vol.Schema({vol.Required("account_id"): str, vol.Required("api_key"): str})
-
         return self.async_show_form(step_id="octopus_account", data_schema=schema, errors=errors)
 
     async def async_step_tariff_codes(self, user_input=None):
         """
-        Step to enter Octopus import and export tariff codes.
+        Step 4b: Enter tariff codes directly.
         """
         errors = {}
 
         if user_input is not None:
-            import_code = user_input.get("import_code")
-            export_code = user_input.get("export_code")
-            if import_code and export_code:
-                return await self.async_step_system_parameters(
-                    data={"tariff_source": self._tariff_source, "import_code": import_code, "export_code": export_code}
-                )
+            # Collect import and export tariff codes
+            self._options["import_code"] = user_input.get("import_code")
+            self._options["export_code"] = user_input.get("export_code")
+            if self._options["import_code"]:
+                return await self.async_step_system_parameters()
             else:
                 errors["base"] = "missing_codes"
 
-        schema = vol.Schema({vol.Required("import_code"): str, vol.Required("export_code"): str})
-
+        # Display a form for entering tariff codes
+        schema = vol.Schema({vol.Required("import_code"): str, vol.Optional("export_code"): str})
         return self.async_show_form(step_id="tariff_codes", data_schema=schema, errors=errors)
 
-    async def async_step_system_parameters(self, user_input=None, data=None):
+    async def async_step_system_parameters(self, user_input=None):
         """
-        Step 3: Enter system parameters.
+        Step 5: Enter system parameters such as battery capacity, power ratings, and efficiencies.
         """
         errors = {}
 
         if user_input is not None:
-            battery_capacity = user_input.get(CONF_BATTERY_CAPACITY)
-            inverter_power = user_input.get(CONF_INVERTER_POWER)
-            charger_power = user_input.get(CONF_CHARGER_POWER)
-            inverter_efficiency = user_input.get(CONF_INVERTER_EFFICIENCY)
-            charger_efficiency = user_input.get(CONF_CHARGER_EFFICIENCY)
-            if all([battery_capacity, inverter_power, charger_power, inverter_efficiency, charger_efficiency]):
-                final_data = data if data else {}
-                final_data.update(
-                    {
-                        CONF_BATTERY_CAPACITY: battery_capacity,
-                        CONF_INVERTER_POWER: inverter_power,
-                        CONF_CHARGER_POWER: charger_power,
-                        CONF_INVERTER_EFFICIENCY: inverter_efficiency,
-                        CONF_CHARGER_EFFICIENCY: charger_efficiency,
-                    }
-                )
-                return await self.async_step_consumption_source(final_data)
+            # Collect and validate system parameters
+            self._options["battery_capacity"] = user_input.get(CONF_BATTERY_CAPACITY)
+            self._options["inverter_power"] = user_input.get(CONF_INVERTER_POWER)
+            self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
+            self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
+            self._options["charger_efficiency"] = user_input.get(CONF_CHARGER_EFFICIENCY)
+            if all(
+                [
+                    self._options[x]
+                    for x in [
+                        "battery_capacity",
+                        "inverter_power",
+                        "charger_power",
+                        "inverter_efficiency",
+                        "charger_efficiency",
+                    ]
+                ]
+            ):
+                return await self.async_step_consumption_source()
             else:
                 errors["base"] = "missing_parameters"
 
+        # Display a form for entering system parameters
         schema = vol.Schema(
             {
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULT_BATTERY_CAPACITY): int,
@@ -210,71 +284,64 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }
         )
-
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)
 
     async def async_step_consumption_source(self, user_input=None):
         """
-        Step 4: Confirm source of consumption data.
+        Step 6: Confirm the source of consumption data.
         """
         errors = {}
 
         if user_input is not None:
-            consumption_source = user_input.get("consumption_source")
-            if consumption_source == "Enter a daily amount":
+            # Validate consumption source
+            self._options["consumption_source"] = user_input.get("consumption_source")
+            if self._options["consumption_source"] == "Enter a daily amount":
                 return await self.async_step_daily_amount()
-            elif consumption_source == "Custom scaling profile via configuration.yaml":
-                return self.async_create_entry(
-                    title="Consumption Source", data={"consumption_source": consumption_source}
-                )
-            elif consumption_source == "Use historical data":
-                return self.async_create_entry(
-                    title="Consumption Source", data={"consumption_source": consumption_source}
-                )
+            elif self._options["consumption_source"] in [
+                "Custom scaling profile via configuration.yaml",
+                "Use historical data",
+            ]:
+                return self.async_create_entry(title=NAME, data=self._data, options=self._options)
             else:
                 errors["base"] = "invalid_selection"
 
-        # Options for the user to select
+        # Provide consumption source options
         options = [
             "Use historical data",
             "Enter a daily amount",
             "Custom scaling profile via configuration.yaml",
         ]
 
-        # Build schema for form
         schema = vol.Schema({vol.Required("consumption_source", default="Use historical data"): vol.In(options)})
-
         return self.async_show_form(step_id="consumption_source", data_schema=schema, errors=errors)
 
     async def async_step_daily_amount(self, user_input=None):
         """
-        Step to enter daily consumption amount and scaling option.
+        Step 7: Enter a daily consumption amount and scaling option.
         """
         errors = {}
 
         if user_input is not None:
-            daily_amount = user_input.get("daily_amount")
-            scaling_option = user_input.get("scaling_option")
-            if daily_amount is not None and scaling_option is not None:
+            self._options["daily_consumption"] = user_input.get("daily_consumption")
+            self._options["scaling_option"] = user_input.get("scaling_option")
+            if self._options["daily_consumption"] is not None and self._options["scaling_option"] is not None:
                 return self.async_create_entry(
-                    title="Daily Consumption",
-                    data={"daily_amount": daily_amount, "scaling_option": scaling_option},
+                    title=NAME,
+                    data=self._data,
+                    options=self._options,
                 )
             else:
                 errors["base"] = "missing_fields"
 
-        # Build the schema for the form
+        # Display a form for entering daily consumption data
         schema = vol.Schema(
             {
-                vol.Required("daily_amount", description="Enter daily amount (kWh)"): int,
-                vol.Required(
-                    "scaling_option",
-                    description="Select scaling option",
-                    default="Constant",
-                ): vol.In(["Constant", "Scaled to typical usage profile"]),
+                vol.Required("daily_amount"): int,
+                vol.Required("scaling_option", default="Constant"): vol.In(
+                    ["Constant", "Scaled to typical usage profile"]
+                ),
             }
         )
-
         return self.async_show_form(step_id="daily_amount", data_schema=schema, errors=errors)
 
     @staticmethod
@@ -299,9 +366,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         Manage the options for the integration.
         """
         if user_input is not None:
-            # Update the configuration entry with new options
             return self.async_create_entry(title="", data=user_input)
 
         schema = vol.Schema({vol.Optional(CONF_NAME, default=self.config_entry.data.get(CONF_NAME, "")): str})
-
         return self.async_show_form(step_id="init", data_schema=schema)
