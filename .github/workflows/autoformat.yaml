@@ -35,6 +35,12 @@ jobs:
           echo "Running isort..."
           isort .
 
+      - name: Check GitHub Token Permissions
+        run: |
+          curl -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          -H "Accept: application/vnd.github.v3+json" \
+          https://api.github.com/repos/${{ github.repository }}
+
       # Step 5: Commit and push changes if any files were modified
       - name: Commit and Push Changes
         env:
