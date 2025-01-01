@@ -1,10 +1,8 @@
 import asyncio
 import logging
-
 from homeassistant.components.number import NumberEntity
 
 _LOGGER = logging.getLogger(__name__)
-
 
 from .const import DOMAIN, NUMBER_ENTITIES, MiserEntity
 

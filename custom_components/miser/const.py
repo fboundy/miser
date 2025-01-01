@@ -1,13 +1,20 @@
 from datetime import timedelta
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import (PERCENTAGE, UnitOfApparentPower,
-                                 UnitOfElectricCurrent,
-                                 UnitOfElectricPotential, UnitOfEnergy,
-                                 UnitOfFrequency, UnitOfPower,
-                                 UnitOfReactivePower, UnitOfTemperature,
-                                 UnitOfTime)
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfApparentPower,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfReactivePower,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.helpers.entity import DeviceInfo
+
 
 DOMAIN = "miser"
 NAME = "Miser PV System Optimiser"
