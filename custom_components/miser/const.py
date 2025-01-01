@@ -1,4 +1,5 @@
 from datetime import timedelta
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
     PERCENTAGE,
