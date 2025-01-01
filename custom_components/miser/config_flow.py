@@ -5,16 +5,25 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
-from homeassistant.loader import (async_get_custom_components,
-                                  async_get_integration)
+from homeassistant.loader import async_get_custom_components, async_get_integration
 
-from .const import (CONF_BATTERY_CAPACITY, CONF_CHARGER_EFFICIENCY,
-                    CONF_CHARGER_POWER, CONF_INVERTER_EFFICIENCY,
-                    CONF_INVERTER_POWER, CONFIG, DEFAULT_BATTERY_CAPACITY,
-                    DEFAULT_CHARGER_EFFICIENCY, DEFAULT_CHARGER_POWER,
-                    DEFAULT_INVERTER_EFFICIENCY, DEFAULT_INVERTER_POWER,
-                    DOMAIN, NAME)
+from .const import (
+    CONF_BATTERY_CAPACITY,
+    CONF_CHARGER_EFFICIENCY,
+    CONF_CHARGER_POWER,
+    CONF_INVERTER_EFFICIENCY,
+    CONF_INVERTER_POWER,
+    CONFIG,
+    DEFAULT_BATTERY_CAPACITY,
+    DEFAULT_CHARGER_EFFICIENCY,
+    DEFAULT_CHARGER_POWER,
+    DEFAULT_INVERTER_EFFICIENCY,
+    DEFAULT_INVERTER_POWER,
+    DOMAIN,
+    NAME,
+)
+
+from .utils import get_integration_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -121,23 +130,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["integration"] = lookup.get(self._options["integration_name"], "")
 
             if self._options["integration"] in self._discovered_integrations:
-                config_entries = self.hass.config_entries.async_entries(self._options["integration"])
-                if config_entries:
-                    selected_config_entry = config_entries[0]
-
-                    # Add the selected config entry to user_input for saving
-                    user_input["controller_config_entry"] = selected_config_entry.data
-
-                    entity_registry = er.async_get(hass=self.hass)
-                    associated_entities = [
-                        entity
-                        for entity in entity_registry.entities.values()
-                        if entity.config_entry_id == selected_config_entry.entry_id
-                    ]
-                    if associated_entities:
-                        _LOGGER.debug(
-                            f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
-                        )
+                user_input["controller_config_entry"], associated_entities = await get_integration_entities(
+                    hass=self.hass, integration=self._options["integration"]
+                )
+                if associated_entities:
+                    _LOGGER.debug(
+                        f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                    )
 
                 self._use_octopus_energy = await _is_installed(self.hass, "octopus_energy")
                 return await self.async_step_tariff_source()
