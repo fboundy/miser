@@ -13,7 +13,9 @@ from .utils import get_instance_id, get_integration_entities
 from .const import DATETIME_FORMAT_LONG, DOMAIN, IMPORT_EXPORT, OPTIMISER_INTERVAL, INVERTERS_DEFS
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data
 
+
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+VERSION = "0.0.1"
 
 
 def setup_custom_logging():
