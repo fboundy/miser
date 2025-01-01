@@ -5,7 +5,6 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-
 from homeassistant.loader import (async_get_custom_components,
                                   async_get_integration)
 
@@ -15,7 +14,6 @@ from .const import (CONF_BATTERY_CAPACITY, CONF_CHARGER_EFFICIENCY,
                     DEFAULT_CHARGER_EFFICIENCY, DEFAULT_CHARGER_POWER,
                     DEFAULT_INVERTER_EFFICIENCY, DEFAULT_INVERTER_POWER,
                     DOMAIN, NAME)
-
 from .utils import get_integration_entities
 
 _LOGGER = logging.getLogger(__name__)

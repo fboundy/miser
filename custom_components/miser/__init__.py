@@ -15,7 +15,6 @@ from .octopus import (get_octopus_info_from_account,
                       get_octopus_integration_data)
 from .utils import get_instance_id, get_integration_entities
 
-
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 VERSION = "0.0.1"
 

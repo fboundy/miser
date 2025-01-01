@@ -1,5 +1,6 @@
 import asyncio
 import logging
+
 from homeassistant.components.number import NumberEntity
 
 _LOGGER = logging.getLogger(__name__)
