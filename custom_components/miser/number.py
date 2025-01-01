@@ -2,13 +2,10 @@ import asyncio
 import logging
 
 from homeassistant.components.number import NumberEntity
-from homeassistant.helpers.entity_registry import \
-    async_get as async_get_entity_registry
 
 _LOGGER = logging.getLogger(__name__)
 
-from homeassistant.helpers.entity_registry import \
-    async_get as async_get_entity_registry
+from homeassistant.helpers.entity_registry import async_get as async_get_entity_registry
 
 from .const import DOMAIN, NUMBER_ENTITIES, MiserEntity
 

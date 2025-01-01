@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import partial
 from logging.handlers import RotatingFileHandler
 
@@ -9,14 +9,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import DATETIME_FORMAT_LONG, DOMAIN, IMPORT_EXPORT, get_instance_id
-from .octopus import (get_octopus_info_from_account,
-                      get_octopus_integration_data)
-
-LOG_FILENAME = f"/config/{DOMAIN}.log"
+from .utils import get_instance_id, get_integration_entities
+from .const import DATETIME_FORMAT_LONG, DOMAIN, IMPORT_EXPORT, OPTIMISER_INTERVAL, INVERTERS_DEFS
+from .octopus import get_octopus_info_from_account, get_octopus_integration_data
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
-VERSION = "0.0.1"
 
 
 def setup_custom_logging():
@@ -29,8 +26,9 @@ def setup_custom_logging():
             _LOGGER.removeHandler(handler)
 
     # Set up a rotating file handler
+    log_filename = f"/config/{DOMAIN}.log"
     file_handler = RotatingFileHandler(
-        LOG_FILENAME, maxBytes=5 * 1024 * 1024, backupCount=3  # 5 MB max size, 3 backups
+        log_filename, maxBytes=5 * 1024 * 1024, backupCount=3  # 5 MB max size, 3 backups
     )
     formatter = logging.Formatter(
         "%(asctime)s - %(module)-15s - %(levelname)-8s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
@@ -63,37 +61,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
     _LOGGER.debug(f"ConfigEntry title: {entry.title}")
 
-    # Register the device
-    # Register the device in the device registry
-    # device_registry = dr.async_get(hass)
-    # device_registry.async_get_or_create(
-    #     config_entry_id=entry.entry_id,
-    #     identifiers={(DOMAIN, f"Miser")},
-    #     name="Miser",
-    #     manufacturer=MANUFACTURER,
-    # )
-
     """
-    Check that all the required enities are available for the selected inverter controller
+    Check that all the required entities are available for the selected inverter controller
     and intantiate the PV model.
 
     Save the PV model to hass[DOMAIN].data
     """
+    entities_available = await _check_entities(hass, entry)
+    if not entities_available:
+        _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
 
     # Load the tariffs
     # Check if we are using the OE integration:
     octopus_info = _get_octopus_info(hass, entry)
     _LOGGER.debug(octopus_info)
 
-    # Set the optimisers to run every 1 minute for testing
-    interval = timedelta(minutes=1)
-
     # Schedule the recurring function with additional logging
-    _LOGGER.debug(f"Scheduling _optimise to run every {interval}.")
+    _LOGGER.debug(f"Scheduling _optimise to run every {OPTIMISER_INTERVAL}.")
 
     try:
         # Pass `hass` explicitly to _optimise by using a partial
-        async_track_time_interval(hass, partial(_optimise, hass), interval)
+        async_track_time_interval(hass, partial(_optimise, hass), OPTIMISER_INTERVAL)
         _LOGGER.debug("async_track_time_interval successfully set up.")
     except Exception as e:
         _LOGGER.error(f"Failed to set up async_track_time_interval: {e}")
@@ -142,6 +130,40 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_forward_entry_unload(entry, "switch")
     unload_ok &= await hass.config_entries.async_forward_entry_unload(entry, "number")
     return unload_ok
+
+
+async def _check_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """
+    Saves required entities to hass[DOMAIN].data["entities"] from the entity register
+    """
+    brand = entry.data["inverter_brand"]
+    integration = entry.options["integration"]
+
+    _LOGGER.debug(f"Checking entities for inverter brand {brand} with integration {integration}")
+    integration_data, integration_entities = get_integration_entities(hass=hass, integration=integration)
+    integration_device_name = integration_entities[0]["entity_id"].split(".")[1].split("_")[0]
+    _LOGGER.debug(f"Integration device name: {integration_device_name}")
+
+    entity_ids = INVERTERS_DEFS[brand][integration]["entities"]
+    hass[DOMAIN].data["entities"] = {}
+    index_lookup = {entity.entity_id: i for i, entity in enumerate(integration_entities)}
+
+    success = True
+    for key in entity_ids:
+        expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
+        str_log = f"  {key:20s}: {expected_entity_id:30s} "
+        index = index_lookup.get(expected_entity_id, None)
+        if index is None:
+            str_log += "Not found"
+            success = False
+
+        else:
+            str_log += f"index: {index:4d}"
+            hass[DOMAIN].data["entities"][key] = integration_entities[index]
+
+        _LOGGER.debug(str_log)
+
+    return success
 
 
 async def _load_inverter_model(hass: HomeAssistant, entry: ConfigEntry) -> bool:

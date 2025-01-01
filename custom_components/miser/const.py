@@ -1,27 +1,27 @@
+from datetime import timedelta
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import (PERCENTAGE, UnitOfApparentPower,
-                                 UnitOfElectricCurrent,
-                                 UnitOfElectricPotential, UnitOfEnergy,
-                                 UnitOfFrequency, UnitOfPower,
-                                 UnitOfReactivePower, UnitOfTemperature,
-                                 UnitOfTime)
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfApparentPower,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfReactivePower,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.helpers.entity import DeviceInfo
-
-# from homeassistant.helpers.instance_id import async_get
-
-
-async def get_instance_id(hass):
-    """
-    Example to retrieve Home Assistant instance ID.
-    """
-    instance_id = await hass.helpers.instance_id.async_get()
-    return instance_id[-8:]
 
 
 DOMAIN = "miser"
 NAME = "Miser PV System Optimiser"
-VERSION = "1.0.0"
+VERSION = "0.0.1"
 MANUFACTURER = "foboundy"
+
+OPTIMISER_INTERVAL = timedelta(minutes=1)
+
 # Configuration keys
 CONF_BATTERY_CAPACITY = "battery_capacity"
 CONF_INVERTER_POWER = "inverter_power"
@@ -169,25 +169,31 @@ class MiserEntity:
         )
 
 
-CONFIG = {
+INVERTERS_DEFS = {
     "solis": {
         "solis": {
-            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
-            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            "entities": {
+                "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+                "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+                "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
+                "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            },
         },
         "solax_modbus": {
-            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
-            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            "entities": {
+                "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+                "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+                "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
+                "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            },
         },
         "solisconnect": {
-            "BATTERY_SOC": "sensor.{device_name}_battery_soc",
-            "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_import_today",
-            "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            "entities": {
+                "BATTERY_SOC": "sensor.{device_name}_battery_soc",
+                "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
+                "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
+                "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+            },
         },
     },
 }
