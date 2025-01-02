@@ -1,12 +1,18 @@
 from datetime import timedelta
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import (PERCENTAGE, UnitOfApparentPower,
-                                 UnitOfElectricCurrent,
-                                 UnitOfElectricPotential, UnitOfEnergy,
-                                 UnitOfFrequency, UnitOfPower,
-                                 UnitOfReactivePower, UnitOfTemperature,
-                                 UnitOfTime)
+from homeassistant.const import (
+    PERCENTAGE,
+    UnitOfApparentPower,
+    UnitOfElectricCurrent,
+    UnitOfElectricPotential,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfReactivePower,
+    UnitOfTemperature,
+    UnitOfTime,
+)
 from homeassistant.helpers.entity import DeviceInfo
 
 DOMAIN = "miser"
@@ -14,23 +20,32 @@ NAME = "Miser PV System Optimiser"
 VERSION = "0.0.1"
 MANUFACTURER = "foboundy"
 
-OPTIMISER_INTERVAL = timedelta(minutes=1)
+ENTITY_TYPES = ["model_entities", "control_entities"]
+PLATFORMS = ["number", "switch"]
+
+OPTIMISER_INTERVAL = timedelta(minutes=10)
+OPTIMISER_MAX_ITERS = 3
 
 # Configuration keys
 CONF_BATTERY_CAPACITY = "battery_capacity"
+CONF_BATTERY_CURRENT_LIMIT = "battery_current_limit"
 CONF_INVERTER_POWER = "inverter_power"
 CONF_CHARGER_POWER = "charger_power"
 CONF_INVERTER_EFFICIENCY = "inverter_efficiency"
 CONF_CHARGER_EFFICIENCY = "charger_efficiency"
+CONF_INVERTER_LOSS = "inverter_loss"
 
 # Default values
 DEFAULT_BATTERY_CAPACITY = 10000  # Wh
+DEFAULT_BATTERY_CURRENT_LIMIT = 100  # A
 DEFAULT_INVERTER_POWER = 3600  # W
 DEFAULT_CHARGER_POWER = 3000  # W
 DEFAULT_INVERTER_EFFICIENCY = 97  # Percent
 DEFAULT_CHARGER_EFFICIENCY = 91  # Percent
+DEFAULT_INVERTER_LOSS = 100  # W
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
+TIME_FORMAT = "%d/%m %H:%M %Z"
 
 IMPORT_EXPORT = ["import", "export"]
 
@@ -73,7 +88,13 @@ NUMBER_ENTITIES = {
         "default": 10,
         "unit": PERCENTAGE,
     },
-    "Weekday weighting": {"min": 0, "max": 100, "step": 10, "default": 50, "unit": PERCENTAGE},
+    "Weekday weighting": {
+        "min": 0,
+        "max": 100,
+        "step": 10,
+        "default": 50,
+        "unit": PERCENTAGE,
+    },
     "Power resolution": {
         "min": 0,
         "max": 500,
@@ -98,6 +119,14 @@ NUMBER_ENTITIES = {
         "default": DEFAULT_BATTERY_CAPACITY,
         "unit": UnitOfEnergy.WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
+    },
+    "Battery current limit": {
+        "min": 0,
+        "max": 400,
+        "step": 10,
+        "default": DEFAULT_BATTERY_CURRENT_LIMIT,
+        "unit": UnitOfElectricCurrent.AMPERE,
+        "device_class": SensorDeviceClass.CURRENT,
     },
     "Inverter power": {
         "min": 1000,
@@ -128,6 +157,13 @@ NUMBER_ENTITIES = {
         "step": 1,
         "default": DEFAULT_CHARGER_EFFICIENCY,
         "unit": PERCENTAGE,
+    },
+    "Inverter loss": {
+        "min": 0,
+        "max": 250,
+        "step": 10,
+        "default": DEFAULT_INVERTER_LOSS,
+        "unit": UnitOfPower.WATT,
     },
 }
 
@@ -163,10 +199,10 @@ class MiserEntity:
         )
 
 
-INVERTERS_DEFS = {
+INVERTER_DEFS = {
     "solis": {
         "solis": {
-            "entities": {
+            "model_entities": {
                 "BATTERY_SOC": "sensor.{device_name}_battery_soc",
                 "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
                 "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
@@ -174,15 +210,38 @@ INVERTERS_DEFS = {
             },
         },
         "solax_modbus": {
-            "entities": {
+            "model_entities": {
                 "BATTERY_SOC": "sensor.{device_name}_battery_soc",
                 "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
                 "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
-                "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
+                "CONSUMPTION_TODAY": "sensor.{device_name}_house_load_today",
+                "MINIMUM_SOC": "number.{device_name}_battery_minimum_soc",
+            },
+            "control_entities": {
+                "BATTERY_VOLTAGE": "sensor.{device_name}_battery_voltage",
+                "TIMED_CHARGE_ON": "switch.{device_name}_timed_charge_slot_1_enable",
+                "TIMED_CHARGE_START_HOURS": "number.{device_name}_timed_charge_start_hours",
+                "TIMED_CHARGE_START_MINUTES": "number.{device_name}_timed_charge_start_minutes",
+                "TIMED_CHARGE_END_HOURS": "number.{device_name}_timed_charge_end_hours",
+                "TIMED_CHARGE_END_MINUTES": "number.{device_name}_timed_charge_end_minutes",
+                "TIMED_CHARGE_CURRENT": "number.{device_name}_timed_charge_current",
+                "TIMED_CHARGE_SOC": "number.{device_name}_timed_charge_soc",
+                "TIMED_DISCHARGE_ON": "switch.{device_name}_timed_discharge_slot_1_enable",
+                "TIMED_DISCHARGE_START_HOURS": "number.{device_name}_timed_discharge_start_hours",
+                "TIMED_DISCHARGE_START_MINUTES": "number.{device_name}_timed_discharge_start_minutes",
+                "TIMED_DISCHARGE_END_HOURS": "number.{device_name}_timed_discharge_end_hours",
+                "TIMED_DISCHARGE_END_MINUTES": "number.{device_name}_timed_discharge_end_minutes",
+                "TIMED_DISCHARGE_CURRENT": "number.{device_name}_timed_discharge_current",
+                "TIMED_DISCHARGE_SOC": "number.{device_name}_timed_discharge_soc",
+                "TIMED_CHARGE_BUTTON": "button.{device_name}_update_charge_times",
+                "TIMED_DISCHARGE_BUTTON": "button.{device_name}_update_discharge_times",
+                "TIMED_CHARGE_DISCHARGE_BUTTON": "button.{device_name}_update_charge_discharge_times",
+                "INVERTER_MODE": "select.{device_name}_energy_storage_control_switch",
+                "BACKUP_MODE_SOC": "number.{device_name}_backup_mode_soc",
             },
         },
         "solisconnect": {
-            "entities": {
+            "model_entities": {
                 "BATTERY_SOC": "sensor.{device_name}_battery_soc",
                 "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
                 "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",

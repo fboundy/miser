@@ -2,6 +2,8 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
+from .const import DOMAIN
+
 
 async def get_instance_id(hass: HomeAssistant):
     """
@@ -24,3 +26,7 @@ async def get_integration_entities(hass: HomeAssistant, integration: str) -> tup
         ]
 
         return selected_config_entry.data, associated_entities
+
+
+async def get_config(hass: HomeAssistant, config_var: str) -> bool | int | float:
+    return 100

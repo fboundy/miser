@@ -5,15 +5,27 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.loader import (async_get_custom_components,
-                                  async_get_integration)
+from homeassistant.loader import async_get_custom_components, async_get_integration
 
-from .const import (CONF_BATTERY_CAPACITY, CONF_CHARGER_EFFICIENCY,
-                    CONF_CHARGER_POWER, CONF_INVERTER_EFFICIENCY,
-                    CONF_INVERTER_POWER, CONFIG, DEFAULT_BATTERY_CAPACITY,
-                    DEFAULT_CHARGER_EFFICIENCY, DEFAULT_CHARGER_POWER,
-                    DEFAULT_INVERTER_EFFICIENCY, DEFAULT_INVERTER_POWER,
-                    DOMAIN, NAME)
+from .const import (
+    CONF_BATTERY_CAPACITY,
+    CONF_BATTERY_CURRENT_LIMIT,
+    CONF_CHARGER_EFFICIENCY,
+    CONF_CHARGER_POWER,
+    CONF_INVERTER_EFFICIENCY,
+    CONF_INVERTER_POWER,
+    CONF_INVERTER_LOSS,
+    DEFAULT_BATTERY_CAPACITY,
+    DEFAULT_BATTERY_CURRENT_LIMIT,
+    DEFAULT_CHARGER_EFFICIENCY,
+    DEFAULT_CHARGER_POWER,
+    DEFAULT_INVERTER_EFFICIENCY,
+    DEFAULT_INVERTER_POWER,
+    DEFAULT_INVERTER_LOSS,
+    DOMAIN,
+    NAME,
+    INVERTER_DEFS,
+)
 from .utils import get_integration_entities
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,7 +68,7 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
 
         # Find installed integrations for the specified inverter brand
         installed_integrations = [
-            integration for integration in CONFIG.get(inverter_brand, []) if integration in custom_components
+            integration for integration in INVERTER_DEFS.get(inverter_brand, []) if integration in custom_components
         ]
 
         # Log configuration entries and associated entities for each installed integration
@@ -106,7 +118,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_select_controller()
 
         # Display a form for selecting the inverter brand
-        schema = vol.Schema({vol.Required("inverter_brand"): vol.In([brand.title() for brand in CONFIG.keys()])})
+        schema = vol.Schema(
+            {vol.Required("inverter_brand"): vol.In([brand.title() for brand in INVERTER_DEFS.keys()])}
+        )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_select_controller(self, user_input=None):
@@ -229,19 +243,23 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Collect and validate system parameters
             self._options["battery_capacity"] = user_input.get(CONF_BATTERY_CAPACITY)
+            self._options["battery_current_limit"] = user_input.get(CONF_BATTERY_CURRENT_LIMIT)
             self._options["inverter_power"] = user_input.get(CONF_INVERTER_POWER)
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
             self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
             self._options["charger_efficiency"] = user_input.get(CONF_CHARGER_EFFICIENCY)
+            self._options["inverter_loss"] = user_input.get(CONF_INVERTER_LOSS)
             if all(
                 [
                     self._options[x]
                     for x in [
                         "battery_capacity",
+                        "battery_current_limit",
                         "inverter_power",
                         "charger_power",
                         "inverter_efficiency",
                         "charger_efficiency",
+                        "inverter_loss",
                     ]
                 ]
             ):
@@ -253,6 +271,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULT_BATTERY_CAPACITY): int,
+                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULT_BATTERY_CURRENT_LIMIT): int,
                 vol.Optional(CONF_INVERTER_POWER, default=DEFAULT_INVERTER_POWER): int,
                 vol.Optional(CONF_CHARGER_POWER, default=DEFAULT_CHARGER_POWER): int,
                 vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULT_INVERTER_EFFICIENCY): vol.All(
@@ -261,6 +280,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULT_CHARGER_EFFICIENCY): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
+                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULT_INVERTER_LOSS): int,
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)

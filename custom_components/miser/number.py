@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from homeassistant.components.number import NumberEntity
+from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,6 +35,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     _LOGGER.debug(f"Number entities to add: {[entity.unique_id for entity in entities_to_add]}")
     async_add_entities(entities_to_add, update_before_add=True)
+
+    # Add these entities to the model_entities
+    entity_registry = er.async_get(hass=hass)
+
+    for entity in entities_to_add:
+        hass.data[DOMAIN]["model_entities"][entity.name.replace(" ", "_").upper()] = (
+            entity_registry.async_get_entity_id("switch", DOMAIN, entity.unique_id)
+        )
 
 
 class OptimiserNumber(MiserEntity, NumberEntity):

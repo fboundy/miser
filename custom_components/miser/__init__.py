@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime
 from functools import partial
 from logging.handlers import RotatingFileHandler
@@ -6,14 +7,20 @@ from logging.handlers import RotatingFileHandler
 import pandas as pd
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import (DATETIME_FORMAT_LONG, DOMAIN, IMPORT_EXPORT,
-                    INVERTERS_DEFS, OPTIMISER_INTERVAL)
-from .octopus import (get_octopus_info_from_account,
-                      get_octopus_integration_data)
-from .utils import get_instance_id, get_integration_entities
+from .const import (
+    DATETIME_FORMAT_LONG,
+    DOMAIN,
+    IMPORT_EXPORT,
+    INVERTER_DEFS,
+    OPTIMISER_INTERVAL,
+    ENTITY_TYPES,
+    PLATFORMS,
+)
+from .octopus import get_octopus_info_from_account, get_octopus_integration_data
+from .utils import get_instance_id, get_integration_entities, get_config
+from .pv_model import InverterModel, BatteryModel, PVsystemModel
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 VERSION = "0.0.1"
@@ -64,23 +71,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
     _LOGGER.debug(f"ConfigEntry title: {entry.title}")
 
-    """
-    Check that all the required entities are available for the selected inverter controller
-    and intantiate the PV model.
-
-    Save the PV model to hass[DOMAIN].data
-    """
-    entities_available = await _check_entities(hass, entry)
-    if not entities_available:
-        _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
-
-    # Load the tariffs
-    # Check if we are using the OE integration:
-    octopus_info = _get_octopus_info(hass, entry)
-    _LOGGER.debug(octopus_info)
-
-    # Schedule the recurring function with additional logging
-    _LOGGER.debug(f"Scheduling _optimise to run every {OPTIMISER_INTERVAL}.")
+    for entity_type in ENTITY_TYPES:
+        hass.data[DOMAIN][entity_type] = {}
 
     try:
         # Pass `hass` explicitly to _optimise by using a partial
@@ -91,8 +83,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward entries to platform setup
     _LOGGER.debug("Forwarding config entries to platforms: switch, number.")
-    hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, "switch"))
-    hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, "number"))
+    tasks = [
+        hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
+        for platform in PLATFORMS
+    ]
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    """
+    Check that all the required entities are available for the selected inverter controller
+    and intantiate the PV model.
+
+    Save the PV model to hass.data[DOMAIN]
+    """
+    entities_available = await _get_entities(hass, entry)
+    if not entities_available:
+        _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
+    else:
+        for entity_type in ENTITY_TYPES:
+            _LOGGER.debug(f"{entity_type}:")
+            _LOGGER.debug(f"{'-'*(len(entity_type)+1)}")
+            for entity in hass.data[DOMAIN][entity_type]:
+                _LOGGER.debug(
+                    f"{entity:35s}:{hass.data[DOMAIN][entity_type][entity].domain} {hass.data[DOMAIN][entity_type][entity].platform} {hass.data[DOMAIN][entity_type][entity].unique_id}"
+                )
+            _LOGGER.debug("")
+        await _load_pv_system_model(hass, entry)
+
+    # Load the tariffs
+    # Check if we are using the OE integration:
+    octopus_info = _get_octopus_info(hass, entry)
+    _LOGGER.debug(octopus_info)
+
+    # Schedule the recurring function with additional logging
+    _LOGGER.debug(f"Scheduling _optimise to run every {OPTIMISER_INTERVAL}.")
 
     return True
 
@@ -135,42 +158,65 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return unload_ok
 
 
-async def _check_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
-    Saves required entities to hass[DOMAIN].data["entities"] from the entity register
+    Saves required entities to hass.data[DOMAIN]["entities"] from the entity register
     """
     brand = entry.data["inverter_brand"]
     integration = entry.options["integration"]
 
     _LOGGER.debug(f"Checking entities for inverter brand {brand} with integration {integration}")
-    integration_data, integration_entities = get_integration_entities(hass=hass, integration=integration)
-    integration_device_name = integration_entities[0]["entity_id"].split(".")[1].split("_")[0]
+    integration_data, integration_entities = await get_integration_entities(hass=hass, integration=integration)
+    integration_device_name = integration_entities[0].entity_id.split(".")[1].split("_")[0]
     _LOGGER.debug(f"Integration device name: {integration_device_name}")
 
-    entity_ids = INVERTERS_DEFS[brand][integration]["entities"]
-    hass[DOMAIN].data["entities"] = {}
+    hass.data[DOMAIN]["integration_data"] = integration_data
     index_lookup = {entity.entity_id: i for i, entity in enumerate(integration_entities)}
 
     success = True
-    for key in entity_ids:
-        expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
-        str_log = f"  {key:20s}: {expected_entity_id:30s} "
-        index = index_lookup.get(expected_entity_id, None)
-        if index is None:
-            str_log += "Not found"
-            success = False
 
-        else:
-            str_log += f"index: {index:4d}"
-            hass[DOMAIN].data["entities"][key] = integration_entities[index]
+    for entity_type in ENTITY_TYPES:
+        entity_ids = INVERTER_DEFS[brand][integration][entity_type]
+        for key in entity_ids:
+            expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
+            str_log = f"  {key:35s}: {expected_entity_id:50s} "
+            index = index_lookup.get(expected_entity_id, None)
+            if index is None:
+                str_log += "Not found"
 
-        _LOGGER.debug(str_log)
+                # We may not need all the control entities so only fail if the main entities aren't all there
+                if entity_type == "model_entities":
+                    success = False
+
+            else:
+                str_log += f"index: {index:4d}"
+                hass.data[DOMAIN][entity_type][key] = integration_entities[index]
+
+            _LOGGER.debug(str_log)
 
     return success
 
 
-async def _load_inverter_model(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    pass
+async def _load_pv_system_model(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # Read the inverter model parameters from the relevant config entities
+    kw_inverter = {
+        kw: get_config(hass, kw)
+        for kw in ["inverter_efficiency", "charger_efficiency", "inverter_loss", "inverter_power", "charger_power"]
+    }
+
+    # Load the inverter model
+    hass.data[DOMAIN]["inverter_model"] = InverterModel(**kw_inverter)
+
+    # Read the battery model parameters from the relevant config entities
+    kw_battery = {kw: get_config(hass, kw) for kw in ["capacity", "max_dod", "current_limit_amps"]}
+
+    # Load the battery model
+    hass.data[DOMAIN]["battery_model"] = BatteryModel(**kw_battery)
+
+    # Load the PV system model
+    hass.data[DOMAIN]["battery_model"] = PVsystemModel(
+        inverter=hass.data[DOMAIN]["inverter_model"], battery=hass.data[DOMAIN]["battery_model"]
+    )
 
 
 async def _update_prices(hass: HomeAssistant) -> bool:
