@@ -15,13 +15,7 @@ from .const import (
     CONF_INVERTER_EFFICIENCY,
     CONF_INVERTER_POWER,
     CONF_INVERTER_LOSS,
-    DEFAULT_BATTERY_CAPACITY,
-    DEFAULT_BATTERY_CURRENT_LIMIT,
-    DEFAULT_CHARGER_EFFICIENCY,
-    DEFAULT_CHARGER_POWER,
-    DEFAULT_INVERTER_EFFICIENCY,
-    DEFAULT_INVERTER_POWER,
-    DEFAULT_INVERTER_LOSS,
+    DEFAULTS,
     DOMAIN,
     NAME,
     INVERTER_DEFS,
@@ -270,17 +264,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Display a form for entering system parameters
         schema = vol.Schema(
             {
-                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULT_BATTERY_CAPACITY): int,
-                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULT_BATTERY_CURRENT_LIMIT): int,
-                vol.Optional(CONF_INVERTER_POWER, default=DEFAULT_INVERTER_POWER): int,
-                vol.Optional(CONF_CHARGER_POWER, default=DEFAULT_CHARGER_POWER): int,
-                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULT_INVERTER_EFFICIENCY): vol.All(
+                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS["BATTERY_CAPACITY"]): int,
+                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS["BATTERY_CURRENT_LIMIT"]): int,
+                vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS["INVERTER_POWER"]): int,
+                vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS["CHARGER_POWER"]): int,
+                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS["INVERTER_EFFICIENCY"]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULT_CHARGER_EFFICIENCY): vol.All(
+                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS["CHARGER_EFFICIENCY"]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULT_INVERTER_LOSS): int,
+                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULTS["INVERTER_LOSS"]): int,
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)

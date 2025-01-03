@@ -1,26 +1,26 @@
 import logging
 import asyncio
-from datetime import datetime
+from datetime import timedelta
 from functools import partial
 from logging.handlers import RotatingFileHandler
 
-import pandas as pd
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.event import async_track_time_interval
+import homeassistant.util.dt as dt_util
+from homeassistant.helpers.event import async_track_time_interval, async_track_state_change
 
 from .const import (
-    DATETIME_FORMAT_LONG,
+    PV_SYSTEM_ENTITIES,
     DOMAIN,
     IMPORT_EXPORT,
     INVERTER_DEFS,
-    OPTIMISER_INTERVAL,
     ENTITY_TYPES,
     PLATFORMS,
 )
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data
-from .utils import get_instance_id, get_integration_entities, get_config
+from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
+from .optimiser import optimise
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 VERSION = "0.0.1"
@@ -38,10 +38,18 @@ def setup_custom_logging():
     # Set up a rotating file handler
     log_filename = f"/config/{DOMAIN}.log"
     file_handler = RotatingFileHandler(
-        log_filename, maxBytes=5 * 1024 * 1024, backupCount=3  # 5 MB max size, 3 backups
+        log_filename,
+        maxBytes=2**10,
+        backupCount=3,
+        mode="a",  # 1 MB max size, 3 backups
     )
+
+    # Force rotation of the log file
+    file_handler.doRollover()
+
     formatter = logging.Formatter(
-        "%(asctime)s - %(module)-15s - %(levelname)-8s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+        "%(asctime)s - %(module)-10s - %(levelname)-8s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
@@ -60,26 +68,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Set up Miser PV System Optimiser from a config entry.
     """
     setup_custom_logging()
+    asyncio.sleep(1)
+
+    # Test the logging setup
+    _LOGGER.debug("Custom logging initialized.")
 
     uuid = await get_instance_id(hass)
     _LOGGER.debug(f"UUID: {uuid}")
     hass.data[DOMAIN] = {"uuid": uuid}
 
-    # Log ConfigEntry contents
-    _LOGGER.debug(f"ConfigEntry data: {entry.data}")
-    _LOGGER.debug(f"ConfigEntry options: {entry.options}")
-    _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
-    _LOGGER.debug(f"ConfigEntry title: {entry.title}")
+    _log_config_entry(entry)
 
     for entity_type in ENTITY_TYPES:
         hass.data[DOMAIN][entity_type] = {}
-
-    try:
-        # Pass `hass` explicitly to _optimise by using a partial
-        async_track_time_interval(hass, partial(_optimise, hass), OPTIMISER_INTERVAL)
-        _LOGGER.debug("async_track_time_interval successfully set up.")
-    except Exception as e:
-        _LOGGER.error(f"Failed to set up async_track_time_interval: {e}")
 
     # Forward entries to platform setup
     _LOGGER.debug("Forwarding config entries to platforms: switch, number.")
@@ -88,7 +89,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         for platform in PLATFORMS
     ]
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    await asyncio.gather(*tasks, return_exceptions=True)
+
     """
     Check that all the required entities are available for the selected inverter controller
     and intantiate the PV model.
@@ -96,26 +98,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Save the PV model to hass.data[DOMAIN]
     """
     entities_available = await _get_entities(hass, entry)
+
     if not entities_available:
         _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
+        octopus = False
+
     else:
-        for entity_type in ENTITY_TYPES:
-            _LOGGER.debug(f"{entity_type}:")
-            _LOGGER.debug(f"{'-'*(len(entity_type)+1)}")
-            for entity in hass.data[DOMAIN][entity_type]:
-                _LOGGER.debug(
-                    f"{entity:35s}:{hass.data[DOMAIN][entity_type][entity].domain} {hass.data[DOMAIN][entity_type][entity].platform} {hass.data[DOMAIN][entity_type][entity].unique_id}"
-                )
-            _LOGGER.debug("")
-        await _load_pv_system_model(hass, entry)
+        _log_all_entities(hass)
+        await _load_pv_system_model(hass)
 
-    # Load the tariffs
-    # Check if we are using the OE integration:
-    octopus_info = _get_octopus_info(hass, entry)
-    _LOGGER.debug(octopus_info)
+        # Load the tariffs
+        # Check if we are using the OE integration:
+        octopus = await _get_octopus_info(hass, entry)
 
-    # Schedule the recurring function with additional logging
-    _LOGGER.debug(f"Scheduling _optimise to run every {OPTIMISER_INTERVAL}.")
+    if octopus:
+        _LOGGER.debug(hass.data[DOMAIN].get("octopus_info"))
+        # Run the optimiser for the first time
+        await optimise(hass=hass)
+
+        # Set up the schedule for the optimise
+        await _schedule_optimiser(hass)
+
+        # Set up callbacks for when the config entities change
+        await _setup_config_callbacks(hass)
 
     return True
 
@@ -137,16 +142,9 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
         octopus_info = {}
         _LOGGER.debug(f"No octopus data found. Tariff source: {entry.options.get('tariff_source', '')}")
 
-    return octopus_info
+    hass.data[DOMAIN]["octopus_info"] = octopus_info
 
-
-async def _optimise(hass: HomeAssistant, now: datetime):
-    try:
-        # Access hass.data
-        uuid = hass.data[DOMAIN]["uuid"]
-        _LOGGER.debug(f"optiMISER executed at: {now.strftime(DATETIME_FORMAT_LONG)}. UUID: {uuid}")
-    except Exception as e:
-        _LOGGER.error(f"Error in _optimise function: {e}")
+    return len(octopus_info) > 0
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -176,7 +174,7 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     success = True
 
     for entity_type in ENTITY_TYPES:
-        entity_ids = INVERTER_DEFS[brand][integration][entity_type]
+        entity_ids = INVERTER_DEFS[brand][integration].get(entity_type, [])
         for key in entity_ids:
             expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
             str_log = f"  {key:35s}: {expected_entity_id:50s} "
@@ -190,17 +188,18 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             else:
                 str_log += f"index: {index:4d}"
-                hass.data[DOMAIN][entity_type][key] = integration_entities[index]
+                hass.data[DOMAIN][entity_type][key] = integration_entities[index].entity_id
 
             _LOGGER.debug(str_log)
 
     return success
 
 
-async def _load_pv_system_model(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Read the inverter model parameters from the relevant config entities
+    _LOGGER.debug("Loading PV system model")
     kw_inverter = {
-        kw: get_config(hass, kw)
+        kw: await get_value(hass, kw.upper())
         for kw in ["inverter_efficiency", "charger_efficiency", "inverter_loss", "inverter_power", "charger_power"]
     }
 
@@ -208,16 +207,105 @@ async def _load_pv_system_model(hass: HomeAssistant, entry: ConfigEntry) -> bool
     hass.data[DOMAIN]["inverter_model"] = InverterModel(**kw_inverter)
 
     # Read the battery model parameters from the relevant config entities
-    kw_battery = {kw: get_config(hass, kw) for kw in ["capacity", "max_dod", "current_limit_amps"]}
+    kw_battery = {
+        kw: await get_value(hass, f"battery_{kw}".upper()) for kw in ["capacity", "minimum_soc", "current_limit"]
+    }
 
     # Load the battery model
     hass.data[DOMAIN]["battery_model"] = BatteryModel(**kw_battery)
 
     # Load the PV system model
-    hass.data[DOMAIN]["battery_model"] = PVsystemModel(
+    hass.data[DOMAIN]["model"] = PVsystemModel(
         inverter=hass.data[DOMAIN]["inverter_model"], battery=hass.data[DOMAIN]["battery_model"]
     )
 
+    return True
 
-async def _update_prices(hass: HomeAssistant) -> bool:
-    pass
+
+async def _schedule_optimiser(hass):
+    optimiser_minutes = await get_value(hass=hass, key="OPTIMISER_FREQUENCY", default_value=10)
+    _LOGGER.debug(f"Optimiser frequency: {optimiser_minutes} minutes")
+    optimiser_interval = timedelta(minutes=optimiser_minutes)
+
+    try:
+        # Cancel the current schedule if it exists
+        if DOMAIN in hass.data and "optimiser_schedule" in hass.data[DOMAIN]:
+            hass.data[DOMAIN]["optimiser_schedule"]()
+            _LOGGER.debug("Previous schedule cancelled.")
+
+        # Calculate the next aligned run time
+        now = dt_util.utcnow()
+        next_run = now.replace(second=0, microsecond=0) + (
+            optimiser_interval - timedelta(minutes=now.minute % (optimiser_interval.total_seconds() // 60))
+        )
+
+        _LOGGER.debug(f"Scheduling _optimise to start at {next_run} and run every {optimiser_interval}.")
+
+        # Define a wrapper function to schedule the recurring interval after the first run
+        async def first_run():
+            await optimise(hass)
+            hass.data[DOMAIN]["optimiser_schedule"] = async_track_time_interval(
+                hass, partial(optimise, hass), optimiser_interval
+            )
+            _LOGGER.debug("Recurring async_track_time_interval successfully set up.")
+
+        # Schedule the first run at the next aligned time
+        delay = (next_run - now).total_seconds()
+        hass.loop.call_later(delay, lambda: hass.async_create_task(first_run()))
+        _LOGGER.debug(f"First run of _optimise scheduled in {delay} seconds.")
+
+    except Exception as e:
+        _LOGGER.error(f"Failed to set up _schedule_optimiser: {e}")
+
+
+async def _setup_config_callbacks(hass):
+    for entity_id in hass.data[DOMAIN]["config_entities"].values():
+        callback = partial(_state_change_callback, hass)
+        async_track_state_change(hass, entity_id, callback)
+    return True
+
+
+async def _state_change_callback(hass, entity_id, old_state, new_state):
+    """Callback function triggered when the config entity state changes."""
+    _LOGGER.debug(
+        f"Entity {entity_id} changed from {old_state.state if old_state else 'None'} to {new_state.state if new_state else 'None'}"
+    )
+
+    key = get_key_for_entity(hass=hass, entity_id=entity_id)
+    if key == "OPTIMISER_FREQUENCY":
+        await optimise(hass=hass)
+        _LOGGER.debug("Reset optimiser frequency")
+        await _schedule_optimiser(hass)
+    elif key in PV_SYSTEM_ENTITIES:
+        _LOGGER.debug("Reinitialise PV sytem")
+        await _load_pv_system_model(hass)
+        await optimise(hass=hass)
+
+    else:
+        await optimise(hass=hass)
+
+
+def _log_all_entities(hass: HomeAssistant) -> None:
+    for entity_type in ENTITY_TYPES:
+        _LOGGER.debug(f"{entity_type}:")
+        _LOGGER.debug(f"{'-'*(len(entity_type)+1)}")
+        for entity in hass.data[DOMAIN][entity_type]:
+            str_log = f"{entity:35s}:"
+            if hass.data[DOMAIN][entity_type][entity] is not None:
+                try:
+                    str_log += f"{hass.data[DOMAIN][entity_type][entity].domain} {hass.data[DOMAIN][entity_type][entity].platform} {hass.data[DOMAIN][entity_type][entity].unique_id}"
+                except:
+                    str_log += f"{hass.data[DOMAIN][entity_type][entity]}"
+            else:
+                str_log += f"<=== MISSING!"
+
+            _LOGGER.debug(str_log)
+        _LOGGER.debug("")
+
+
+def _log_config_entry(entry: ConfigEntry) -> None:
+    # Log ConfigEntry contents
+    _LOGGER.debug(f"ConfigEntry data: {entry.data}")
+    _LOGGER.debug(f"ConfigEntry options: {entry.options}")
+    _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
+    _LOGGER.debug(f"ConfigEntry title: {entry.title}")

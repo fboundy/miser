@@ -50,13 +50,13 @@ class BatteryModel:
     def __init__(
         self,
         capacity: int,
-        max_dod: float = 0.15,
-        current_limit_amps: int = 100,
+        minimum_soc: float = 0.15,
+        current_limit: int = 100,
         # voltage: int = 50,
     ) -> None:
         self.capacity = capacity
-        self.max_dod = max_dod
-        self.current_limit_amps = current_limit_amps
+        self.max_dod = minimum_soc
+        self.current_limit_amps = current_limit
         # self.voltage = voltage
 
     def __str__(self):
@@ -85,7 +85,7 @@ class PVsystemModel:
         self,
         inverter: InverterModel,
         battery: BatteryModel,
-        tz: str = "GB",
+        tz: str = "UTC",
         debug_cat: list = [],
     ) -> None:
         self.inverter = inverter
@@ -99,6 +99,10 @@ class PVsystemModel:
 
     def __str__(self):
         pass
+
+    @property
+    def tz(self):
+        return self._tz
 
     def calculate_flows(self, slots=[], solar_id="solar", consumption_id="consumption", **kwargs):
         solar = self.static_flows[solar_id]

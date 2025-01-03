@@ -1,5 +1,3 @@
-from datetime import timedelta
-
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import (
     PERCENTAGE,
@@ -13,17 +11,26 @@ from homeassistant.const import (
     UnitOfTemperature,
     UnitOfTime,
 )
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.entity import DeviceInfo
+from typing import Any
 
 DOMAIN = "miser"
 NAME = "Miser PV System Optimiser"
 VERSION = "0.0.1"
 MANUFACTURER = "foboundy"
 
-ENTITY_TYPES = ["model_entities", "control_entities"]
+NULL_STATES = ["Unavailable", "Unknown"]
+SWITCH_STATES = ["On", "on", "Off", "off"]
+
+ENTITY_TYPES = [
+    "model_entities",  # Typically sensors that report a value used by the model
+    "control_entities",  # Entities used to control the inverter
+    "config_entities",  # Entities used to configure the model/optimiser
+]
+
 PLATFORMS = ["number", "switch"]
 
-OPTIMISER_INTERVAL = timedelta(minutes=10)
 OPTIMISER_MAX_ITERS = 3
 
 # Configuration keys
@@ -36,13 +43,37 @@ CONF_CHARGER_EFFICIENCY = "charger_efficiency"
 CONF_INVERTER_LOSS = "inverter_loss"
 
 # Default values
-DEFAULT_BATTERY_CAPACITY = 10000  # Wh
-DEFAULT_BATTERY_CURRENT_LIMIT = 100  # A
-DEFAULT_INVERTER_POWER = 3600  # W
-DEFAULT_CHARGER_POWER = 3000  # W
-DEFAULT_INVERTER_EFFICIENCY = 97  # Percent
-DEFAULT_CHARGER_EFFICIENCY = 91  # Percent
-DEFAULT_INVERTER_LOSS = 100  # W
+DEFAULTS = {
+    "BATTERY_CAPACITY": 10000,  # Wh
+    "BATTERY_CURRENT_LIMIT": 100,  # A
+    "INVERTER_POWER": 3600,  # W
+    "CHARGER_POWER": 3000,  # W
+    "INVERTER_EFFICIENCY": 97,  # Percent
+    "CHARGER_EFFICIENCY": 91,  # Percent
+    "INVERTER_LOSS": 100,  # W
+    "BATTERY_MINIMUM_SOC": 15,  # %
+    "USE_CONSUMPTION": True,
+    "HISTORY_DAYS": 7,
+    "WEEKDAY_WEIGHTING": 50,
+    "LOAD_MARGIN": 10,
+    "SHAPE_CONSUMPTION": True,
+    "DAILY_CONSUMPTION_KWH": 17,
+    "OPTIMISER_FREQUENCY": 10,
+}
+
+PV_SYSTEM_ENTITIES = [
+    "BATTERY_CAPACITY",
+    "BATTERY_CURRENT_LIMIT",
+    "INVERTER_POWER",
+    "CHARGER_POWER",
+    "INVERTER_EFFICIENCY",
+    "CHARGER_EFFICIENCY",
+    "INVERTER_LOSS",
+    "BATTERY_MINIMUM_SOC",
+]
+
+MODEL_DURATION_HOURS = 48
+MODEL_PERIOD_MINUTES = 30
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
 TIME_FORMAT = "%d/%m %H:%M %Z"
@@ -51,13 +82,32 @@ IMPORT_EXPORT = ["import", "export"]
 
 OCTOPUS_ACCOUNT_URL = "https://api.octopus.energy/v1/accounts/"
 
+CONSUMPTION_SHAPE = [
+    {"hours": 00.00, "consumption": 300},
+    {"hours": 00.50, "consumption": 200},
+    {"hours": 06.00, "consumption": 150},
+    {"hours": 08.00, "consumption": 500},
+    {"hours": 15.50, "consumption": 500},
+    {"hours": 17.00, "consumption": 750},
+    {"hours": 22.00, "consumption": 750},
+    {"hours": 24.00, "consumption": 300},
+]
+
+# ATTRIBUTES
+LAST_UPDATED = "Last updated"
+
+EMPTY_ATTR: dict[str, Any] = {
+    LAST_UPDATED: None,
+}
+
 # Switch entities
 SWITCH_ENTITIES = {
     "Read only": {"default": False},
     "Include export": {"default": False},
     "Optimise discharging": {"default": False},
     "Use solar": {"default": True},
-    "Use consumption history": {"default": True},
+    "Use consumption history": {"default": DEFAULTS["USE_CONSUMPTION"]},
+    "Shape consumption": {"default": DEFAULTS["SHAPE_CONSUMPTION"]},
 }
 
 
@@ -67,7 +117,7 @@ NUMBER_ENTITIES = {
         "min": 5,
         "max": 30,
         "step": 5,
-        "default": 10,
+        "default": DEFAULTS["OPTIMISER_FREQUENCY"],
     },
     "Solcast confidence": {
         "min": 10,
@@ -79,20 +129,20 @@ NUMBER_ENTITIES = {
         "min": 1,
         "max": 14,
         "step": 1,
-        "default": 7,
+        "default": DEFAULTS["HISTORY_DAYS"],
     },
     "Load margin": {
         "min": 0,
         "max": 25,
         "step": 5,
-        "default": 10,
+        "default": DEFAULTS["LOAD_MARGIN"],
         "unit": PERCENTAGE,
     },
     "Weekday weighting": {
         "min": 0,
         "max": 100,
         "step": 10,
-        "default": 50,
+        "default": DEFAULTS["WEEKDAY_WEIGHTING"],
         "unit": PERCENTAGE,
     },
     "Power resolution": {
@@ -116,7 +166,7 @@ NUMBER_ENTITIES = {
         "min": 1000,
         "max": 20000,
         "step": 100,
-        "default": DEFAULT_BATTERY_CAPACITY,
+        "default": DEFAULTS["BATTERY_CAPACITY"],
         "unit": UnitOfEnergy.WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
     },
@@ -124,7 +174,7 @@ NUMBER_ENTITIES = {
         "min": 0,
         "max": 400,
         "step": 10,
-        "default": DEFAULT_BATTERY_CURRENT_LIMIT,
+        "default": DEFAULTS["BATTERY_CURRENT_LIMIT"],
         "unit": UnitOfElectricCurrent.AMPERE,
         "device_class": SensorDeviceClass.CURRENT,
     },
@@ -132,7 +182,7 @@ NUMBER_ENTITIES = {
         "min": 1000,
         "max": 10000,
         "step": 100,
-        "default": DEFAULT_INVERTER_POWER,
+        "default": DEFAULTS["INVERTER_POWER"],
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
@@ -140,7 +190,7 @@ NUMBER_ENTITIES = {
         "min": 1000,
         "max": 5000,
         "step": 100,
-        "default": DEFAULT_CHARGER_POWER,
+        "default": DEFAULTS["CHARGER_POWER"],
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
@@ -148,27 +198,34 @@ NUMBER_ENTITIES = {
         "min": 50,
         "max": 100,
         "step": 1,
-        "default": DEFAULT_INVERTER_EFFICIENCY,
+        "default": DEFAULTS["INVERTER_EFFICIENCY"],
         "unit": PERCENTAGE,
     },
     "Charger efficiency": {
         "min": 50,
         "max": 100,
         "step": 1,
-        "default": DEFAULT_CHARGER_EFFICIENCY,
+        "default": DEFAULTS["CHARGER_EFFICIENCY"],
         "unit": PERCENTAGE,
     },
     "Inverter loss": {
         "min": 0,
         "max": 250,
         "step": 10,
-        "default": DEFAULT_INVERTER_LOSS,
+        "default": DEFAULTS["INVERTER_LOSS"],
         "unit": UnitOfPower.WATT,
+    },
+    "Daily consumption": {
+        "min": 0,
+        "max": 30,
+        "step": 1,
+        "default": DEFAULTS["DAILY_CONSUMPTION_KWH"],
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
     },
 }
 
 
-class MiserEntity:
+class MiserEntity(RestoreEntity):
     def __init__(
         self,
         config_entry,
@@ -183,6 +240,7 @@ class MiserEntity:
         self._attr_device_class = device_class
         self._config_entry = config_entry
         self._icon = icon
+        self._attributes = dict(EMPTY_ATTR)
 
     @property
     def should_poll(self):
@@ -215,7 +273,7 @@ INVERTER_DEFS = {
                 "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
                 "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
                 "CONSUMPTION_TODAY": "sensor.{device_name}_house_load_today",
-                "MINIMUM_SOC": "number.{device_name}_battery_minimum_soc",
+                "BATTERY_MINIMUM_SOC": "number.{device_name}_battery_minimum_soc",
             },
             "control_entities": {
                 "BATTERY_VOLTAGE": "sensor.{device_name}_battery_voltage",
