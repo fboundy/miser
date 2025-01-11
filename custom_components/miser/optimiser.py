@@ -4,6 +4,7 @@ from numpy import arange
 from datetime import datetime, timedelta
 from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import history
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util.dt import parse_datetime as dt_util
 
 from .const import (
@@ -11,12 +12,26 @@ from .const import (
     DATETIME_FORMAT_LONG,
     MODEL_DURATION_HOURS,
     MODEL_PERIOD_MINUTES,
+    MODEL_COLUMNS,
     DEFAULTS,
     CONSUMPTION_SHAPE,
+    SOLCAST_INTEGRATION,
+    SOLCAST_PV_KEY,
+    SOLCAST_DETAILED_FORECAST_ATTRIBUTE,
+    SOLCAST_FORECAST_PERIODS,
+    SOLCAST_COLUMNS,
 )
-from .utils import get_value, get_entity_for_key
+from .utils import get_value, get_entity_for_key, log_config_entry
+from .octopus import get_octopus_prices_from_api
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+
+
+def cl_to_weights(cl):
+    wt90 = min(max(cl - 50, 0) / 40, 1)
+    wt10 = min(max(50 - cl, 0) / 40, 1)
+    wt50 = 1 - wt90 - wt10
+    return wt50, wt10, wt90
 
 
 async def optimise(hass: HomeAssistant, now=None):
@@ -34,10 +49,14 @@ async def optimise(hass: HomeAssistant, now=None):
 
     start = pd.Timestamp.now(tz=tz).floor(freq)
     end = start.normalize() + pd.Timedelta(hours=MODEL_DURATION_HOURS)
+    index = pd.date_range(start, end, freq=freq)
     _LOGGER.debug(f"Model Start: {start.strftime(DATETIME_FORMAT_LONG)}")
     _LOGGER.debug(f"Model End  : {end.strftime(DATETIME_FORMAT_LONG)}")
 
+    model.flows = pd.DataFrame(index=index, data={col: 0 for col in MODEL_COLUMNS})
     await _get_consumption(hass=hass, start=start, end=end, freq=freq)
+    await _get_solcast(hass=hass, start=start, end=end, freq=freq)
+    await _get_prices(hass=hass, start=start, end=end, freq=freq)
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
@@ -51,9 +70,6 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
     consumption = pd.DataFrame(index=index)
     consumption["time_of_day"] = consumption.index.time
     consumption["dow_tod"] = consumption.index.day_of_week + consumption.index.hour / 24
-
-    _LOGGER.debug("Consumption Template:")
-    _LOGGER.debug(f"{consumption}")
 
     use_consumption = await get_value(hass, "USE_CONSUMPTION_HISTORY")
     if use_consumption:
@@ -81,7 +97,7 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
                 consumption["final"] = consumption["mean"] * (1 - weekday_weighting / 100) + consumption["dow"] * (
                     weekday_weighting / 100
                 )
-                _LOGGER.debug(f"{consumption.to_string()}")
+                _LOGGER.debug(f"Consumption\n{consumption.to_string()}")
 
             else:
                 _LOGGER.debug(
@@ -107,9 +123,46 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
         else:
             consumption["final"] = daily_consumption / 24
 
-    hass.data[DOMAIN]["consumption"] = consumption["final"]
+    hass.data[DOMAIN]["model"].consumption = consumption["final"]
 
     return True
+
+
+async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
+    config_entries = hass.config_entries.async_entries(SOLCAST_INTEGRATION)
+
+    # Log ConfigEntry contents
+    if config_entries:
+        # _LOGGER.debug("Solcast integration:")
+        entry = config_entries[0]
+        # log_config_entry(entry)
+
+        entity_registry = er.async_get(hass=hass)
+        solcast_entities = [
+            entity for entity in entity_registry.entities.values() if entity.config_entry_id == entry.entry_id
+        ]
+        forecast_entities = [entity for entity in solcast_entities if SOLCAST_PV_KEY in entity.entity_id]
+        forecast = []
+        for entity in forecast_entities:
+            forecast_period = entity.entity_id.split(SOLCAST_PV_KEY)[1][1:]
+            if forecast_period in SOLCAST_FORECAST_PERIODS:
+                state = hass.states.get(entity.entity_id)
+                if state is not None:
+                    forecast += state.attributes.get(SOLCAST_DETAILED_FORECAST_ATTRIBUTE, [])
+
+        solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start:end]
+        confidence_level = await get_value(hass, "SOLCAST_CONFIDENCE")
+        weights = cl_to_weights(confidence_level)
+        solcast["weighted"] = 0
+        for weight, col in zip(weights, SOLCAST_COLUMNS):
+            solcast["weighted"] += weight * solcast[col] * 1000
+        _LOGGER.debug(f"\n{solcast.to_string()}")
+    hass.data[DOMAIN]["model"].solar = solcast["weighted"]
+
+
+async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
+    _LOGGER.debug(hass.data[DOMAIN]["octopus_info"])
+    hass.data[DOMAIN]["model"].prices = await get_octopus_prices_from_api(hass, start, end)
 
 
 async def _get_hass_power_from_daily_kwh(hass, entity_id, days=DEFAULTS["HISTORY_DAYS"], freq=pd.Timedelta("30min")):

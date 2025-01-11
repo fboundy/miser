@@ -91,3 +91,11 @@ def get_entity_for_key(hass: HomeAssistant, key: str) -> str:
         if entity_id is not None:
             break
     return entity_id
+
+
+def log_config_entry(entry: ConfigEntry) -> None:
+    # Log ConfigEntry contents
+    _LOGGER.debug(f"ConfigEntry data: {entry.data}")
+    _LOGGER.debug(f"ConfigEntry options: {entry.options}")
+    _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
+    _LOGGER.debug(f"ConfigEntry title: {entry.title}")

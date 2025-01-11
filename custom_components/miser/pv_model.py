@@ -8,6 +8,12 @@ from .const import TIME_FORMAT, OPTIMISER_MAX_ITERS
 _LOGGER = logging.getLogger(__name__)
 
 
+def get_dt_hours(df: pd.DataFrame | pd.Series) -> pd.Series:
+    df = pd.DataFrame(df)
+    df["dt_hours"] = -df.index.diff(-1) / pd.Timedelta("60min")
+    return df["dt_hours"].ffill()
+
+
 class InverterModel:
     """Describes the inverter
 
@@ -86,16 +92,13 @@ class PVsystemModel:
         inverter: InverterModel,
         battery: BatteryModel,
         tz: str = "UTC",
-        debug_cat: list = [],
     ) -> None:
-        self.inverter = inverter
-        self.battery = battery
+        self._inverter = inverter
+        self._battery = battery
         self._tz = tz
-        self.prices = None
-        self.static_flows = None
-        self.flows = None
-        self.contract = None
-        self._debug_cat = debug_cat
+        self._slots = []
+        self.solar: pd.Series | None = None
+        self.consumption: pd.Series | None = None
 
     def __str__(self):
         pass
@@ -104,36 +107,33 @@ class PVsystemModel:
     def tz(self):
         return self._tz
 
-    def calculate_flows(self, slots=[], solar_id="solar", consumption_id="consumption", **kwargs):
-        solar = self.static_flows[solar_id]
-        consumption = self.static_flows[consumption_id]
+    @property
+    def flows(self):
+        df = pd.concat(self.solar, self.consumption)
+        df["dt_hours"] = get_dt_hours(df)
+        df["battery_grid_requirement"] = df["consumption"] - df["solar"]
+        df["forced"] = 0
+        df["battery_temp"] = df["consumption"] - df["solar"]
+        # forced_charge = pd.Series(index=df.index, data=0)
 
-        self.flows = self.static_flows.copy()
+        if len(self.slots) > 0:
+            timed_slot_flows = pd.Series(index=df.index, data=0)
 
-        battery_flows = solar - consumption
-        forced_charge = pd.Series(index=self.flows.index, data=0)
-
-        if len(slots) > 0:
-            timed_slot_flows = pd.Series(index=self.flows.index, data=0)
-
-            for t, c in slots:
+            for t, c in self.slots:
                 if not isnan(c):
                     timed_slot_flows.loc[t] += int(c)
 
             chg_mask = timed_slot_flows != 0
-            battery_flows[chg_mask] = timed_slot_flows[chg_mask]
-            forced_charge[chg_mask] = timed_slot_flows[chg_mask]
+            df["battery_temp"][chg_mask] = -timed_slot_flows[chg_mask]
+            df["forced"][chg_mask] = timed_slot_flows[chg_mask]
 
-        if self.soc_now is None:
-            chg = [self.initial_soc / 100 * self.battery.capacity]
-            freq = pd.infer_freq(self.static_flows.index) / pd.Timedelta(60, "minutes")
+        chg = [self.initial_soc / 100 * self.battery.capacity]
 
-        else:
-            chg = [self.soc_now[1] / 100 * self.battery.capacity]
-            freq = (self.soc_now[0] - self.flows.index[0]) / pd.Timedelta(60, "minutes")
+        for idx in df.index:
+            flow = df["battery_temp"].loc[idx]
+            dt_hours = df["dt_hours"].loc[idx]
 
-        for i, flow in enumerate(battery_flows):
-            if flow < 0:
+            if flow > 0:
                 flow = flow / self.inverter.inverter_efficiency
             else:
                 flow = flow * self.inverter.charger_efficiency
@@ -144,7 +144,7 @@ class PVsystemModel:
                         [
                             min(
                                 [
-                                    chg[-1] + flow * freq,
+                                    chg[-1] - flow * dt_hours,
                                     self.battery.capacity,
                                 ]
                             ),
@@ -154,31 +154,18 @@ class PVsystemModel:
                     1,
                 )
             )
-            if (self.soc_now is not None) and (i == 0):
-                freq = pd.infer_freq(self.static_flows.index) / pd.Timedelta(60, "minutes")
 
-        if self.soc_now is not None:
-            chg[0] = self.initial_soc / 100 * self.battery.capacity
-
-        self.flows["chg"] = chg[:-1]
-        self.flows["chg"] = self.flows["chg"].ffill()
-        self.flows["chg_end"] = chg[1:]
-        self.flows["chg_end"] = self.flows["chg_end"].bfill()
-        self.flows["battery"] = (pd.Series(chg).diff(-1) / freq)[:-1].to_list()
-        self.flows.loc[self.flows["battery"] > 0, "battery"] = (
-            self.flows["battery"] * self.inverter.inverter_efficiency
-        )
-        self.flows.loc[self.flows["battery"] < 0, "battery"] = self.flows["battery"] / self.inverter.charger_efficiency
-        self.flows["grid"] = -(solar - consumption + self.flows["battery"]).round(0)
-        self.flows["forced"] = forced_charge
-        self.flows["soc"] = (self.flows["chg"] / self.battery.capacity) * 100
-        self.flows["soc_end"] = (self.flows["chg_end"] / self.battery.capacity) * 100
-
-        if self.prices is not None:
-            self.flows = pd.concat(
-                [self.prices, consumption, self.flows],
-                axis=1,
-            )
+        df["chg"] = chg[:-1]
+        df["chg"] = df["chg"].ffill()
+        df["chg_end"] = chg[1:]
+        df["chg_end"] = df["chg_end"].bfill()
+        df["battery"] = pd.Series(chg).diff(-1)[:-1].to_list()
+        df["battery"] /= df["dt_hours"]
+        df.loc[df["battery"] > 0, "battery"] = df["battery"] * self.inverter.inverter_efficiency
+        df.loc[df["battery"] < 0, "battery"] = df["battery"] / self.inverter.charger_efficiency
+        df["grid"] = (df["battery_grid_requirement"] - df["battery"]).round(0)
+        df["soc"] = (df["chg"] / self.battery.capacity) * 100
+        df["soc_end"] = (df["chg_end"] / self.battery.capacity) * 100
 
     @property
     def net_cost(self):

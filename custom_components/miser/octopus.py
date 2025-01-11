@@ -9,6 +9,9 @@ from homeassistant.loader import async_get_integration
 
 from .const import IMPORT_EXPORT, OCTOPUS_ACCOUNT_URL
 
+
+from .utils import log_config_entry
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -53,10 +56,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
     if config_entries:
         _LOGGER.debug("Octopus Energy integration:")
         entry = config_entries[0]
-        _LOGGER.debug(f"  ConfigEntry data: {entry.data}")
-        _LOGGER.debug(f"  ConfigEntry options: {entry.options}")
-        _LOGGER.debug(f"  ConfigEntry unique ID: {entry.unique_id}")
-        _LOGGER.debug(f"  ConfigEntry title: {entry.title}")
+        log_config_entry(entry)
 
         config_keys = ["account_id", "api_key"]
         octopus_info = {key: entry.data.get(key, None) for key in config_keys}
@@ -73,6 +73,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
 
             for entity in current_day_entities:
                 state = hass.states.get(entity.entity_id)
+                _LOGGER.debug("entity.entity_id")
                 if "xport" in state.attributes.get("friendly_name", ""):
                     direction = "export"
                 else:

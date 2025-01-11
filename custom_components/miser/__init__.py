@@ -18,7 +18,7 @@ from .const import (
     PLATFORMS,
 )
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data
-from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity
+from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity, log_config_entry
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
 from .optimiser import optimise
 
@@ -77,7 +77,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.debug(f"UUID: {uuid}")
     hass.data[DOMAIN] = {"uuid": uuid}
 
-    _log_config_entry(entry)
+    log_config_entry(entry)
 
     for entity_type in ENTITY_TYPES:
         hass.data[DOMAIN][entity_type] = {}
@@ -105,22 +105,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     else:
         _log_all_entities(hass)
-        await _load_pv_system_model(hass)
+        pv_model = await _load_pv_system_model(hass)
 
         # Load the tariffs
         # Check if we are using the OE integration:
         octopus = await _get_octopus_info(hass, entry)
 
-    if octopus:
-        _LOGGER.debug(hass.data[DOMAIN].get("octopus_info"))
-        # Run the optimiser for the first time
-        await optimise(hass=hass)
+    while not (pv_model and octopus):
+        asyncio.sleep(1)
+        _LOGGER.debug(f"Waiting for PV model and tariff info.")
 
-        # Set up the schedule for the optimise
-        await _schedule_optimiser(hass)
+    _LOGGER.debug(hass.data[DOMAIN].get("octopus_info"))
+    # Run the optimiser for the first time
+    await optimise(hass)
 
-        # Set up callbacks for when the config entities change
-        await _setup_config_callbacks(hass)
+    # Set up the schedule for the optimise
+    await _schedule_optimiser(hass)
+
+    # Set up callbacks for when the config entities change
+    await _setup_config_callbacks(hass)
 
     return True
 

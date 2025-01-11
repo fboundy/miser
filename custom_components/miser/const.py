@@ -74,6 +74,20 @@ PV_SYSTEM_ENTITIES = [
 
 MODEL_DURATION_HOURS = 48
 MODEL_PERIOD_MINUTES = 30
+MODEL_COLUMNS = [
+    "dt_hours",
+    "solar",
+    "consumption",
+    "battery",
+    "grid",
+    "charge_start",
+    "charge_end",
+    "SOC_start",
+    "SOC_end",
+    "import_price",
+    "export_price",
+    "net_cost",
+]
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
 TIME_FORMAT = "%d/%m %H:%M %Z"
@@ -81,6 +95,12 @@ TIME_FORMAT = "%d/%m %H:%M %Z"
 IMPORT_EXPORT = ["import", "export"]
 
 OCTOPUS_ACCOUNT_URL = "https://api.octopus.energy/v1/accounts/"
+
+SOLCAST_INTEGRATION = "solcast_solar"
+SOLCAST_PV_KEY = "pv_forecast_forecast"
+SOLCAST_DETAILED_FORECAST_ATTRIBUTE = "detailedForecast"
+SOLCAST_FORECAST_PERIODS = ["today", "tomorrow"] + [f"day_{i}" for i in range(2, 8)]
+SOLCAST_COLUMNS = ["pv_estimate", "pv_estimate10", "pv_estimate90"]
 
 CONSUMPTION_SHAPE = [
     {"hours": 00.00, "consumption": 300},
