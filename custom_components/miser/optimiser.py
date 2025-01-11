@@ -1,14 +1,14 @@
 import logging
 import pandas as pd
 from numpy import arange
-from datetime import datetime, timedelta
+from datetime import datetime
 from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import history
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util.dt import parse_datetime as dt_util
 
 from .const import (
     DOMAIN,
+    IMPORT_EXPORT,
     DATETIME_FORMAT_LONG,
     MODEL_DURATION_HOURS,
     MODEL_PERIOD_MINUTES,
@@ -21,8 +21,7 @@ from .const import (
     SOLCAST_FORECAST_PERIODS,
     SOLCAST_COLUMNS,
 )
-from .utils import get_value, get_entity_for_key, log_config_entry
-from .octopus import get_octopus_prices_from_api
+from .utils import get_value, get_entity_for_key
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 
@@ -53,10 +52,11 @@ async def optimise(hass: HomeAssistant, now=None):
     _LOGGER.debug(f"Model Start: {start.strftime(DATETIME_FORMAT_LONG)}")
     _LOGGER.debug(f"Model End  : {end.strftime(DATETIME_FORMAT_LONG)}")
 
-    model.flows = pd.DataFrame(index=index, data={col: 0 for col in MODEL_COLUMNS})
     await _get_consumption(hass=hass, start=start, end=end, freq=freq)
     await _get_solcast(hass=hass, start=start, end=end, freq=freq)
     await _get_prices(hass=hass, start=start, end=end, freq=freq)
+    merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
+    _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
@@ -97,7 +97,7 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
                 consumption["final"] = consumption["mean"] * (1 - weekday_weighting / 100) + consumption["dow"] * (
                     weekday_weighting / 100
                 )
-                _LOGGER.debug(f"Consumption\n{consumption.to_string()}")
+                # _LOGGER.debug(f"Consumption\n{consumption.to_string()}")
 
             else:
                 _LOGGER.debug(
@@ -123,7 +123,7 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
         else:
             consumption["final"] = daily_consumption / 24
 
-    hass.data[DOMAIN]["model"].consumption = consumption["final"]
+    hass.data[DOMAIN]["model"].consumption = consumption["final"].rename("consumption")
 
     return True
 
@@ -156,13 +156,20 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
         solcast["weighted"] = 0
         for weight, col in zip(weights, SOLCAST_COLUMNS):
             solcast["weighted"] += weight * solcast[col] * 1000
-        _LOGGER.debug(f"\n{solcast.to_string()}")
-    hass.data[DOMAIN]["model"].solar = solcast["weighted"]
+        # _LOGGER.debug(f"\n{solcast.to_string()}")
+    hass.data[DOMAIN]["model"].solar = solcast["weighted"].rename("solar")
 
 
 async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
     _LOGGER.debug(hass.data[DOMAIN]["octopus_info"])
-    hass.data[DOMAIN]["model"].prices = await get_octopus_prices_from_api(hass, start, end)
+    price = {}
+    for direction in IMPORT_EXPORT:
+        tariff = hass.data[DOMAIN]["tariffs"].get(direction, None)
+        if tariff is not None:
+            price[direction] = await tariff.to_df(start=start, end=end)
+            price[direction].rename(columns={"unit": direction}, inplace=True)
+            # _LOGGER.debug(f"\n{price[direction]}")
+    hass.data[DOMAIN]["model"].prices = pd.concat(price.values(), axis=1)
 
 
 async def _get_hass_power_from_daily_kwh(hass, entity_id, days=DEFAULTS["HISTORY_DAYS"], freq=pd.Timedelta("30min")):
@@ -174,7 +181,6 @@ async def _get_hass_power_from_daily_kwh(hass, entity_id, days=DEFAULTS["HISTORY
         y = -pd.concat([x.resample("1s").interpolate().resample(freq).asfreq(), x.iloc[-1:]]).diff(-1)
         dt = y.index.diff().total_seconds() / pd.Timedelta("60min").total_seconds() / 1000
         df = y[1:-1] / dt[2:]
-
     return df
 
 

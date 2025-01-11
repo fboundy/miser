@@ -17,7 +17,7 @@ from .const import (
     ENTITY_TYPES,
     PLATFORMS,
 )
-from .octopus import get_octopus_info_from_account, get_octopus_integration_data
+from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
 from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity, log_config_entry
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
 from .optimiser import optimise
@@ -146,6 +146,9 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
         _LOGGER.debug(f"No octopus data found. Tariff source: {entry.options.get('tariff_source', '')}")
 
     hass.data[DOMAIN]["octopus_info"] = octopus_info
+    hass.data[DOMAIN]["tariffs"] = {}
+    for direction, tariff_code in octopus_info.get("tariff_code", {}).items():
+        hass.data[DOMAIN]["tariffs"][direction] = await Tariff.create(tariff_code, export=(direction == "export"))
 
     return len(octopus_info) > 0
 
@@ -304,11 +307,3 @@ def _log_all_entities(hass: HomeAssistant) -> None:
 
             _LOGGER.debug(str_log)
         _LOGGER.debug("")
-
-
-def _log_config_entry(entry: ConfigEntry) -> None:
-    # Log ConfigEntry contents
-    _LOGGER.debug(f"ConfigEntry data: {entry.data}")
-    _LOGGER.debug(f"ConfigEntry options: {entry.options}")
-    _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
-    _LOGGER.debug(f"ConfigEntry title: {entry.title}")
