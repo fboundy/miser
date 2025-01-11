@@ -150,7 +150,7 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
                 if state is not None:
                     forecast += state.attributes.get(SOLCAST_DETAILED_FORECAST_ATTRIBUTE, [])
 
-        solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start:end]
+        solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start : end - freq]
         confidence_level = await get_value(hass, "SOLCAST_CONFIDENCE")
         weights = cl_to_weights(confidence_level)
         solcast["weighted"] = 0
@@ -166,7 +166,7 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     for direction in IMPORT_EXPORT:
         tariff = hass.data[DOMAIN]["tariffs"].get(direction, None)
         if tariff is not None:
-            price[direction] = await tariff.to_df(start=start, end=end)
+            price[direction] = await tariff.to_df(start=start, end=end - freq)
             price[direction].rename(columns={"unit": direction}, inplace=True)
             # _LOGGER.debug(f"\n{price[direction]}")
     hass.data[DOMAIN]["model"].prices = pd.concat(price.values(), axis=1)
