@@ -16,6 +16,16 @@ from .const import (
     INVERTER_DEFS,
     ENTITY_TYPES,
     PLATFORMS,
+    CONF_BATTERY_CAPACITY,
+    MODEL_BATTERY_MINIMUM_SOC,
+    CONF_BATTERY_CURRENT_LIMIT,
+    CONF_INVERTER_LOSS,
+    CONF_CHARGER_EFFICIENCY,
+    CONF_CHARGER_POWER,
+    CONF_INVERTER_EFFICIENCY,
+    CONF_INVERTER_POWER,
+    CONF_OPTIMISER_FREQUENCY,
+    MODEL_ENTITIES_AVAILABLE_WAIT,
 )
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
 from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity, log_config_entry
@@ -116,8 +126,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.debug(f"Waiting for PV model and tariff info.")
 
     _LOGGER.debug(hass.data[DOMAIN].get("octopus_info"))
-    # Run the optimiser for the first time
-    await optimise(hass)
 
     # Set up the schedule for the optimise
     await _schedule_optimiser(hass)
@@ -194,9 +202,10 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             else:
                 str_log += f"index: {index:4d}"
-                hass.data[DOMAIN][entity_type][key] = integration_entities[index].entity_id
+                entity_id = integration_entities[index].entity_id
+                hass.data[DOMAIN][entity_type][key] = entity_id
 
-            _LOGGER.debug(str_log)
+            # _LOGGER.debug(str_log)
 
     return success
 
@@ -205,8 +214,14 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Read the inverter model parameters from the relevant config entities
     _LOGGER.debug("Loading PV system model")
     kw_inverter = {
-        kw: await get_value(hass, kw.upper())
-        for kw in ["inverter_efficiency", "charger_efficiency", "inverter_loss", "inverter_power", "charger_power"]
+        kw: await get_value(hass, kw)
+        for kw in [
+            CONF_INVERTER_EFFICIENCY,
+            CONF_CHARGER_EFFICIENCY,
+            CONF_INVERTER_POWER,
+            CONF_CHARGER_POWER,
+            CONF_INVERTER_LOSS,
+        ]
     }
 
     # Load the inverter model
@@ -214,7 +229,8 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
 
     # Read the battery model parameters from the relevant config entities
     kw_battery = {
-        kw: await get_value(hass, f"battery_{kw}".upper()) for kw in ["capacity", "minimum_soc", "current_limit"]
+        kw: await get_value(hass, kw)
+        for kw in [CONF_BATTERY_CAPACITY, CONF_BATTERY_CURRENT_LIMIT, MODEL_BATTERY_MINIMUM_SOC]
     }
 
     # Load the battery model
@@ -229,7 +245,7 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
 
 
 async def _schedule_optimiser(hass):
-    optimiser_minutes = await get_value(hass=hass, key="OPTIMISER_FREQUENCY", default_value=10)
+    optimiser_minutes = await get_value(hass=hass, key=CONF_OPTIMISER_FREQUENCY, default_value=10)
     _LOGGER.debug(f"Optimiser frequency: {optimiser_minutes} minutes")
     optimiser_interval = timedelta(minutes=optimiser_minutes)
 
@@ -239,26 +255,41 @@ async def _schedule_optimiser(hass):
             hass.data[DOMAIN]["optimiser_schedule"]()
             _LOGGER.debug("Previous schedule cancelled.")
 
-        # Calculate the next aligned run time
+        # Get the current time
         now = dt_util.utcnow()
-        next_run = now.replace(second=0, microsecond=0) + (
+
+        # Calculate the next aligned run time
+        aligned_next_run = now.replace(second=0, microsecond=0) + (
             optimiser_interval - timedelta(minutes=now.minute % (optimiser_interval.total_seconds() // 60))
         )
 
-        _LOGGER.debug(f"Scheduling _optimise to start at {next_run} and run every {optimiser_interval}.")
+        # Add a delay for the initial run (2 minutes from now)
+        initial_delay = MODEL_ENTITIES_AVAILABLE_WAIT  # 2 minutes in seconds
+        _LOGGER.debug(f"Initial run of _optimise scheduled in {initial_delay} seconds.")
 
-        # Define a wrapper function to schedule the recurring interval after the first run
-        async def first_run():
+        # Define a wrapper function for the initial run
+        async def initial_run():
             await optimise(hass)
+            _LOGGER.debug("Initial run of _optimise completed.")
+
+            # Calculate the next aligned run time after the initial run
+            now = dt_util.utcnow()
+            next_run = aligned_next_run
+            if now >= aligned_next_run:
+                next_run += (
+                    optimiser_interval  # Align to the next interval if the initial run is past the aligned time
+                )
+
+            _LOGGER.debug(f"Next aligned run of _optimise scheduled at {next_run}.")
+
+            # Schedule the recurring runs
             hass.data[DOMAIN]["optimiser_schedule"] = async_track_time_interval(
                 hass, partial(optimise, hass), optimiser_interval
             )
             _LOGGER.debug("Recurring async_track_time_interval successfully set up.")
 
-        # Schedule the first run at the next aligned time
-        delay = (next_run - now).total_seconds()
-        hass.loop.call_later(delay, lambda: hass.async_create_task(first_run()))
-        _LOGGER.debug(f"First run of _optimise scheduled in {delay} seconds.")
+        # Schedule the initial run after 2 minutes
+        hass.loop.call_later(initial_delay, lambda: hass.async_create_task(initial_run()))
 
     except Exception as e:
         _LOGGER.error(f"Failed to set up _schedule_optimiser: {e}")
@@ -278,7 +309,7 @@ async def _state_change_callback(hass, entity_id, old_state, new_state):
     )
 
     key = get_key_for_entity(hass=hass, entity_id=entity_id)
-    if key == "OPTIMISER_FREQUENCY":
+    if key == CONF_OPTIMISER_FREQUENCY:
         await optimise(hass=hass)
         _LOGGER.debug("Reset optimiser frequency")
         await _schedule_optimiser(hass)
@@ -296,12 +327,14 @@ def _log_all_entities(hass: HomeAssistant) -> None:
         _LOGGER.debug(f"{entity_type}:")
         _LOGGER.debug(f"{'-'*(len(entity_type)+1)}")
         for entity in hass.data[DOMAIN][entity_type]:
+            entity_id = hass.data[DOMAIN][entity_type].get(entity, None)
             str_log = f"{entity:35s}:"
-            if hass.data[DOMAIN][entity_type][entity] is not None:
-                try:
-                    str_log += f"{hass.data[DOMAIN][entity_type][entity].domain} {hass.data[DOMAIN][entity_type][entity].platform} {hass.data[DOMAIN][entity_type][entity].unique_id}"
-                except:
-                    str_log += f"{hass.data[DOMAIN][entity_type][entity]}"
+            if entity_id is not None:
+                state = hass.states.get(entity_id)
+                if state is not None:
+                    str_log += f"{entity_id:35s} {state.state}"
+                else:
+                    str_log += f"{entity_id:35s} <=== NONE!"
             else:
                 str_log += f"<=== MISSING!"
 

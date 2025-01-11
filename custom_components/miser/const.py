@@ -32,6 +32,9 @@ ENTITY_TYPES = [
 PLATFORMS = ["number", "switch"]
 
 OPTIMISER_MAX_ITERS = 3
+OPTIMISER_HIGH_COST_MAX_ITERS = 200
+
+UNAVAILABLE_UNKNOWN = ["unavailable", "unknown"]
 
 # Configuration keys
 CONF_BATTERY_CAPACITY = "battery_capacity"
@@ -41,53 +44,90 @@ CONF_CHARGER_POWER = "charger_power"
 CONF_INVERTER_EFFICIENCY = "inverter_efficiency"
 CONF_CHARGER_EFFICIENCY = "charger_efficiency"
 CONF_INVERTER_LOSS = "inverter_loss"
+CONF_BATTERY_MINIMUM_SOC = "battery_minimum_soc"
+CONF_USE_CONSUMPTION_HISTORY = "use_consumption_history"
+CONF_HISTORY_DAYS = "history_days"
+CONF_WEEKDAY_WEIGHTING = "weekday_weighting"
+CONF_LOAD_MARGIN = "load_margin"
+CONF_SHAPE_CONSUMPTION = "shape_consumption"
+CONF_DAILY_CONSUMPTION_KWH = "daily_consumption_kwh"
+CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
+CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
+CONF_POWER_RESOLUTION = "power_resolution"
+CONF_SLEEP_SOC = "sleep_soc"
+CONF_USE_SOLAR = "use_solar"
+CONF_READ_ONLY = "read_only"
+CONF_INCLUDE_EXPORT = "include_export"
+CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 
 # Default values
 DEFAULTS = {
-    "BATTERY_CAPACITY": 10000,  # Wh
-    "BATTERY_CURRENT_LIMIT": 100,  # A
-    "INVERTER_POWER": 3600,  # W
-    "CHARGER_POWER": 3000,  # W
-    "INVERTER_EFFICIENCY": 97,  # Percent
-    "CHARGER_EFFICIENCY": 91,  # Percent
-    "INVERTER_LOSS": 100,  # W
-    "BATTERY_MINIMUM_SOC": 15,  # %
-    "USE_CONSUMPTION": True,
-    "HISTORY_DAYS": 7,
-    "WEEKDAY_WEIGHTING": 50,
-    "LOAD_MARGIN": 10,
-    "SHAPE_CONSUMPTION": True,
-    "DAILY_CONSUMPTION_KWH": 17,
-    "OPTIMISER_FREQUENCY": 10,
+    CONF_BATTERY_CAPACITY: 10000,  # Wh
+    CONF_BATTERY_CURRENT_LIMIT: 100,  # A
+    CONF_INVERTER_POWER: 3600,  # W
+    CONF_CHARGER_POWER: 3000,  # W
+    CONF_INVERTER_EFFICIENCY: 97,  # Percent
+    CONF_CHARGER_EFFICIENCY: 91,  # Percent
+    CONF_INVERTER_LOSS: 100,  # W
+    CONF_BATTERY_MINIMUM_SOC: 15,  # %
+    CONF_USE_CONSUMPTION_HISTORY: True,
+    CONF_HISTORY_DAYS: 7,
+    CONF_WEEKDAY_WEIGHTING: 50,
+    CONF_LOAD_MARGIN: 10,
+    CONF_SHAPE_CONSUMPTION: True,
+    CONF_DAILY_CONSUMPTION_KWH: 17,
+    CONF_OPTIMISER_FREQUENCY: 10,
+    CONF_SOLCAST_CONFIDENCE: 50,
+    CONF_POWER_RESOLUTION: 100,
+    CONF_SLEEP_SOC: 0,
+    CONF_USE_SOLAR: True,
+    CONF_READ_ONLY: True,
+    CONF_INCLUDE_EXPORT: True,
+    CONF_OPTIMISE_DISCHARGING: True,
 }
 
 PV_SYSTEM_ENTITIES = [
-    "BATTERY_CAPACITY",
-    "BATTERY_CURRENT_LIMIT",
-    "INVERTER_POWER",
-    "CHARGER_POWER",
-    "INVERTER_EFFICIENCY",
-    "CHARGER_EFFICIENCY",
-    "INVERTER_LOSS",
-    "BATTERY_MINIMUM_SOC",
+    CONF_BATTERY_CAPACITY,
+    CONF_BATTERY_CURRENT_LIMIT,
+    CONF_INVERTER_POWER,
+    CONF_CHARGER_POWER,
+    CONF_INVERTER_EFFICIENCY,
+    CONF_CHARGER_EFFICIENCY,
+    CONF_INVERTER_LOSS,
+    CONF_BATTERY_MINIMUM_SOC,
 ]
 
+MODEL_BATTERY_SOC = "battery_soc"
+MODEL_GRID_IMPORT_TODAY = "grid_import_today"
+MODEL_GRID_EXPORT_TODAY = "grid_export_today"
+MODEL_CONSUMPTION_TODAY = "house_load_today"
+MODEL_BATTERY_MINIMUM_SOC = "battery_minimum_soc"
 MODEL_DURATION_HOURS = 48
 MODEL_PERIOD_MINUTES = 30
-MODEL_COLUMNS = [
-    "dt_hours",
-    "solar",
-    "consumption",
-    "battery",
-    "grid",
-    "charge_start",
-    "charge_end",
-    "SOC_start",
-    "SOC_end",
-    "import_price",
-    "export_price",
-    "net_cost",
-]
+MODEL_ENTITIES_AVAILABLE_WAIT = 60
+
+CONTROL_BATTERY_VOLTAGE = "battery_voltage"
+CONTROL_TIMED_CHARGE_ON = "timed_charge_enable"
+CONTROL_TIMED_CHARGE_START_HOURS = "timed_charge_start_hours"
+CONTROL_TIMED_CHARGE_START_MINUTES = "timed_charge_start_minutes"
+CONTROL_TIMED_CHARGE_END_HOURS = "timed_charge_end_hours"
+CONTROL_TIMED_CHARGE_END_MINUTES = "timed_charge_end_minutes"
+CONTROL_TIMED_CHARGE_CURRENT = "timed_charge_current"
+CONTROL_TIMED_CHARGE_SOC = "timed_charge_soc"
+CONTROL_TIMED_DISCHARGE_ON = "timed_discharge_slot_enable"
+CONTROL_TIMED_DISCHARGE_START_HOURS = "timed_discharge_start_hours"
+CONTROL_TIMED_DISCHARGE_START_MINUTES = "timed_discharge_start_minutes"
+CONTROL_TIMED_DISCHARGE_END_HOURS = "timed_discharge_end_hours"
+CONTROL_TIMED_DISCHARGE_END_MINUTES = "timed_discharge_end_minutes"
+CONTROL_TIMED_DISCHARGE_CURRENT = "timed_discharge_current"
+CONTROL_TIMED_DISCHARGE_SOC = "timed_discharge_soc"
+CONTROL_TIMED_CHARGE_BUTTON = "update_charge_times"
+CONTROL_TIMED_DISCHARGE_BUTTON = "update_discharge_times"
+CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON = "update_charge_discharge_times"
+CONTROL_INVERTER_MODE = "energy_storage_control_switch"
+CONTROL_BACKUP_MODE_SOC = "backup_mode_soc"
+CONTROL_PASS_THREHOLD = 4
+CONTROL_SLOT_THRESHOLD = 1
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
 TIME_FORMAT = "%d/%m %H:%M %Z"
@@ -102,7 +142,6 @@ OCTOPUS_RATE_URLS = {
     "night": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/night-unit-rates/",
     "unit": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/standard-unit-rates/",
 }
-
 OCTOPUS_PRODUCT_PARAMS = {
     "page_size": 500,
     "order_by": "period",
@@ -136,124 +175,127 @@ EMPTY_ATTR: dict[str, Any] = {
 
 # Switch entities
 SWITCH_ENTITIES = {
-    "Read only": {"default": False},
-    "Include export": {"default": False},
-    "Optimise discharging": {"default": False},
-    "Use solar": {"default": True},
-    "Use consumption history": {"default": DEFAULTS["USE_CONSUMPTION"]},
-    "Shape consumption": {"default": DEFAULTS["SHAPE_CONSUMPTION"]},
+    conf: {"default": DEFAULTS[conf]}
+    for conf in [
+        CONF_USE_CONSUMPTION_HISTORY,
+        CONF_SHAPE_CONSUMPTION,
+        CONF_USE_SOLAR,
+        CONF_READ_ONLY,
+        CONF_INCLUDE_EXPORT,
+        CONF_OPTIMISE_DISCHARGING,
+    ]
 }
 
 
 # Number entities
 NUMBER_ENTITIES = {
-    "Optimiser frequency": {
+    CONF_OPTIMISER_FREQUENCY: {
         "min": 5,
         "max": 30,
         "step": 5,
-        "default": DEFAULTS["OPTIMISER_FREQUENCY"],
+        "default": DEFAULTS[CONF_OPTIMISER_FREQUENCY],
     },
-    "Solcast confidence": {
+    CONF_SOLCAST_CONFIDENCE: {
         "min": 10,
         "max": 90,
         "step": 10,
-        "default": 50,
+        "default": DEFAULTS[CONF_SOLCAST_CONFIDENCE],
     },
-    "History days": {
+    CONF_HISTORY_DAYS: {
         "min": 1,
         "max": 14,
         "step": 1,
-        "default": DEFAULTS["HISTORY_DAYS"],
+        "default": DEFAULTS[CONF_HISTORY_DAYS],
     },
-    "Load margin": {
+    CONF_LOAD_MARGIN: {
         "min": 0,
         "max": 25,
         "step": 5,
-        "default": DEFAULTS["LOAD_MARGIN"],
+        "default": DEFAULTS[CONF_LOAD_MARGIN],
         "unit": PERCENTAGE,
     },
-    "Weekday weighting": {
+    CONF_WEEKDAY_WEIGHTING: {
         "min": 0,
         "max": 100,
         "step": 10,
-        "default": DEFAULTS["WEEKDAY_WEIGHTING"],
+        "default": DEFAULTS[CONF_WEEKDAY_WEIGHTING],
         "unit": PERCENTAGE,
     },
-    "Power resolution": {
+    CONF_POWER_RESOLUTION: {
         "min": 0,
         "max": 500,
         "step": 100,
-        "default": 100,
+        "default": DEFAULTS[CONF_POWER_RESOLUTION],
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "Sleep SOC": {
+    CONF_SLEEP_SOC: {
         "min": 0,
         "max": 20,
         "step": 1,
-        "default": 0,
+        "default": DEFAULTS[CONF_SLEEP_SOC],
         "unit": PERCENTAGE,
         "device_class": SensorDeviceClass.BATTERY,
     },
     # Configurable battery/inverter parameters
-    "Battery capacity": {
+    CONF_BATTERY_CAPACITY: {
         "min": 1000,
         "max": 20000,
         "step": 100,
-        "default": DEFAULTS["BATTERY_CAPACITY"],
+        "default": DEFAULTS[CONF_BATTERY_CAPACITY],
         "unit": UnitOfEnergy.WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
     },
-    "Battery current limit": {
+    CONF_BATTERY_CURRENT_LIMIT: {
         "min": 0,
         "max": 400,
         "step": 10,
-        "default": DEFAULTS["BATTERY_CURRENT_LIMIT"],
+        "default": DEFAULTS[CONF_BATTERY_CURRENT_LIMIT],
         "unit": UnitOfElectricCurrent.AMPERE,
         "device_class": SensorDeviceClass.CURRENT,
     },
-    "Inverter power": {
+    CONF_INVERTER_POWER: {
         "min": 1000,
         "max": 10000,
         "step": 100,
-        "default": DEFAULTS["INVERTER_POWER"],
+        "default": DEFAULTS[CONF_INVERTER_POWER],
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "Charger power": {
+    CONF_CHARGER_POWER: {
         "min": 1000,
         "max": 5000,
         "step": 100,
-        "default": DEFAULTS["CHARGER_POWER"],
+        "default": DEFAULTS[CONF_CHARGER_POWER],
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    "Inverter efficiency": {
+    CONF_INVERTER_EFFICIENCY: {
         "min": 50,
         "max": 100,
         "step": 1,
-        "default": DEFAULTS["INVERTER_EFFICIENCY"],
+        "default": DEFAULTS[CONF_INVERTER_EFFICIENCY],
         "unit": PERCENTAGE,
     },
-    "Charger efficiency": {
+    CONF_CHARGER_EFFICIENCY: {
         "min": 50,
         "max": 100,
         "step": 1,
-        "default": DEFAULTS["CHARGER_EFFICIENCY"],
+        "default": DEFAULTS[CONF_CHARGER_EFFICIENCY],
         "unit": PERCENTAGE,
     },
-    "Inverter loss": {
+    CONF_INVERTER_LOSS: {
         "min": 0,
         "max": 250,
         "step": 10,
-        "default": DEFAULTS["INVERTER_LOSS"],
+        "default": DEFAULTS[CONF_INVERTER_LOSS],
         "unit": UnitOfPower.WATT,
     },
-    "Daily consumption": {
+    CONF_DAILY_CONSUMPTION_KWH: {
         "min": 0,
         "max": 30,
         "step": 1,
-        "default": DEFAULTS["DAILY_CONSUMPTION_KWH"],
+        "default": DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
     },
 }
@@ -293,43 +335,43 @@ class MiserEntity(RestoreEntity):
 
 INVERTER_DEFS = {
     "solis": {
+        "solax_modbus": {
+            "model_entities": {
+                MODEL_BATTERY_SOC: "sensor.{device_name}_battery_soc",
+                MODEL_GRID_IMPORT_TODAY: "sensor.{device_name}_grid_import_today",
+                MODEL_GRID_EXPORT_TODAY: "sensor.{device_name}_grid_export_today",
+                MODEL_CONSUMPTION_TODAY: "sensor.{device_name}_house_load_today",
+                MODEL_BATTERY_MINIMUM_SOC: "number.{device_name}_battery_minimum_soc",
+            },
+            "control_entities": {
+                CONTROL_BATTERY_VOLTAGE: "sensor.{device_name}_battery_voltage",
+                CONTROL_TIMED_CHARGE_ON: "switch.{device_name}_timed_charge_slot_1_enable",
+                CONTROL_TIMED_CHARGE_START_HOURS: "number.{device_name}_timed_charge_start_hours",
+                CONTROL_TIMED_CHARGE_START_MINUTES: "number.{device_name}_timed_charge_start_minutes",
+                CONTROL_TIMED_CHARGE_END_HOURS: "number.{device_name}_timed_charge_end_hours",
+                CONTROL_TIMED_CHARGE_END_MINUTES: "number.{device_name}_timed_charge_end_minutes",
+                CONTROL_TIMED_CHARGE_CURRENT: "number.{device_name}_timed_charge_current",
+                CONTROL_TIMED_CHARGE_SOC: "number.{device_name}_timed_charge_soc",
+                CONTROL_TIMED_DISCHARGE_ON: "switch.{device_name}_timed_discharge_slot_1_enable",
+                CONTROL_TIMED_DISCHARGE_START_HOURS: "number.{device_name}_timed_discharge_start_hours",
+                CONTROL_TIMED_DISCHARGE_START_MINUTES: "number.{device_name}_timed_discharge_start_minutes",
+                CONTROL_TIMED_DISCHARGE_END_HOURS: "number.{device_name}_timed_discharge_end_hours",
+                CONTROL_TIMED_DISCHARGE_END_MINUTES: "number.{device_name}_timed_discharge_end_minutes",
+                CONTROL_TIMED_DISCHARGE_CURRENT: "number.{device_name}_timed_discharge_current",
+                CONTROL_TIMED_DISCHARGE_SOC: "number.{device_name}_timed_discharge_soc",
+                CONTROL_TIMED_CHARGE_BUTTON: "button.{device_name}_update_charge_times",
+                CONTROL_TIMED_DISCHARGE_BUTTON: "button.{device_name}_update_discharge_times",
+                CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON: "button.{device_name}_update_charge_discharge_times",
+                CONTROL_INVERTER_MODE: "select.{device_name}_energy_storage_control_switch",
+                CONTROL_BACKUP_MODE_SOC: "number.{device_name}_backup_mode_soc",
+            },
+        },
         "solis": {
             "model_entities": {
                 "BATTERY_SOC": "sensor.{device_name}_battery_soc",
                 "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
                 "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
                 "CONSUMPTION_TODAY": "sensor.{device_name}_consumption_today",
-            },
-        },
-        "solax_modbus": {
-            "model_entities": {
-                "BATTERY_SOC": "sensor.{device_name}_battery_soc",
-                "GRID_IMPORT_TODAY": "sensor.{device_name}_grid_import_today",
-                "GRID_EXPORT_TODAY": "sensor.{device_name}_grid_export_today",
-                "CONSUMPTION_TODAY": "sensor.{device_name}_house_load_today",
-                "BATTERY_MINIMUM_SOC": "number.{device_name}_battery_minimum_soc",
-            },
-            "control_entities": {
-                "BATTERY_VOLTAGE": "sensor.{device_name}_battery_voltage",
-                "TIMED_CHARGE_ON": "switch.{device_name}_timed_charge_slot_1_enable",
-                "TIMED_CHARGE_START_HOURS": "number.{device_name}_timed_charge_start_hours",
-                "TIMED_CHARGE_START_MINUTES": "number.{device_name}_timed_charge_start_minutes",
-                "TIMED_CHARGE_END_HOURS": "number.{device_name}_timed_charge_end_hours",
-                "TIMED_CHARGE_END_MINUTES": "number.{device_name}_timed_charge_end_minutes",
-                "TIMED_CHARGE_CURRENT": "number.{device_name}_timed_charge_current",
-                "TIMED_CHARGE_SOC": "number.{device_name}_timed_charge_soc",
-                "TIMED_DISCHARGE_ON": "switch.{device_name}_timed_discharge_slot_1_enable",
-                "TIMED_DISCHARGE_START_HOURS": "number.{device_name}_timed_discharge_start_hours",
-                "TIMED_DISCHARGE_START_MINUTES": "number.{device_name}_timed_discharge_start_minutes",
-                "TIMED_DISCHARGE_END_HOURS": "number.{device_name}_timed_discharge_end_hours",
-                "TIMED_DISCHARGE_END_MINUTES": "number.{device_name}_timed_discharge_end_minutes",
-                "TIMED_DISCHARGE_CURRENT": "number.{device_name}_timed_discharge_current",
-                "TIMED_DISCHARGE_SOC": "number.{device_name}_timed_discharge_soc",
-                "TIMED_CHARGE_BUTTON": "button.{device_name}_update_charge_times",
-                "TIMED_DISCHARGE_BUTTON": "button.{device_name}_update_discharge_times",
-                "TIMED_CHARGE_DISCHARGE_BUTTON": "button.{device_name}_update_charge_discharge_times",
-                "INVERTER_MODE": "select.{device_name}_energy_storage_control_switch",
-                "BACKUP_MODE_SOC": "number.{device_name}_backup_mode_soc",
             },
         },
         "solisconnect": {

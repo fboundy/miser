@@ -5,7 +5,7 @@ from homeassistant.helpers import entity_registry as er
 
 from numpy import nan
 
-from .const import DOMAIN, NULL_STATES, SWITCH_STATES, ENTITY_TYPES, DEFAULTS
+from .const import DOMAIN, NULL_STATES, SWITCH_STATES, ENTITY_TYPES, DEFAULTS, UNAVAILABLE_UNKNOWN
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -53,13 +53,21 @@ async def get_value(hass: HomeAssistant, key: str, default_value=None) -> bool |
     if state is not None:
         value = state_to_value(state.state)
         _LOGGER.debug(f"  Value: {value}")
-    else:
+        if isinstance(value, str) and value.lower() in UNAVAILABLE_UNKNOWN:
+            value = None
+
+    if state is None:
+        _LOGGER.debug(f"  State is none. Looking for default.")
         if default_value is not None:
             value = default_value
             _LOGGER.debug(f"  Value: {value} [Explicit Default]")
         elif key in DEFAULTS:
             value = DEFAULTS[key]
             _LOGGER.debug(f"  Value: {value} [System Default]")
+        else:
+            value = None
+            _LOGGER.debug(f"  Value: {value} [No Default]")
+
     _LOGGER.debug(f"  Type: {type(value)}")
     return value
 

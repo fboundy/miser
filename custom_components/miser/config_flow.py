@@ -264,17 +264,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Display a form for entering system parameters
         schema = vol.Schema(
             {
-                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS["BATTERY_CAPACITY"]): int,
-                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS["BATTERY_CURRENT_LIMIT"]): int,
-                vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS["INVERTER_POWER"]): int,
-                vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS["CHARGER_POWER"]): int,
-                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS["INVERTER_EFFICIENCY"]): vol.All(
+                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
+                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS[CONF_BATTERY_CURRENT_LIMIT]): int,
+                vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
+                vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
+                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS[CONF_INVERTER_EFFICIENCY]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS["CHARGER_EFFICIENCY"]): vol.All(
+                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS[CONF_CHARGER_EFFICIENCY]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULTS["INVERTER_LOSS"]): int,
+                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULTS[CONF_INVERTER_LOSS]): int,
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)

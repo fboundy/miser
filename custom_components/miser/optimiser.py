@@ -1,4 +1,5 @@
 import logging
+import asyncio
 import pandas as pd
 from numpy import arange
 from datetime import datetime
@@ -12,7 +13,6 @@ from .const import (
     DATETIME_FORMAT_LONG,
     MODEL_DURATION_HOURS,
     MODEL_PERIOD_MINUTES,
-    MODEL_COLUMNS,
     DEFAULTS,
     CONSUMPTION_SHAPE,
     SOLCAST_INTEGRATION,
@@ -20,6 +20,16 @@ from .const import (
     SOLCAST_DETAILED_FORECAST_ATTRIBUTE,
     SOLCAST_FORECAST_PERIODS,
     SOLCAST_COLUMNS,
+    CONF_USE_CONSUMPTION_HISTORY,
+    CONF_DAILY_CONSUMPTION_KWH,
+    CONF_HISTORY_DAYS,
+    CONF_LOAD_MARGIN,
+    CONF_WEEKDAY_WEIGHTING,
+    CONF_SOLCAST_CONFIDENCE,
+    CONF_SHAPE_CONSUMPTION,
+    MODEL_CONSUMPTION_TODAY,
+    MODEL_BATTERY_SOC,
+    MODEL_ENTITIES_AVAILABLE_WAIT,
 )
 from .utils import get_value, get_entity_for_key
 
@@ -57,6 +67,29 @@ async def optimise(hass: HomeAssistant, now=None):
     await _get_prices(hass=hass, start=start, end=end, freq=freq)
     merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
     _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
+    # >>> Do some checks on the data validity here
+
+    model.initial_soc = await get_value(hass, MODEL_BATTERY_SOC)
+    retries = 0
+    while model.initial_soc is None and retries < MODEL_ENTITIES_AVAILABLE_WAIT:
+        await asyncio.sleep(1)
+        model.initial_soc = await get_value(hass, MODEL_BATTERY_SOC)
+        retries += 1
+
+    if model.initial_soc is None:
+        _LOGGER.warning("Unable to get Battery SOC - run failed")
+        return
+    else:
+        model.set_start(pd.Timestamp.now(tz="UTC"))
+
+    net_cost = await model.net_cost(slots=[])
+    model.base_cost = net_cost.sum()
+    _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
+
+    high_cost_swaps = await model.high_cost_swaps()
+    net_cost = await model.net_cost(slots=high_cost_swaps)
+    model.swap_cost = net_cost.sum()
+    _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
@@ -71,12 +104,12 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
     consumption["time_of_day"] = consumption.index.time
     consumption["dow_tod"] = consumption.index.day_of_week + consumption.index.hour / 24
 
-    use_consumption = await get_value(hass, "USE_CONSUMPTION_HISTORY")
+    use_consumption = await get_value(hass, CONF_USE_CONSUMPTION_HISTORY)
     if use_consumption:
-        entity_id = get_entity_for_key(hass, "CONSUMPTION_TODAY")
-        history_days = await get_value(hass, "HISTORY_DAYS")
-        load_margin = await get_value(hass, "LOAD_MARGIN")
-        weekday_weighting = await get_value(hass, "WEEKDAY_WEIGHTING")
+        entity_id = get_entity_for_key(hass, MODEL_CONSUMPTION_TODAY)
+        history_days = await get_value(hass, CONF_HISTORY_DAYS)
+        load_margin = await get_value(hass, CONF_LOAD_MARGIN)
+        weekday_weighting = await get_value(hass, CONF_WEEKDAY_WEIGHTING)
         if entity_id is not None:
             _LOGGER.debug(f"Loading {history_days} days consumption history from {entity_id}")
             consumption_history = await _get_hass_power_from_daily_kwh(hass, entity_id, history_days, freq=freq)
@@ -107,8 +140,8 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
 
     if "final" not in consumption.columns:
         # Need to add config entities for manual case
-        daily_consumption = await get_value(hass, "DAILY_CONSUMPTION_KWH")
-        if get_value("SHAPE_CONSUMPTION"):
+        daily_consumption = await get_value(hass, CONF_DAILY_CONSUMPTION_KWH)
+        if get_value(CONF_SHAPE_CONSUMPTION):
             daily = (
                 pd.DataFrame(CONSUMPTION_SHAPE)
                 .set_index("hours")
@@ -151,7 +184,7 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
                     forecast += state.attributes.get(SOLCAST_DETAILED_FORECAST_ATTRIBUTE, [])
 
         solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start : end - freq]
-        confidence_level = await get_value(hass, "SOLCAST_CONFIDENCE")
+        confidence_level = await get_value(hass, CONF_SOLCAST_CONFIDENCE)
         weights = cl_to_weights(confidence_level)
         solcast["weighted"] = 0
         for weight, col in zip(weights, SOLCAST_COLUMNS):
@@ -172,7 +205,9 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     hass.data[DOMAIN]["model"].prices = pd.concat(price.values(), axis=1)
 
 
-async def _get_hass_power_from_daily_kwh(hass, entity_id, days=DEFAULTS["HISTORY_DAYS"], freq=pd.Timedelta("30min")):
+async def _get_hass_power_from_daily_kwh(
+    hass, entity_id, days=DEFAULTS[CONF_HISTORY_DAYS], freq=pd.Timedelta(minutes=MODEL_PERIOD_MINUTES)
+):
     df = await _hass_to_df(hass, entity_id, days=days)
     if df is not None:
         x = df.diff().clip(0).fillna(0).cumsum() + df.iloc[0]
