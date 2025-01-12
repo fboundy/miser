@@ -9,6 +9,8 @@ from .const import (
     OPTIMISER_HIGH_COST_MAX_ITERS,
     CONTROL_PASS_THREHOLD,
     CONTROL_SLOT_THRESHOLD,
+    MODEL_MIN_SLOT_POWER,
+    MODEL_MAX_SEARCH_WINDOW_SOC,
 )
 from .utils import get_value
 
@@ -144,7 +146,7 @@ class PVsystemModel:
         return forced
 
     async def flows(self, *args, **kwargs):
-        df = pd.concat([self.solar, self.consumption], axis=1)
+        df = pd.concat([self.solar, self.consumption, self.prices], axis=1)
         df.index = self.index
         df["dt_hours"] = get_dt_hours(df)
         df["battery_grid_requirement"] = df["consumption"] - df["solar"]
@@ -194,21 +196,11 @@ class PVsystemModel:
         df["grid"] = (df["battery_grid_requirement"] - df["battery"]).round(0)
         df["soc"] = (df["chg"] / self.battery.capacity) * 100
         df["soc_end"] = (df["chg_end"] / self.battery.capacity) * 100
-        _LOGGER.debug(f"Model flows\n{df.to_string()}")
+        # _LOGGER.debug(f"Model flows\n{df.to_string()}")
+        df["import_cost"] = ((df["grid"] * df["dt_hours"] * df["import"]).clip(lower=0)) / 1000
+        df["export_cost"] = ((df["grid"] * df["dt_hours"] * df["export"]).clip(upper=0)) / 1000
+        df["net_cost"] = df["import_cost"] + df["export_cost"]
         return df
-
-    async def grid_energy_kwh(self, *args, **kwargs):
-        flows = await self.flows(*args, **kwargs)
-        return (
-            pd.concat(
-                [
-                    (flows["grid"] * flows["dt_hours"]).clip(lower=0).rename("import"),
-                    (flows["grid"] * flows["dt_hours"]).clip(upper=0).rename("export"),
-                ],
-                axis=1,
-            )
-            / 1000
-        )
 
     async def net_cost(self, *args, **kwargs) -> pd.Series:
         """
@@ -216,27 +208,11 @@ class PVsystemModel:
 
         """
         use_export = kwargs.pop("use_export", True)
-
-        nc = self.prices["fixed"]
-        grid_energy = await self.grid_energy_kwh(*args, **kwargs)
-        if not use_export:
-            grid_energy["export"] = 0
-        _LOGGER.debug(f"Grid energy\n{grid_energy}")
-
-        for direction in self.prices.drop("fixed", axis=1):
-            nc += self.prices[direction] * grid_energy[direction]
-        return nc
-
-    def _search_window(self, df: pd.DataFrame, available: pd.Series, max_slot) -> pd.DataFrame:
-        """ """
-        x = df.loc[: max_slot - pd.Timedelta("30min")].copy().iloc[:-1]
-        if len(x) > 0:
-            x = x[available.loc[: max_slot - pd.Timedelta("30min")]]
-            x["countback"] = (x["soc_end"] >= 97).sum() - (x["soc_end"] >= 97).cumsum()
-            x = x[x["countback"] == 0]
-            x = x[x["forced"] < (self.inverter.charger_power)]
-            x = x[x["soc_end"] <= 97]
-        return x
+        flows = await self.flows(*args, **kwargs)
+        if use_export:
+            return flows["net_cost"]
+        else:
+            return flows["import_cost"]
 
     async def high_cost_swaps(self) -> list:
         # --------------------------------------------------------------------------------------------
@@ -250,7 +226,7 @@ class PVsystemModel:
         done = False
         i = 0
         slots = []
-        forced = await self.forced(slots=slots)
+        forced = await self.forced(slots=[])
         df = pd.DataFrame(forced)
         df["available"] = True
         df["tested"] = False
@@ -264,17 +240,19 @@ class PVsystemModel:
                 done = True
 
             flows = await self.flows(slots=slots)
-            df["import_cost"] = (self.prices["import"] * flows["grid"] * flows["dt_hours"] / 1000).clip(0)[
-                ~df["tested"]
-            ]
+            # This needs looking at!
+            high_cost_flows = flows[~df["tested"]]
+            high_cost_flows = high_cost_flows[high_cost_flows["forced"] == 0]
 
-            if len(df["import_cost"][flows["forced"] == 0]) > 0:
-                max_import_cost = df["import_cost"][flows["forced"] == 0].max()
-                if len(df["import_cost"][df["import_cost"] == max_import_cost]) > 0:
-                    max_slot = df["import_cost"][df["import_cost"] == max_import_cost].index[0]
+            if len(high_cost_flows) > 0:
+                max_import_cost = high_cost_flows["import_cost"].max()
+                max_cost_flows = high_cost_flows[high_cost_flows["import_cost"] == max_import_cost]
+                if len(max_cost_flows) > 0:
+                    max_slot = max_cost_flows.index[0]
                     max_slot_energy = round(
-                        flows["grid"].loc[max_slot] / 1000 / flows["dt_hours"].loc[max_slot], 2
+                        max_cost_flows["grid"].loc[max_slot] / 1000 * max_cost_flows["dt_hours"].loc[max_slot], 2
                     )  # kWh
+
                     str_log = (
                         f"{i:3d} {df['available'].sum():3d} {max_slot.tz_convert(self._tz).strftime(TIME_FORMAT)}:"
                     )
@@ -284,25 +262,32 @@ class PVsystemModel:
                             max_slot_energy / self.inverter.charger_efficiency / self.inverter.inverter_efficiency
                         )
 
-                        search_window = self._search_window(flows, df["available"], max_slot)
-                        str_log += f" {round_trip_energy_required:5.2f} kWh at {max_import_cost:6.2f}p. "
-
+                        search_window = flows.loc[df["available"]].loc[: max_slot - pd.Timedelta("30min")].copy()
                         if len(search_window) > 0:
-                            min_price = search_window["import"].min()
+                            str_log += f"searching: {search_window.index[0].strftime(TIME_FORMAT)}-{search_window.index[-1].strftime(TIME_FORMAT)}"
+                            search_window["countback"] = (
+                                search_window["soc_end"] >= MODEL_MAX_SEARCH_WINDOW_SOC
+                            ).sum() - (search_window["soc_end"] >= 97).cumsum()
+                            search_window = search_window[search_window["countback"] == 0]
+                            search_window = search_window[search_window["forced"] < (self.inverter.charger_power)]
+                            search_window = search_window[search_window["soc_end"] <= MODEL_MAX_SEARCH_WINDOW_SOC]
 
-                            window = search_window[search_window["import"] == min_price].index
-                            start_window = window[0]
+                            str_log += f" {round_trip_energy_required:5.2f} kWh at {max_import_cost:6.2f}p."
+
+                            min_price = search_window["import"].min()
+                            charge_window = search_window[search_window["import"] == min_price].index
+                            start_window = charge_window[0]
+                            end_window = charge_window[-1]
 
                             cost_at_min_price = round_trip_energy_required * min_price
-
                             str_log += f"<==> {start_window.tz_convert(self._tz).strftime(TIME_FORMAT)}: {min_price:5.2f}p/kWh {cost_at_min_price:5.2f}p "
-                            str_log += f" SOC: {search_window.loc[window[0]]['soc']:5.1f}%->{search_window.loc[window[-1]]['soc_end']:5.1f}% "
+                            str_log += f" SOC: {search_window.loc[start_window]['soc']:5.1f}%->{search_window.loc[end_window]['soc_end']:5.1f}% "
 
-                            factors = [1 / len(window) for slot in window]
+                            factors = [1 / len(charge_window)] * len(charge_window)
 
                             if round(cost_at_min_price, 1) < round(max_import_cost, 1):
                                 slots_added = 0
-                                for slot, factor in zip(window, factors):
+                                for slot, factor in zip(charge_window, factors):
                                     slot_power_required = max(
                                         round_trip_energy_required * 1000 / flows["dt_hours"].loc[slot] * factor, 0
                                     )
@@ -318,6 +303,7 @@ class PVsystemModel:
                                         * factor,
                                         0,
                                     )
+
                                     min_power = min(
                                         slot_power_required,
                                         slot_charger_power_available,
@@ -325,20 +311,18 @@ class PVsystemModel:
                                     )
                                     remaining_slot_capacity = slot_charger_power_available - min_power
 
-                                    if remaining_slot_capacity < 10:
+                                    if remaining_slot_capacity < MODEL_MIN_SLOT_POWER:
                                         df["available"][slot] = False
 
-                                    # if log:
-                                    #     # if log:
-                                    #     str_log_x = (
-                                    #         f">>> {i:3d} Slot: {slot.strftime(TIME_FORMAT)} Factor: {factor:0.3f} Forced: {search_window['forced'].loc[slot]:6.0f}W  "
-                                    #         + f"End SOC: {search_window['soc_end'].loc[slot]:4.1f}%  SPR: {slot_power_required:6.0f}W  "
-                                    #         + f"SCPA: {slot_charger_power_available:6.0f}W  SAC: {slot_available_capacity:6.0f}W  Min Power: {min_power:6.0f}W "
-                                    #         + f"RSC: {remaining_slot_capacity:6.0f}W"
-                                    #     )
-                                    #     if not available[slot]:
-                                    #         str_log_x += " <== FULL"
-                                    #     _LOGGER.debug(str_log_x)
+                                    # str_log_x = (
+                                    #     f">>> {i:3d} Slot: {slot.strftime(TIME_FORMAT)} Factor: {factor:0.3f} Forced: {search_window['forced'].loc[slot]:6.0f}W  "
+                                    #     + f"End SOC: {search_window['soc_end'].loc[slot]:4.1f}%  SPR: {slot_power_required:6.0f}W  "
+                                    #     + f"SCPA: {slot_charger_power_available:6.0f}W  SAC: {slot_available_capacity:6.0f}W  Min Power: {min_power:6.0f}W "
+                                    #     + f"RSC: {remaining_slot_capacity:6.0f}W"
+                                    # )
+                                    # if not df["available"][slot]:
+                                    #     str_log_x += " <== FULL"
+                                    # _LOGGER.debug(str_log_x)
 
                                     slots.append(
                                         (
@@ -348,11 +332,12 @@ class PVsystemModel:
                                     )
                                     slots_added += 1
 
-                                self.net_costs.append(await self.net_cost(slots=slots).sum())
+                                net_cost = await self.net_cost(slots=slots)
+                                self.net_costs.append(net_cost.sum())
                                 flows = await self.flows(slots=slots)
                                 slot_count.append(len(factors))
 
-                                str_log += f"New SOC: {self.flows.loc[start_window]['soc']:5.1f}%->{self.flows.loc[start_window]['soc_end']:5.1f}% "
+                                str_log += f"New SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[end_window]['soc_end']:5.1f}% "
                                 best_cost = self.net_costs[-1]
                                 str_log += f"Net: {best_cost:6.1f}"
 
@@ -363,18 +348,19 @@ class PVsystemModel:
                                 df["tested"].loc[max_slot] = True
                         else:
                             _LOGGER.info(str_log + "No search window")
-                            done = True
+                            df["tested"].loc[max_slot] = True
                 else:
                     done = True
             else:
                 _LOGGER.info("No slots available")
                 done = True
 
-        self.best_cost = self.net_cost(slots=slots).sum()
+        net_cost = await self.net_cost(slots=slots)
+        self.best_cost = net_cost.sum()
 
         if self.base_cost - best_cost <= CONTROL_PASS_THREHOLD:
             _LOGGER.info(
-                f"Charge net cost delta:  {self.base_cost - best_cost:0.1f}p: < Pass Threshold ({self._get_config('pass_threshold_p'):0.1f}p) => Slots Excluded"
+                f"Charge net cost delta:  {self.base_cost - best_cost:0.1f}p: < Pass Threshold ({CONTROL_PASS_THREHOLD:0.1f}p) => Slots Excluded"
             )
             slots = []
             self.best_cost = self.base_cost
