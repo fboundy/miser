@@ -6,6 +6,7 @@ from datetime import datetime
 from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import history
 from homeassistant.helpers import entity_registry as er
+import homeassistant.util.dt as dt_util
 
 from .const import (
     DOMAIN,
@@ -255,8 +256,8 @@ async def _write_control_entities(
         CONTROL_FORCE_CURRENT: force_current,
         CONTROL_FORCE_POWER: force_power,
         CONTROL_TARGET_SOC: target_soc,
-        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "start"),
-        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "end"),
+        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "start", local_time=True),
+        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "end", local_time=True),
         CONTROL_NEXT_SLOT_POWER: _slot_value(next_slot, "power"),
         CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "target_soc"),
     }
@@ -359,12 +360,14 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
     }
 
 
-def _slot_value(slot: dict | None, key: str):
+def _slot_value(slot: dict | None, key: str, local_time: bool = False):
     if slot is None:
         return None
 
     value = slot.get(key)
     if hasattr(value, "isoformat"):
+        if local_time:
+            value = dt_util.as_local(value)
         return value.isoformat()
     return value
 
