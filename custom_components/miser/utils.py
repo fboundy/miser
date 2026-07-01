@@ -111,8 +111,8 @@ def log_config_entry(entry: ConfigEntry) -> None:
     # Log ConfigEntry contents
     _LOGGER.debug(f"ConfigEntry data: {redact_sensitive(entry.data)}")
     _LOGGER.debug(f"ConfigEntry options: {redact_sensitive(entry.options)}")
-    _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
-    _LOGGER.debug(f"ConfigEntry title: {entry.title}")
+    _LOGGER.debug(f"ConfigEntry unique ID: {redact_sensitive(entry.unique_id)}")
+    _LOGGER.debug(f"ConfigEntry title: {redact_sensitive(entry.title)}")
 
 
 def redact_sensitive(value):
@@ -123,9 +123,15 @@ def redact_sensitive(value):
         }
     if isinstance(value, list):
         return [redact_sensitive(item) for item in value]
+    if isinstance(value, str) and _looks_sensitive_value(value):
+        return "***REDACTED***"
     return value
 
 
 def _is_sensitive_key(key) -> bool:
     key = str(key).lower()
     return any(part in key for part in SENSITIVE_KEY_PARTS)
+
+
+def _looks_sensitive_value(value: str) -> bool:
+    return value.startswith(("sk_", "A-")) or value.isdigit() and len(value) >= 10

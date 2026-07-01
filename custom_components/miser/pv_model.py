@@ -467,12 +467,12 @@ class PVsystemModel:
         best_cost = self.best_cost
         slots_added = 0
 
-        slots = base_slots
+        slots = list(base_slots)
 
         flows = await self.flows(slots=slots)
 
         # Check how many slots which aren't full are at an export price less than any import price:
-        min_import_price = self.flows["import"].min()
+        min_import_price = flows[flows["forced"] >= 0]["import"].min()
         _LOGGER.info("")
         _LOGGER.info("Forced Discharging")
         _LOGGER.info("------------------")
@@ -482,9 +482,9 @@ class PVsystemModel:
 
         i = 0
         available = (
-            (self.flows["export"] > min_import_price)
+            (flows["export"] > min_import_price)
             & (-flows["forced"] < self.inverter.inverter_power)
-            & (self.flows["forced"] <= 0)
+            & (flows["forced"] <= 0)
         )
 
         a0 = available.sum()
@@ -508,57 +508,64 @@ class PVsystemModel:
                 factor = 1
                 str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
+                forced_discharge = min(
+                    min(
+                        self.battery.max_discharge_power,
+                        self.inverter.inverter_power,
+                    )
+                    + flows["forced"].loc[start_window]
+                    - flows["solar"].loc[start_window],
+                    (
+                        (flows["soc_end"].loc[start_window] - self.battery.max_dod * 100)
+                        / 100
+                        * self.battery.capacity
+                    )
+                    * 2
+                    * factor,
+                )
+                forced_discharge = max(forced_discharge, 0)
+
                 slot = (
                     start_window,
-                    -min(
-                        min(
-                            self.battery.max_discharge_power,
-                            self.inverter.charger_power,
-                        )
-                        - flows["solar"].loc[start_window],
-                        ((flows["soc_end"].loc[start_window] - self.battery.max_dod) / 100 * self.battery.capacity)
-                        * 2
-                        * factor,
-                    ),
+                    -forced_discharge,
                 )
 
                 slots.append(slot)
 
-                self.calculate_flows(slots=slots)
+                flows = await self.flows(slots=slots)
 
-                if "F" in self._debug_cat:
-                    _LOGGER.debug("self.flows after flows called = ")
-                    _LOGGER.debug(f"\n{self.flows.to_string()}")
-
-                net_cost = self.net_cost
+                net_cost = (await self.net_cost(slots=slots)).sum()
 
                 str_log += f"Net: {net_cost:5.1f} "
-                if net_cost < best_cost - self._get_config("slot_threshold_p"):
-                    str_log += f"New SOC: {self.flows.loc[start_window]['soc']:5.1f}%->{self.flows.loc[start_window]['soc_end']:5.1f}% "
-                    str_log += f"Max export: {-self.flows['grid'].min():0.0f}W "
+                if net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
+                    str_log += f"New SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
+                    str_log += f"Max export: {-flows['grid'].min():0.0f}W "
                     best_cost = net_cost
                     slots_added += 1
-                    _LOGGER.debug(str_log)
                 else:
                     # done = True
                     slots = slots[:-1]
-                    self.calculate_flows(slots=slots)
+                    flows = await self.flows(slots=slots)
+
+                _LOGGER.info(str_log)
+                done = available.sum() == 0
             else:
                 done = True
 
         cost_delta = best_cost - self.best_cost
         str_log = f"Discharge net cost delta:{(-cost_delta):5.1f}p"
-        if cost_delta > -self._get_config("discharge_threshold_p"):
-            str_log += f": < Discharge threshold ({self._get_config('discharge_threshold_p'):0.1f}p) => Slots excluded"
+        if cost_delta > -CONTROL_PASS_THREHOLD:
+            slots_added = 0
+            slots = base_slots
+            str_log += f": < Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Excluded"
         else:
-            str_log += f": > Discharge Threshold ({self._get_config('discharge_threshold_p'):0.1f}p) => Slots included"
-            self.slots = slots
-            self.slots_added = slots_added
+            str_log += f": > Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Included"
             self.best_cost = best_cost
 
-        if log:
             _LOGGER.info("")
             _LOGGER.info(str_log)
+
+        return slots
 
 
 #     async def optimised_force(

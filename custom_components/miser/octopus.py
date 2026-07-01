@@ -93,6 +93,9 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
             for entity in current_day_entities:
                 state = hass.states.get(entity.entity_id)
                 _LOGGER.debug(f"{entity.entity_id}")
+                if state is None:
+                    _LOGGER.debug(f"  - State unavailable for {entity.entity_id}")
+                    continue
                 if "xport" in state.attributes.get("friendly_name", ""):
                     direction = "export"
                 else:
