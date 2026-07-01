@@ -235,7 +235,7 @@ class SolisSolaxModbusInverter(SolisInverter):
             end_minutes_key=CONTROL_TIMED_CHARGE_END_MINUTES,
         )
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
-        await self._set_number(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
         if self._entity_id(CONTROL_TIMED_CHARGE_ON) is not None:
             await self._turn_on(CONTROL_TIMED_CHARGE_ON)
         await self._press(CONTROL_TIMED_CHARGE_BUTTON)
@@ -250,7 +250,7 @@ class SolisSolaxModbusInverter(SolisInverter):
             end_minutes_key=CONTROL_TIMED_DISCHARGE_END_MINUTES,
         )
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
-        await self._set_number(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
         if self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is not None:
             await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
@@ -291,13 +291,16 @@ class SolisSolaxModbusInverter(SolisInverter):
         actual_current = self._numeric_state(current_key)
         actual_soc = self._numeric_state(soc_key)
 
-        return (
+        controls_match = (
             (self._entity_id(enable_key) is None or self._switch_on(enable_key))
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1
             and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
         )
+        if controls_match:
+            _LOGGER.debug("Refreshing %s control despite matching Solax entity states", state)
+        return False
 
     async def set_mode(self, mode: str) -> None:
         await self.hass.services.async_call(
@@ -329,6 +332,15 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._set_number(start_minutes_key, start.minute)
         await self._set_number(end_hours_key, end.hour)
         await self._set_number(end_minutes_key, end.minute)
+
+    async def _set_current(self, key: str, current: float) -> None:
+        actual_current = self._numeric_state(key)
+        if actual_current is None or abs(actual_current - current) < 0.1:
+            reference_current = current if actual_current is None else actual_current
+            nudge = reference_current - 0.1 if reference_current >= 0.1 else reference_current + 0.1
+            await self._set_number(key, nudge)
+
+        await self._set_number(key, current)
 
     async def _power_to_current(self, power: float) -> float:
         current = await self.power_to_current(power)
