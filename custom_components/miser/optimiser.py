@@ -159,9 +159,10 @@ async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_fi
 
         discharge_base_slots = iteration_base_slots
         if fill_first:
-            discharge_base_slots = await model.low_cost_charging(base_slots=iteration_base_slots)
+            discharge_base_slots = await model.fill_first_charging(base_slots=iteration_base_slots)
             local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, discharge_base_slots)
-            _LOGGER.debug(f"{label} local LCC cost: {local_lcc_cost:6.1f}")
+            model.best_cost = local_lcc_cost
+            _LOGGER.debug(f"{label} local fill cost: {local_lcc_cost:6.1f}")
 
         discharge_slots = await model.discharging(base_slots=discharge_base_slots)
         discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)

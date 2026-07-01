@@ -465,6 +465,84 @@ class PVsystemModel:
 
         return slots
 
+    async def fill_first_charging(self, base_slots=None):
+        base_slots = list(base_slots or [])
+        slots = list(base_slots)
+        slots_added = 0
+
+        flows = await self.flows(slots=slots)
+
+        max_export_price = flows[flows["forced"] <= 0]["export"].max()
+        _LOGGER.info("")
+        _LOGGER.info("Fill First Charging")
+        _LOGGER.info("-------------------")
+        _LOGGER.info("")
+        _LOGGER.info(f"Max export price when there is no forced charge: {max_export_price:0.2f}p/kWh.")
+
+        available = (
+            (flows["import"] < max_export_price)
+            & (flows["forced"] < self.inverter.charger_power)
+            & (flows["forced"] >= 0)
+        )
+
+        _LOGGER.info(f"{available.sum()} slots have an import price less than the max export price")
+
+        while available.sum() > 0:
+            fill_slots = flows.loc[
+                available
+                & (flows["import"] < max_export_price)
+                & (flows["forced"] < self.inverter.charger_power)
+                & (flows["forced"] >= 0)
+            ]
+            if fill_slots.empty:
+                break
+
+            min_price = fill_slots["import"].min()
+            start_window = fill_slots[fill_slots["import"] == min_price].index[0]
+            available.loc[start_window] = False
+
+            str_log = (
+                f"{available.sum():>2d} Min import price {min_price:5.2f}p/kWh at "
+                f"{start_window.strftime(TIME_FORMAT)} {flows.loc[start_window]['forced']:4.0f}W   "
+                f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
+            )
+
+            dt_hours = flows["dt_hours"].loc[start_window]
+            charger_capacity = (
+                min(self.battery.max_charge_power, self.inverter.charger_power)
+                - flows["forced"].loc[start_window]
+                - flows["solar"].loc[start_window]
+            )
+            battery_capacity = (
+                (100 - flows["soc_end"].loc[start_window])
+                / 100
+                * self.battery.capacity
+                / dt_hours
+            )
+            forced_charge = max(min(charger_capacity, battery_capacity), 0)
+
+            if forced_charge > MODEL_MIN_SLOT_POWER:
+                slots.append((start_window, forced_charge))
+                slots_added += 1
+                flows = await self.flows(slots=slots)
+                net_cost = (await self.net_cost(slots=slots)).sum()
+                str_log += (
+                    f"New SOC: {flows.loc[start_window]['soc']:5.1f}%"
+                    f"->{flows.loc[start_window]['soc_end']:5.1f}% Net: {net_cost:5.1f}"
+                )
+            else:
+                str_log += "No charge capacity"
+
+            _LOGGER.info(str_log)
+
+        net_cost = (await self.net_cost(slots=slots)).sum()
+        self.best_cost = net_cost
+
+        _LOGGER.info("")
+        _LOGGER.info(f"Added {slots_added} fill-first charging slots. Best cost with charging = {net_cost:6.1f}p")
+
+        return slots
+
     async def discharging(self, base_slots=None):
         best_cost = self.best_cost
         slots_added = 0
