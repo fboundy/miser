@@ -28,7 +28,12 @@ from .const import (
     CONF_SOLCAST_CONFIDENCE,
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
+    CONF_OPTIMISER_FREQUENCY,
     COST_ENTITY_OBJECTS,
+    CONTROL_FORCE_CURRENT,
+    CONTROL_FORCE_POWER,
+    CONTROL_STATE,
+    CONTROL_TARGET_SOC,
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
@@ -129,6 +134,7 @@ async def optimise(hass: HomeAssistant, now=None):
     _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
 
     await _write_cost_entities(hass, model)
+    await _apply_inverter_control(hass, model)
 
 
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
@@ -143,6 +149,206 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
                 slots=_serialise_slots(flows, merge=key == "optimised_cost"),
                 flows=_serialise_flows(flows),
             )
+
+
+async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
+    inverter_controller = hass.data[DOMAIN].get("inverter_controller")
+    if inverter_controller is None:
+        _LOGGER.warning("No inverter controller is available; unable to apply optimised controls")
+        return
+
+    control_slots = _control_slots(model.optimised_flows)
+    now = pd.Timestamp.now(tz="UTC")
+    optimiser_frequency = await get_value(hass, CONF_OPTIMISER_FREQUENCY)
+    next_optimiser_run = now + pd.Timedelta(minutes=optimiser_frequency)
+
+    current_slot = _find_current_control_slot(control_slots, now)
+    desired_state = current_slot["state"] if current_slot is not None else "idle"
+    desired_power = current_slot["power"] if current_slot is not None else 0
+    desired_target_soc = current_slot["target_soc"] if current_slot is not None else None
+    desired_current = await _power_to_current(inverter_controller, desired_power)
+
+    await _write_control_entities(
+        hass,
+        state=desired_state,
+        force_current=desired_current if desired_state != "idle" else 0,
+        force_power=desired_power if desired_state != "idle" else 0,
+        target_soc=desired_target_soc if desired_state != "idle" else None,
+        current_slot=current_slot,
+        next_slot=_find_next_control_slot(control_slots, now),
+    )
+
+    slots_to_apply = [
+        slot
+        for slot in control_slots
+        if slot["end"] > now and slot["start"] < next_optimiser_run
+    ]
+
+    if not slots_to_apply:
+        try:
+            if not await inverter_controller.control_matches("idle", None, 0):
+                _LOGGER.debug("Setting inverter forced control state to idle")
+                control_idle = getattr(inverter_controller, "control_idle", None)
+                if control_idle is not None:
+                    await control_idle()
+        except RuntimeError as err:
+            _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
+        return
+
+    applied_states = set()
+    for slot in slots_to_apply:
+        if slot["state"] in applied_states:
+            continue
+        applied_states.add(slot["state"])
+
+        try:
+            if await inverter_controller.control_matches(slot["state"], slot["target_soc"], slot["power"]):
+                continue
+
+            _LOGGER.debug(
+                "Applying inverter control: %s %s-%s %.1fW target %.1f%%",
+                slot["state"],
+                slot["start"],
+                slot["end"],
+                slot["power"],
+                slot["target_soc"],
+            )
+            if slot["state"] == "charging":
+                await inverter_controller.control_charge(
+                    slot["start"].to_pydatetime(),
+                    slot["end"].to_pydatetime(),
+                    slot["target_soc"],
+                    slot["power"],
+                )
+            elif slot["state"] == "discharging":
+                await inverter_controller.control_discharge(
+                    slot["start"].to_pydatetime(),
+                    slot["end"].to_pydatetime(),
+                    slot["target_soc"],
+                    abs(slot["power"]),
+                )
+        except RuntimeError as err:
+            _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
+
+
+async def _write_control_entities(
+    hass: HomeAssistant,
+    state: str,
+    force_current: float | None,
+    force_power: float | None,
+    target_soc: float | None,
+    current_slot: dict | None,
+    next_slot: dict | None,
+) -> None:
+    sensor_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
+    attributes = {
+        "current_slot": _serialise_control_slot(current_slot),
+        "next_slot": _serialise_control_slot(next_slot),
+    }
+
+    updates = {
+        CONTROL_STATE: state,
+        CONTROL_FORCE_CURRENT: force_current,
+        CONTROL_FORCE_POWER: force_power,
+        CONTROL_TARGET_SOC: target_soc,
+    }
+
+    for key, value in updates.items():
+        entity = sensor_entities.get(key)
+        if entity is not None:
+            await entity.async_set_native_value(value, attributes=attributes)
+
+
+def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
+    if flows is None:
+        return []
+
+    forced_flows = flows[flows["forced"] != 0]
+    if forced_flows.empty:
+        return []
+
+    slots = []
+    current_start = None
+    current_end = None
+    current_powers = []
+    current_target_soc = None
+
+    for start, row in forced_flows.iterrows():
+        power = float(row.get("forced"))
+        end = start + pd.Timedelta(hours=float(row.get("dt_hours")))
+
+        if (
+            current_start is None
+            or start != current_end
+            or not _same_force_direction(power, current_powers[-1])
+            or not _within_power_tolerance(power, sum(current_powers) / len(current_powers))
+        ):
+            if current_start is not None:
+                slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+
+            current_start = start
+            current_end = end
+            current_powers = [power]
+            current_target_soc = float(row.get("soc_end"))
+            continue
+
+        current_end = end
+        current_powers.append(power)
+        current_target_soc = float(row.get("soc_end"))
+
+    if current_start is not None:
+        slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+
+    return slots
+
+
+def _build_control_slot(start, end, powers: list[float], target_soc: float) -> dict:
+    power = sum(powers) / len(powers)
+    return {
+        "start": start,
+        "end": end,
+        "state": "charging" if power > 0 else "discharging",
+        "power": power,
+        "target_soc": target_soc,
+    }
+
+
+def _find_current_control_slot(control_slots: list[dict], now: pd.Timestamp) -> dict | None:
+    for slot in control_slots:
+        if slot["start"] <= now < slot["end"]:
+            return slot
+    return None
+
+
+def _find_next_control_slot(control_slots: list[dict], now: pd.Timestamp) -> dict | None:
+    future_slots = [slot for slot in control_slots if slot["start"] > now]
+    if not future_slots:
+        return None
+    return min(future_slots, key=lambda slot: slot["start"])
+
+
+def _same_force_direction(power: float, other_power: float) -> bool:
+    return (power > 0) == (other_power > 0)
+
+
+async def _power_to_current(inverter_controller, power: float) -> float | None:
+    power_to_current = getattr(inverter_controller, "power_to_current", None)
+    if power_to_current is None:
+        return None
+    return await power_to_current(power)
+
+
+def _serialise_control_slot(slot: dict | None) -> dict | None:
+    if slot is None:
+        return None
+
+    return {
+        "start": slot["start"].isoformat() if hasattr(slot["start"], "isoformat") else slot["start"],
+        "end": slot["end"].isoformat() if hasattr(slot["end"], "isoformat") else slot["end"],
+        "state": slot["state"],
+        "power": _serialise_number(slot["power"]),
+        "target_soc": _serialise_number(slot["target_soc"]),
+    }
 
 
 async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_first: bool) -> tuple:

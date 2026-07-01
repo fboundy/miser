@@ -93,6 +93,12 @@ class SolisInverter(InverterController):
                 status[key] = None if state is None else state.state
         return status
 
+    async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
+        raise NotImplementedError
+
+    async def power_to_current(self, power: float) -> float | None:
+        return None
+
     async def set_mode(self, mode: str) -> None:
         raise NotImplementedError
 
@@ -114,6 +120,14 @@ class SolisInverter(InverterController):
         await self.hass.services.async_call(
             "switch",
             "turn_on",
+            {"entity_id": self._required_entity_id(key)},
+            blocking=True,
+        )
+
+    async def _turn_off(self, key: str) -> None:
+        await self.hass.services.async_call(
+            "switch",
+            "turn_off",
             {"entity_id": self._required_entity_id(key)},
             blocking=True,
         )
@@ -216,7 +230,8 @@ class SolisSolaxModbusInverter(SolisInverter):
         )
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
         await self._set_number(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
-        await self._turn_on(CONTROL_TIMED_CHARGE_ON)
+        if self._entity_id(CONTROL_TIMED_CHARGE_ON) is not None:
+            await self._turn_on(CONTROL_TIMED_CHARGE_ON)
         await self._press(CONTROL_TIMED_CHARGE_BUTTON)
 
     async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
@@ -230,8 +245,53 @@ class SolisSolaxModbusInverter(SolisInverter):
         )
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
         await self._set_number(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
-        await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
+        if self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is not None:
+            await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
+
+    async def control_idle(self) -> None:
+        if self._entity_id(CONTROL_TIMED_CHARGE_ON) is not None:
+            await self._turn_off(CONTROL_TIMED_CHARGE_ON)
+        if self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is not None:
+            await self._turn_off(CONTROL_TIMED_DISCHARGE_ON)
+        if self._entity_id(CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON) is not None:
+            await self._press(CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON)
+        else:
+            await self._press(CONTROL_TIMED_CHARGE_BUTTON)
+            await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
+
+    async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
+        if state == "idle":
+            return (
+                self._entity_id(CONTROL_TIMED_CHARGE_ON) is None
+                or not self._switch_on(CONTROL_TIMED_CHARGE_ON)
+            ) and (
+                self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is None
+                or not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
+            )
+
+        if state == "charging":
+            enable_key = CONTROL_TIMED_CHARGE_ON
+            current_key = CONTROL_TIMED_CHARGE_CURRENT
+            soc_key = CONTROL_TIMED_CHARGE_SOC
+        elif state == "discharging":
+            enable_key = CONTROL_TIMED_DISCHARGE_ON
+            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
+            soc_key = CONTROL_TIMED_DISCHARGE_SOC
+        else:
+            return False
+
+        requested_current = await self._power_to_current(power)
+        actual_current = self._numeric_state(current_key)
+        actual_soc = self._numeric_state(soc_key)
+
+        return (
+            (self._entity_id(enable_key) is None or self._switch_on(enable_key))
+            and actual_current is not None
+            and actual_soc is not None
+            and abs(actual_current - requested_current) <= 0.1
+            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+        )
 
     async def set_mode(self, mode: str) -> None:
         await self.hass.services.async_call(
@@ -265,10 +325,23 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._set_number(end_minutes_key, end.minute)
 
     async def _power_to_current(self, power: float) -> float:
+        current = await self.power_to_current(power)
+        if current is None:
+            raise RuntimeError("Battery voltage is unavailable; cannot convert power to Solax current")
+        return current
+
+    async def power_to_current(self, power: float) -> float | None:
         voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
         if voltage is None or voltage <= 0:
-            raise RuntimeError("Battery voltage is unavailable; cannot convert power to Solax current")
+            return None
         return abs(float(power)) / voltage
+
+    def _switch_on(self, key: str) -> bool:
+        entity_id = self._entity_id(key)
+        if entity_id is None:
+            return False
+        state = self._state(entity_id)
+        return state is not None and state.state.lower() == "on"
 
 
 class SolisCloudInverter(SolisInverter):

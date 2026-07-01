@@ -31,6 +31,10 @@ class InverterController(ABC):
         """Return the inverter's current status."""
 
     @abstractmethod
+    async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
+        """Return whether the inverter control state matches the requested force state."""
+
+    @abstractmethod
     async def set_mode(self, mode: str) -> None:
         """Set the inverter operating mode."""
 

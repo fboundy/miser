@@ -66,16 +66,19 @@ class OptimiserSensor(MiserEntity, SensorEntity):
 
     async def async_set_native_value(
         self,
-        value: float | None,
+        value: float | str | None,
         slots: list | None = None,
         flows: list | None = None,
+        attributes: dict | None = None,
     ) -> None:
-        self._attr_native_value = round(value, 1) if value is not None else None
+        self._attr_native_value = round(value, 1) if isinstance(value, (float, int)) else value
         self._attributes[LAST_UPDATED] = datetime.now().isoformat()
         if slots is not None:
             self._attributes[COST_SLOTS] = slots
         if flows is not None:
             self._attributes[COST_FLOWS] = flows
+        if attributes is not None:
+            self._attributes.update(attributes)
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
@@ -88,4 +91,4 @@ class OptimiserSensor(MiserEntity, SensorEntity):
             try:
                 self._attr_native_value = float(last_state.state)
             except ValueError:
-                self._attr_native_value = None
+                self._attr_native_value = last_state.state

@@ -173,6 +173,10 @@ LAST_UPDATED = "Last updated"
 COST_ENTITY_OBJECTS = "cost_entity_objects"
 COST_SLOTS = "slots"
 COST_FLOWS = "flows"
+CONTROL_STATE = "state"
+CONTROL_FORCE_CURRENT = "force_current"
+CONTROL_FORCE_POWER = "force_power"
+CONTROL_TARGET_SOC = "target_soc"
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,
@@ -314,6 +318,22 @@ SENSOR_ENTITIES = {
     "discharge_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "fill_first_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "optimised_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    CONTROL_STATE: {},
+    CONTROL_FORCE_CURRENT: {
+        "unit": UnitOfElectricCurrent.AMPERE,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "device_class": SensorDeviceClass.CURRENT,
+    },
+    CONTROL_FORCE_POWER: {
+        "unit": UnitOfPower.WATT,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "device_class": SensorDeviceClass.POWER,
+    },
+    CONTROL_TARGET_SOC: {
+        "unit": PERCENTAGE,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "device_class": SensorDeviceClass.BATTERY,
+    },
 }
 
 
