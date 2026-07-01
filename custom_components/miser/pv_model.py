@@ -136,7 +136,8 @@ class PVsystemModel:
         except:
             return self.consumption.index
 
-    async def forced(self, slots=[]) -> pd.Series:
+    async def forced(self, slots=None) -> pd.Series:
+        slots = slots or []
         forced = pd.Series(index=self.index, data=0)
 
         for t, c in slots:
@@ -357,11 +358,12 @@ class PVsystemModel:
 
         return slots
 
-    async def low_cost_charging(self, base_slots=[]):
+    async def low_cost_charging(self, base_slots=None):
         best_cost = self.best_cost
         slots_added = 0
 
-        slots = base_slots
+        base_slots = list(base_slots or [])
+        slots = list(base_slots)
 
         flows = await self.flows(slots=slots)
 
@@ -451,7 +453,7 @@ class PVsystemModel:
 
         if cost_delta > -CONTROL_PASS_THREHOLD:
             slots_added = 0
-            slots = base_slots
+            slots = list(base_slots)
             str_log += f": < Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Excluded"
 
         else:
@@ -463,10 +465,11 @@ class PVsystemModel:
 
         return slots
 
-    async def discharging(self, base_slots=[]):
+    async def discharging(self, base_slots=None):
         best_cost = self.best_cost
         slots_added = 0
 
+        base_slots = list(base_slots or [])
         slots = list(base_slots)
 
         flows = await self.flows(slots=slots)
@@ -556,7 +559,7 @@ class PVsystemModel:
         str_log = f"Discharge net cost delta:{(-cost_delta):5.1f}p"
         if cost_delta > -CONTROL_PASS_THREHOLD:
             slots_added = 0
-            slots = base_slots
+            slots = list(base_slots)
             str_log += f": < Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Excluded"
         else:
             str_log += f": > Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Included"
