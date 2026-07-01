@@ -32,6 +32,10 @@ from .const import (
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
     CONTROL_FORCE_POWER,
+    CONTROL_NEXT_SLOT_END,
+    CONTROL_NEXT_SLOT_POWER,
+    CONTROL_NEXT_SLOT_START,
+    CONTROL_NEXT_SLOT_TARGET_SOC,
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
     MODEL_CONSUMPTION_TODAY,
@@ -251,6 +255,10 @@ async def _write_control_entities(
         CONTROL_FORCE_CURRENT: force_current,
         CONTROL_FORCE_POWER: force_power,
         CONTROL_TARGET_SOC: target_soc,
+        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "start"),
+        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "end"),
+        CONTROL_NEXT_SLOT_POWER: _slot_value(next_slot, "power"),
+        CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "target_soc"),
     }
 
     for key, value in updates.items():
@@ -349,6 +357,16 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
         "power": _serialise_number(slot["power"]),
         "target_soc": _serialise_number(slot["target_soc"]),
     }
+
+
+def _slot_value(slot: dict | None, key: str):
+    if slot is None:
+        return None
+
+    value = slot.get(key)
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
 
 
 async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_first: bool) -> tuple:

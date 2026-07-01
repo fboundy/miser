@@ -5,7 +5,16 @@ from datetime import datetime
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers import entity_registry as er
 
-from .const import COST_ENTITY_OBJECTS, COST_FLOWS, COST_SLOTS, DOMAIN, LAST_UPDATED, MiserEntity, SENSOR_ENTITIES
+from .const import (
+    COST_ENTITY_OBJECTS,
+    COST_FLOWS,
+    COST_SLOTS,
+    DOMAIN,
+    LAST_UPDATED,
+    MiserEntity,
+    SENSOR_ENTITIES,
+    UNAVAILABLE_UNKNOWN,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,6 +32,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             unique_id=f"{DOMAIN}.{uuid}_{name.lower().replace(' ', '_')}",
             name=name,
             unit_of_measurement=entity.get("unit", None),
+            device_class=entity.get("device_class", None),
             state_class=entity.get("state_class", None),
         )
         for name, entity in SENSOR_ENTITIES.items()
@@ -87,7 +97,7 @@ class OptimiserSensor(MiserEntity, SensorEntity):
 
         last_state = await self.async_get_last_state()
 
-        if last_state and last_state.state:
+        if last_state and last_state.state and last_state.state.lower() not in UNAVAILABLE_UNKNOWN:
             try:
                 self._attr_native_value = float(last_state.state)
             except ValueError:

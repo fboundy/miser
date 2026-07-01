@@ -177,6 +177,10 @@ CONTROL_STATE = "state"
 CONTROL_FORCE_CURRENT = "force_current"
 CONTROL_FORCE_POWER = "force_power"
 CONTROL_TARGET_SOC = "target_soc"
+CONTROL_NEXT_SLOT_START = "next_slot_start"
+CONTROL_NEXT_SLOT_END = "next_slot_end"
+CONTROL_NEXT_SLOT_POWER = "next_slot_power"
+CONTROL_NEXT_SLOT_TARGET_SOC = "next_slot_target_soc"
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,
@@ -330,6 +334,18 @@ SENSOR_ENTITIES = {
         "device_class": SensorDeviceClass.POWER,
     },
     CONTROL_TARGET_SOC: {
+        "unit": PERCENTAGE,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "device_class": SensorDeviceClass.BATTERY,
+    },
+    CONTROL_NEXT_SLOT_START: {},
+    CONTROL_NEXT_SLOT_END: {},
+    CONTROL_NEXT_SLOT_POWER: {
+        "unit": UnitOfPower.WATT,
+        "state_class": SensorStateClass.MEASUREMENT,
+        "device_class": SensorDeviceClass.POWER,
+    },
+    CONTROL_NEXT_SLOT_TARGET_SOC: {
         "unit": PERCENTAGE,
         "state_class": SensorStateClass.MEASUREMENT,
         "device_class": SensorDeviceClass.BATTERY,
