@@ -32,6 +32,7 @@ from .const import (
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
+    OPTIMISER_MAX_ITERS,
 )
 from .utils import get_value, get_entity_for_key, redact_sensitive
 
@@ -93,15 +94,40 @@ async def optimise(hass: HomeAssistant, now=None):
     model.swap_cost, model.swap_flows = await _calculate_cost_and_flows(model, model.swap_slots)
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
-    low_cost_charging = await model.low_cost_charging(base_slots=high_cost_swaps)
-    model.lcc_slots = low_cost_charging
-    model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
-    _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
+    lcc_base_slots = model.swap_slots
+    for iteration in range(OPTIMISER_MAX_ITERS):
+        previous_lcc_cost = getattr(model, "lcc_cost", None)
+        previous_discharge_cost = getattr(model, "discharge_cost", None)
+        previous_best_cost = model.best_cost
 
-    discharge_slots = await model.discharging(base_slots=low_cost_charging)
-    model.discharge_slots = discharge_slots
-    model.discharge_cost, model.discharge_flows = await _calculate_cost_and_flows(model, model.discharge_slots)
-    _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
+        _LOGGER.debug(f"LCC/discharge iteration {iteration + 1}")
+
+        lcc_slots = await model.low_cost_charging(base_slots=lcc_base_slots)
+        lcc_cost, lcc_flows = await _calculate_cost_and_flows(model, lcc_slots)
+        _LOGGER.debug(f"LCC cost: {lcc_cost:6.1f}")
+
+        discharge_slots = await model.discharging(base_slots=lcc_slots)
+        discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
+        _LOGGER.debug(f"Discharge cost: {discharge_cost:6.1f}")
+
+        lcc_improved = previous_lcc_cost is None or lcc_cost < previous_lcc_cost
+        discharge_improved = previous_discharge_cost is None or discharge_cost < previous_discharge_cost
+
+        if not (lcc_improved or discharge_improved):
+            model.best_cost = previous_best_cost
+            _LOGGER.debug(
+                f"No LCC/discharge improvement in iteration {iteration + 1}; stopping optimisation loop"
+            )
+            break
+
+        model.lcc_slots = lcc_slots
+        model.lcc_cost = lcc_cost
+        model.lcc_flows = lcc_flows
+        model.discharge_slots = discharge_slots
+        model.discharge_cost = discharge_cost
+        model.discharge_flows = discharge_flows
+
+        lcc_base_slots = model.discharge_slots
 
     optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
     cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
