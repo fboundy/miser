@@ -28,6 +28,7 @@ from .const import (
     CONF_SOLCAST_CONFIDENCE,
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
+    COST_ENTITY_OBJECTS,
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
@@ -102,6 +103,19 @@ async def optimise(hass: HomeAssistant, now=None):
         net_cost = await model.net_cost(slots=discharge_slots)
         model.discharge_cost = net_cost.sum()
         _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
+    else:
+        model.discharge_cost = None
+
+    await _write_cost_entities(hass, model)
+
+
+async def _write_cost_entities(hass: HomeAssistant, model) -> None:
+    cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
+
+    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost"]:
+        entity = cost_entities.get(key)
+        if entity is not None:
+            await entity.async_set_native_value(getattr(model, key, None))
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:

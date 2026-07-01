@@ -29,7 +29,7 @@ ENTITY_TYPES = [
     "config_entities",  # Entities used to configure the model/optimiser
 ]
 
-PLATFORMS = ["number", "switch"]
+PLATFORMS = ["number", "switch", "sensor"]
 
 OPTIMISER_MAX_ITERS = 3
 OPTIMISER_HIGH_COST_MAX_ITERS = 200
@@ -170,6 +170,7 @@ CONSUMPTION_SHAPE = [
 
 # ATTRIBUTES
 LAST_UPDATED = "Last updated"
+COST_ENTITY_OBJECTS = "cost_entity_objects"
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,
@@ -300,6 +301,15 @@ NUMBER_ENTITIES = {
         "default": DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
     },
+}
+
+
+# Sensor entities
+SENSOR_ENTITIES = {
+    "base_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "swap_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "lcc_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "discharge_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
 }
 
 
