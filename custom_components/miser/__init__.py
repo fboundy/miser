@@ -138,12 +138,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
     if entry.options.get("tariff_source", "") == "Get tariff codes from Octopus Energy integration":
         _LOGGER.debug("Loading data from OE integration")
-        octopus_info = await get_octopus_integration_data(hass)
+        octopus_info = await get_octopus_integration_data(hass) or {}
     elif entry.options.get("tariff_source", "") == "Specify Octopus Account ID and API Key":
         _LOGGER.debug("Loading Octopus data from API using account details")
         octopus_info = await get_octopus_info_from_account(
             hass, entry.data.get("account_id", None), entry.data.get("api_key", None)
-        )
+        ) or {}
     elif entry.options.get("tariff_source", "") == "Specify Octopus import and export tariff codes directly":
         octopus_info = {
             "tariff_code": {direction: entry.options.get(f"{direction}_code", None) for direction in IMPORT_EXPORT}
@@ -154,10 +154,19 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
 
     hass.data[DOMAIN]["octopus_info"] = octopus_info
     hass.data[DOMAIN]["tariffs"] = {}
-    for direction, tariff_code in octopus_info.get("tariff_code", {}).items():
+    tariff_codes = {
+        direction: tariff_code
+        for direction, tariff_code in octopus_info.get("tariff_code", {}).items()
+        if tariff_code
+    }
+    if not tariff_codes.get("import"):
+        _LOGGER.error("No import tariff code available")
+        return False
+
+    for direction, tariff_code in tariff_codes.items():
         hass.data[DOMAIN]["tariffs"][direction] = await Tariff.create(tariff_code, export=(direction == "export"))
 
-    return len(octopus_info) > 0
+    return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

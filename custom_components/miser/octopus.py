@@ -14,7 +14,7 @@ from .const import (
     AGILE_PREDICT_URL,
 )
 
-from .utils import log_config_entry
+from .utils import log_config_entry, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ async def fetch_api_data(url: str, params: dict = None, api_key: str = None) -> 
                 _LOGGER.debug(f"Request URL: {response.url}")
                 response.raise_for_status()  # Raise an error for HTTP errors
                 data = await response.json()  # Parse JSON response
-                _LOGGER.debug(f"Response Data: {data}")
+                _LOGGER.debug(f"Response Data: {redact_sensitive(data)}")
                 return data
     except Exception as e:
         _LOGGER.error(f"Error fetching data from {url}: {e}")
@@ -107,7 +107,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
             _LOGGER.debug("  Incomplete Octopus data")
             return None
         else:
-            _LOGGER.debug(f"  Octopus Data: {octopus_info}")
+            _LOGGER.debug(f"  Octopus Data: {redact_sensitive(octopus_info)}")
             return octopus_info
 
     else:
@@ -115,10 +115,10 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
 
 
 async def get_octopus_info_from_account(hass: HomeAssistant, account_id: str, api_key: str) -> dict:
-    _LOGGER.debug(f"account: {account_id}  api_key: {api_key}")
-    # if any([account_id is None, api_key is None]):
-    #     _LOGGER.error("Unable to get Octopus account data")
-    #     return None
+    _LOGGER.debug("Loading Octopus account data")
+    if any([account_id is None, api_key is None]):
+        _LOGGER.error("Unable to get Octopus account data")
+        return None
 
     octopus_info = {"account_id": account_id, "api_key": api_key}
 
@@ -126,7 +126,7 @@ async def get_octopus_info_from_account(hass: HomeAssistant, account_id: str, ap
     _LOGGER.debug(f"Connecting to {url}")
 
     data = await fetch_api_data(url=url, api_key=api_key)
-    _LOGGER.debug(data)
+    _LOGGER.debug(redact_sensitive(data))
 
     mpans = data["properties"][0]["electricity_meter_points"]
     # for mpan in mpans:

@@ -119,34 +119,37 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             _LOGGER.debug(f"Loading {history_days} days consumption history from {entity_id}")
             consumption_history = await _get_hass_power_from_daily_kwh(hass, entity_id, history_days, freq=freq)
 
-            # Add consumption margin
-            consumption_history = consumption_history * (1 + load_margin / 100)
+            if consumption_history is not None and not consumption_history.empty:
+                # Add consumption margin
+                consumption_history = consumption_history * (1 + load_margin / 100)
 
-            # Group by time, take the mean and merge with the template
-            consumption_by_time = consumption_history.groupby(consumption_history.index.time).mean().rename("mean")
-            consumption = consumption.merge(consumption_by_time, "left", left_on="time_of_day", right_index=True)
+                # Group by time, take the mean and merge with the template
+                consumption_by_time = consumption_history.groupby(consumption_history.index.time).mean().rename("mean")
+                consumption = consumption.merge(consumption_by_time, "left", left_on="time_of_day", right_index=True)
 
-            if history_days >= 7:
-                consumption_dow = consumption_history.set_axis(
-                    consumption_history.index.day_of_week + consumption_history.index.hour / 24
-                )
-                consumption_dow = consumption_dow.groupby(consumption_dow.index).mean().rename("dow")
-                consumption = consumption.merge(consumption_dow, "left", left_on="dow_tod", right_index=True)
-                consumption["final"] = consumption["mean"] * (1 - weekday_weighting / 100) + consumption["dow"] * (
-                    weekday_weighting / 100
-                )
-                # _LOGGER.debug(f"Consumption\n{consumption.to_string()}")
+                if history_days >= 7:
+                    consumption_dow = consumption_history.set_axis(
+                        consumption_history.index.day_of_week + consumption_history.index.hour / 24
+                    )
+                    consumption_dow = consumption_dow.groupby(consumption_dow.index).mean().rename("dow")
+                    consumption = consumption.merge(consumption_dow, "left", left_on="dow_tod", right_index=True)
+                    consumption["final"] = consumption["mean"] * (1 - weekday_weighting / 100) + consumption["dow"] * (
+                        weekday_weighting / 100
+                    )
+                    # _LOGGER.debug(f"Consumption\n{consumption.to_string()}")
 
+                else:
+                    _LOGGER.debug(
+                        f"  - Ignoring 'Day of Week Weighting' because only {history_days} days of history is available"
+                    )
+                    consumption["final"] = consumption["mean"]
             else:
-                _LOGGER.debug(
-                    f"  - Ignoring 'Day of Week Weighting' because only {history_days} days of history is available"
-                )
-                consumption["final"] = consumption["mean"]
+                _LOGGER.warning(f"No usable consumption history available from {entity_id}; using configured fallback")
 
     if "final" not in consumption.columns:
         # Need to add config entities for manual case
         daily_consumption = await get_value(hass, CONF_DAILY_CONSUMPTION_KWH)
-        if get_value(CONF_SHAPE_CONSUMPTION):
+        if await get_value(hass, CONF_SHAPE_CONSUMPTION):
             daily = (
                 pd.DataFrame(CONSUMPTION_SHAPE)
                 .set_index("hours")
@@ -168,6 +171,8 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
 
 async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
     config_entries = hass.config_entries.async_entries(SOLCAST_INTEGRATION)
+    index = pd.date_range(start=start, end=end, freq=freq, inclusive="left")
+    solcast = pd.DataFrame(index=index, data={"weighted": 0})
 
     # Log ConfigEntry contents
     if config_entries:
@@ -188,13 +193,18 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
                 if state is not None:
                     forecast += state.attributes.get(SOLCAST_DETAILED_FORECAST_ATTRIBUTE, [])
 
-        solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start : end - freq]
-        confidence_level = await get_value(hass, CONF_SOLCAST_CONFIDENCE)
-        weights = cl_to_weights(confidence_level)
-        solcast["weighted"] = 0
-        for weight, col in zip(weights, SOLCAST_COLUMNS):
-            solcast["weighted"] += weight * solcast[col] * 1000
-        # _LOGGER.debug(f"\n{solcast.to_string()}")
+        if forecast:
+            solcast = pd.DataFrame(forecast).set_index("period_start").sort_index().loc[start : end - freq]
+            confidence_level = await get_value(hass, CONF_SOLCAST_CONFIDENCE)
+            weights = cl_to_weights(confidence_level)
+            solcast["weighted"] = 0
+            for weight, col in zip(weights, SOLCAST_COLUMNS):
+                solcast["weighted"] += weight * solcast[col] * 1000
+            # _LOGGER.debug(f"\n{solcast.to_string()}")
+        else:
+            _LOGGER.warning("No Solcast forecast data available; using zero solar forecast")
+    else:
+        _LOGGER.warning("Solcast integration is not configured; using zero solar forecast")
     hass.data[DOMAIN]["model"].solar = solcast["weighted"].rename("solar")
 
 
@@ -207,20 +217,27 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
             price[direction] = await tariff.to_df(start=start, end=end - freq)
             price[direction].rename(columns={"unit": direction}, inplace=True)
             # _LOGGER.debug(f"\n{price[direction]}")
-    hass.data[DOMAIN]["model"].prices = pd.concat(price.values(), axis=1)
+    if "import" not in price:
+        raise ValueError("Import tariff prices are required")
+    prices = pd.concat(price.values(), axis=1)
+    if "export" not in prices.columns:
+        prices["export"] = 0
+    hass.data[DOMAIN]["model"].prices = prices
 
 
 async def _get_hass_power_from_daily_kwh(
     hass, entity_id, days=DEFAULTS[CONF_HISTORY_DAYS], freq=pd.Timedelta(minutes=MODEL_PERIOD_MINUTES)
 ):
     df = await _hass_to_df(hass, entity_id, days=days)
-    if df is not None:
+    if df is not None and not df.empty:
         x = df.diff().clip(0).fillna(0).cumsum() + df.iloc[0]
         x.index = x.index.round("1s")
         x = x[~x.index.duplicated()]
         y = -pd.concat([x.resample("1s").interpolate().resample(freq).asfreq(), x.iloc[-1:]]).diff(-1)
         dt = y.index.diff().total_seconds() / pd.Timedelta("60min").total_seconds() / 1000
         df = y[1:-1] / dt[2:]
+    else:
+        df = None
     return df
 
 
