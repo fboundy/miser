@@ -94,40 +94,38 @@ async def optimise(hass: HomeAssistant, now=None):
     model.swap_cost, model.swap_flows = await _calculate_cost_and_flows(model, model.swap_slots)
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
-    lcc_base_slots = model.swap_slots
+    lcc_slots = await model.low_cost_charging(base_slots=model.swap_slots)
+    model.lcc_slots = lcc_slots
+    model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
+    _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
+
+    discharge_base_slots = model.lcc_slots
     for iteration in range(OPTIMISER_MAX_ITERS):
-        previous_lcc_cost = getattr(model, "lcc_cost", None)
         previous_discharge_cost = getattr(model, "discharge_cost", None)
         previous_best_cost = model.best_cost
 
-        _LOGGER.debug(f"LCC/discharge iteration {iteration + 1}")
+        _LOGGER.debug(f"Discharge iteration {iteration + 1}")
 
-        lcc_slots = await model.low_cost_charging(base_slots=lcc_base_slots)
-        lcc_cost, lcc_flows = await _calculate_cost_and_flows(model, lcc_slots)
-        _LOGGER.debug(f"LCC cost: {lcc_cost:6.1f}")
+        local_lcc_slots = await model.low_cost_charging(base_slots=discharge_base_slots)
+        local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, local_lcc_slots)
+        _LOGGER.debug(f"Discharge local LCC cost: {local_lcc_cost:6.1f}")
 
-        discharge_slots = await model.discharging(base_slots=lcc_slots)
+        discharge_slots = await model.discharging(base_slots=local_lcc_slots)
         discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
         _LOGGER.debug(f"Discharge cost: {discharge_cost:6.1f}")
 
-        lcc_improved = previous_lcc_cost is None or lcc_cost < previous_lcc_cost
         discharge_improved = previous_discharge_cost is None or discharge_cost < previous_discharge_cost
 
-        if not (lcc_improved or discharge_improved):
+        if not discharge_improved:
             model.best_cost = previous_best_cost
-            _LOGGER.debug(
-                f"No LCC/discharge improvement in iteration {iteration + 1}; stopping optimisation loop"
-            )
+            _LOGGER.debug(f"No discharge improvement in iteration {iteration + 1}; stopping optimisation loop")
             break
 
-        model.lcc_slots = lcc_slots
-        model.lcc_cost = lcc_cost
-        model.lcc_flows = lcc_flows
         model.discharge_slots = discharge_slots
         model.discharge_cost = discharge_cost
         model.discharge_flows = discharge_flows
 
-        lcc_base_slots = model.discharge_slots
+        discharge_base_slots = model.discharge_slots
 
     optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
     cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
@@ -152,7 +150,7 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
         if entity is not None:
             await entity.async_set_native_value(
                 getattr(model, key, None),
-                slots=_serialise_slots(getattr(model, key.replace("_cost", "_slots"), [])),
+                slots=_serialise_slots(getattr(model, key.replace("_cost", "_flows"), None)),
                 flows=_serialise_flows(getattr(model, key.replace("_cost", "_flows"), None)),
             )
 
@@ -163,15 +161,17 @@ async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataF
     return net_cost.sum(), flows
 
 
-def _serialise_slots(slots: list) -> list[dict]:
+def _serialise_slots(flows: pd.DataFrame | None) -> list[dict]:
+    if flows is None:
+        return []
+
     serialised = []
-    for start, power in slots:
-        if hasattr(start, "isoformat"):
-            start = start.isoformat()
+    forced_flows = flows[flows["forced"] != 0]
+    for start, row in forced_flows.iterrows():
         serialised.append(
             {
-                "start": start,
-                "power": round(float(power), 1),
+                "start": start.isoformat() if hasattr(start, "isoformat") else start,
+                "power": _serialise_number(row.get("grid")),
             }
         )
     return serialised
