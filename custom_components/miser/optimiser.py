@@ -84,27 +84,23 @@ async def optimise(hass: HomeAssistant, now=None):
     else:
         model.set_start(pd.Timestamp.now(tz="UTC"))
 
-    net_cost = await model.net_cost(slots=[])
-    model.base_cost = net_cost.sum()
     model.base_slots = []
+    model.base_cost, model.base_flows = await _calculate_cost_and_flows(model, model.base_slots)
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
     high_cost_swaps = await model.high_cost_swaps()
-    net_cost = await model.net_cost(slots=high_cost_swaps)
-    model.swap_cost = net_cost.sum()
     model.swap_slots = high_cost_swaps
+    model.swap_cost, model.swap_flows = await _calculate_cost_and_flows(model, model.swap_slots)
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
     low_cost_charging = await model.low_cost_charging(base_slots=high_cost_swaps)
-    net_cost = await model.net_cost(slots=low_cost_charging)
-    model.lcc_cost = net_cost.sum()
     model.lcc_slots = low_cost_charging
+    model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
     discharge_slots = await model.discharging(base_slots=low_cost_charging)
-    net_cost = await model.net_cost(slots=discharge_slots)
-    model.discharge_cost = net_cost.sum()
     model.discharge_slots = discharge_slots
+    model.discharge_cost, model.discharge_flows = await _calculate_cost_and_flows(model, model.discharge_slots)
     _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
 
     optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
@@ -115,6 +111,7 @@ async def optimise(hass: HomeAssistant, now=None):
     optimised_key = min(cost_keys, key=lambda key: getattr(model, key))
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
+    model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
     model.best_cost = model.optimised_cost
     _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
 
@@ -130,7 +127,14 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
             await entity.async_set_native_value(
                 getattr(model, key, None),
                 slots=_serialise_slots(getattr(model, key.replace("_cost", "_slots"), [])),
+                flows=_serialise_flows(getattr(model, key.replace("_cost", "_flows"), None)),
             )
+
+
+async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:
+    net_cost = await model.net_cost(slots=slots)
+    flows = await model.flows(slots=slots)
+    return net_cost.sum(), flows
 
 
 def _serialise_slots(slots: list) -> list[dict]:
@@ -145,6 +149,31 @@ def _serialise_slots(slots: list) -> list[dict]:
             }
         )
     return serialised
+
+
+def _serialise_flows(flows: pd.DataFrame | None) -> list[dict]:
+    if flows is None:
+        return []
+
+    serialised = []
+    for start, row in flows.iterrows():
+        serialised.append(
+            {
+                "start": start.isoformat() if hasattr(start, "isoformat") else start,
+                "grid": _serialise_number(row.get("grid")),
+                "battery": _serialise_number(row.get("battery")),
+                "load": _serialise_number(row.get("consumption")),
+                "soc": _serialise_number(row.get("soc")),
+                "soc_end": _serialise_number(row.get("soc_end")),
+            }
+        )
+    return serialised
+
+
+def _serialise_number(value):
+    if pd.isna(value):
+        return None
+    return round(float(value), 1)
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:

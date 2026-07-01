@@ -172,6 +172,7 @@ CONSUMPTION_SHAPE = [
 LAST_UPDATED = "Last updated"
 COST_ENTITY_OBJECTS = "cost_entity_objects"
 COST_SLOTS = "slots"
+COST_FLOWS = "flows"
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,

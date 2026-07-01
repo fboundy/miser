@@ -5,7 +5,7 @@ from datetime import datetime
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.helpers import entity_registry as er
 
-from .const import COST_ENTITY_OBJECTS, COST_SLOTS, DOMAIN, LAST_UPDATED, MiserEntity, SENSOR_ENTITIES
+from .const import COST_ENTITY_OBJECTS, COST_FLOWS, COST_SLOTS, DOMAIN, LAST_UPDATED, MiserEntity, SENSOR_ENTITIES
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -64,11 +64,18 @@ class OptimiserSensor(MiserEntity, SensorEntity):
         self._attr_native_unit_of_measurement = unit_of_measurement
         self._attr_state_class = state_class
 
-    async def async_set_native_value(self, value: float | None, slots: list | None = None) -> None:
+    async def async_set_native_value(
+        self,
+        value: float | None,
+        slots: list | None = None,
+        flows: list | None = None,
+    ) -> None:
         self._attr_native_value = round(value, 1) if value is not None else None
         self._attributes[LAST_UPDATED] = datetime.now().isoformat()
         if slots is not None:
             self._attributes[COST_SLOTS] = slots
+        if flows is not None:
+            self._attributes[COST_FLOWS] = flows
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
