@@ -171,6 +171,7 @@ CONSUMPTION_SHAPE = [
 # ATTRIBUTES
 LAST_UPDATED = "Last updated"
 COST_ENTITY_OBJECTS = "cost_entity_objects"
+COST_SLOTS = "slots"
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,
@@ -310,6 +311,7 @@ SENSOR_ENTITIES = {
     "swap_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "lcc_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "discharge_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "optimised_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
 }
 
 
@@ -347,6 +349,10 @@ class MiserEntity(RestoreEntity):
     @property
     def name(self):
         return self._attr_name.replace("_", " ").title()
+
+    @property
+    def extra_state_attributes(self):
+        return self._attributes
 
 
 INVERTER_DEFS = {

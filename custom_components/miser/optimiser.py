@@ -86,25 +86,37 @@ async def optimise(hass: HomeAssistant, now=None):
 
     net_cost = await model.net_cost(slots=[])
     model.base_cost = net_cost.sum()
+    model.base_slots = []
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
     high_cost_swaps = await model.high_cost_swaps()
     net_cost = await model.net_cost(slots=high_cost_swaps)
     model.swap_cost = net_cost.sum()
+    model.swap_slots = high_cost_swaps
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
     low_cost_charging = await model.low_cost_charging(base_slots=high_cost_swaps)
     net_cost = await model.net_cost(slots=low_cost_charging)
     model.lcc_cost = net_cost.sum()
+    model.lcc_slots = low_cost_charging
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
-    if await get_value(hass, CONF_OPTIMISE_DISCHARGING):
-        discharge_slots = await model.discharging(base_slots=low_cost_charging)
-        net_cost = await model.net_cost(slots=discharge_slots)
-        model.discharge_cost = net_cost.sum()
-        _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
-    else:
-        model.discharge_cost = None
+    discharge_slots = await model.discharging(base_slots=low_cost_charging)
+    net_cost = await model.net_cost(slots=discharge_slots)
+    model.discharge_cost = net_cost.sum()
+    model.discharge_slots = discharge_slots
+    _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
+
+    optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
+    cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
+    if optimise_discharging:
+        cost_keys.append("discharge_cost")
+
+    optimised_key = min(cost_keys, key=lambda key: getattr(model, key))
+    model.optimised_cost = getattr(model, optimised_key)
+    model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
+    model.best_cost = model.optimised_cost
+    _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
 
     await _write_cost_entities(hass, model)
 
@@ -112,10 +124,27 @@ async def optimise(hass: HomeAssistant, now=None):
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
 
-    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost"]:
+    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "optimised_cost"]:
         entity = cost_entities.get(key)
         if entity is not None:
-            await entity.async_set_native_value(getattr(model, key, None))
+            await entity.async_set_native_value(
+                getattr(model, key, None),
+                slots=_serialise_slots(getattr(model, key.replace("_cost", "_slots"), [])),
+            )
+
+
+def _serialise_slots(slots: list) -> list[dict]:
+    serialised = []
+    for start, power in slots:
+        if hasattr(start, "isoformat"):
+            start = start.isoformat()
+        serialised.append(
+            {
+                "start": start,
+                "power": round(float(power), 1),
+            }
+        )
+    return serialised
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:

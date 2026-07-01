@@ -82,7 +82,7 @@ class OptimiserNumber(MiserEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         _LOGGER.debug(f"async_set_native_value for {self._attr_name}")
         self._attr_native_value = value
-        self._attributes[LAST_UPDATED] = datetime.now()
+        self._attributes[LAST_UPDATED] = datetime.now().isoformat()
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
