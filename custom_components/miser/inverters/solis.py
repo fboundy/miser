@@ -68,7 +68,10 @@ class SolisInverter(InverterController):
         return self.entity_defs.get("config_entities", {})
 
     async def is_online(self) -> bool:
-        raise NotImplementedError
+        return all(
+            self._is_available(self._state(entity_id))
+            for entity_id in self._entity_ids("model_entities").values()
+        )
 
     async def get_time(self) -> datetime:
         raise NotImplementedError
@@ -83,13 +86,81 @@ class SolisInverter(InverterController):
         raise NotImplementedError
 
     async def get_status(self) -> dict[str, Any]:
-        raise NotImplementedError
+        status = {}
+        for entity_type in ENTITY_TYPES:
+            for key, entity_id in self._entity_ids(entity_type).items():
+                state = self._state(entity_id)
+                status[key] = None if state is None else state.state
+        return status
 
     async def set_mode(self, mode: str) -> None:
         raise NotImplementedError
 
     async def get_mode(self) -> str:
         raise NotImplementedError
+
+    async def _set_number(self, key: str, value: float) -> None:
+        await self.hass.services.async_call(
+            "number",
+            "set_value",
+            {
+                "entity_id": self._required_entity_id(key),
+                "value": round(float(value), 2),
+            },
+            blocking=True,
+        )
+
+    async def _turn_on(self, key: str) -> None:
+        await self.hass.services.async_call(
+            "switch",
+            "turn_on",
+            {"entity_id": self._required_entity_id(key)},
+            blocking=True,
+        )
+
+    async def _press(self, key: str) -> None:
+        await self.hass.services.async_call(
+            "button",
+            "press",
+            {"entity_id": self._required_entity_id(key)},
+            blocking=True,
+        )
+
+    def _target_soc(self, target_soc: float) -> int:
+        return round(max(0, min(100, float(target_soc))))
+
+    def _numeric_state(self, key: str) -> float | None:
+        state = self._state(self._required_entity_id(key))
+        if not self._is_available(state):
+            return None
+        try:
+            return float(state.state)
+        except (TypeError, ValueError):
+            return None
+
+    def _required_entity_id(self, key: str) -> str:
+        entity_id = self._entity_id(key)
+        if entity_id is None:
+            raise RuntimeError(f"No {self.integration} entity mapped for {key}")
+        return entity_id
+
+    def _entity_id(self, key: str) -> str | None:
+        for entity_type in ENTITY_TYPES:
+            entity_id = self.hass.data[DOMAIN].get(entity_type, {}).get(key)
+            if entity_id is not None:
+                return entity_id
+        return None
+
+    def _entity_ids(self, entity_type: str) -> dict[str, str]:
+        return self.hass.data[DOMAIN].get(entity_type, {})
+
+    def _state(self, entity_id: str | None):
+        if entity_id is None:
+            return None
+        return self.hass.states.get(entity_id)
+
+    def _is_available(self, state) -> bool:
+        return state is not None and state.state.lower() not in UNAVAILABLE_UNKNOWN
 
 
 class SolisSolaxModbusInverter(SolisInverter):
@@ -128,12 +199,6 @@ class SolisSolaxModbusInverter(SolisInverter):
         },
     }
 
-    async def is_online(self) -> bool:
-        return all(
-            self._is_available(self._state(entity_id))
-            for entity_id in self._entity_ids("model_entities").values()
-        )
-
     async def get_time(self) -> datetime:
         return dt_util.now()
 
@@ -168,14 +233,6 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
 
-    async def get_status(self) -> dict[str, Any]:
-        status = {}
-        for entity_type in ENTITY_TYPES:
-            for key, entity_id in self._entity_ids(entity_type).items():
-                state = self._state(entity_id)
-                status[key] = None if state is None else state.state
-        return status
-
     async def set_mode(self, mode: str) -> None:
         await self.hass.services.async_call(
             "select",
@@ -207,74 +264,11 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._set_number(end_hours_key, end.hour)
         await self._set_number(end_minutes_key, end.minute)
 
-    async def _set_number(self, key: str, value: float) -> None:
-        await self.hass.services.async_call(
-            "number",
-            "set_value",
-            {
-                "entity_id": self._required_entity_id(key),
-                "value": round(float(value), 2),
-            },
-            blocking=True,
-        )
-
-    async def _turn_on(self, key: str) -> None:
-        await self.hass.services.async_call(
-            "switch",
-            "turn_on",
-            {"entity_id": self._required_entity_id(key)},
-            blocking=True,
-        )
-
-    async def _press(self, key: str) -> None:
-        await self.hass.services.async_call(
-            "button",
-            "press",
-            {"entity_id": self._required_entity_id(key)},
-            blocking=True,
-        )
-
     async def _power_to_current(self, power: float) -> float:
         voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
         if voltage is None or voltage <= 0:
             raise RuntimeError("Battery voltage is unavailable; cannot convert power to Solax current")
         return abs(float(power)) / voltage
-
-    def _target_soc(self, target_soc: float) -> int:
-        return round(max(0, min(100, float(target_soc))))
-
-    def _numeric_state(self, key: str) -> float | None:
-        state = self._state(self._required_entity_id(key))
-        if not self._is_available(state):
-            return None
-        try:
-            return float(state.state)
-        except (TypeError, ValueError):
-            return None
-
-    def _required_entity_id(self, key: str) -> str:
-        entity_id = self._entity_id(key)
-        if entity_id is None:
-            raise RuntimeError(f"No Solax Modbus entity mapped for {key}")
-        return entity_id
-
-    def _entity_id(self, key: str) -> str | None:
-        for entity_type in ENTITY_TYPES:
-            entity_id = self.hass.data[DOMAIN].get(entity_type, {}).get(key)
-            if entity_id is not None:
-                return entity_id
-        return None
-
-    def _entity_ids(self, entity_type: str) -> dict[str, str]:
-        return self.hass.data[DOMAIN].get(entity_type, {})
-
-    def _state(self, entity_id: str | None):
-        if entity_id is None:
-            return None
-        return self.hass.states.get(entity_id)
-
-    def _is_available(self, state) -> bool:
-        return state is not None and state.state.lower() not in UNAVAILABLE_UNKNOWN
 
 
 class SolisCloudInverter(SolisInverter):
