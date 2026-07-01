@@ -91,6 +91,11 @@ async def optimise(hass: HomeAssistant, now=None):
     model.swap_cost = net_cost.sum()
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
+    low_cost_charging = await model.low_cost_charging(base_slots=high_cost_swaps)
+    net_cost = await model.net_cost(slots=low_cost_charging)
+    model.lcc_cost = net_cost.sum()
+    _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
+
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
     """

@@ -43,7 +43,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entity_registry = er.async_get(hass=hass)
 
     for entity in entities_to_add:
-        hass.data[DOMAIN]["config_entities"][entity.name] = entity_registry.async_get_entity_id(
+        hass.data[DOMAIN]["config_entities"][entity._attr_name] = entity_registry.async_get_entity_id(
             "number", DOMAIN, entity.unique_id
         )
 

@@ -314,16 +314,6 @@ class PVsystemModel:
                                     if remaining_slot_capacity < MODEL_MIN_SLOT_POWER:
                                         df["available"][slot] = False
 
-                                    # str_log_x = (
-                                    #     f">>> {i:3d} Slot: {slot.strftime(TIME_FORMAT)} Factor: {factor:0.3f} Forced: {search_window['forced'].loc[slot]:6.0f}W  "
-                                    #     + f"End SOC: {search_window['soc_end'].loc[slot]:4.1f}%  SPR: {slot_power_required:6.0f}W  "
-                                    #     + f"SCPA: {slot_charger_power_available:6.0f}W  SAC: {slot_available_capacity:6.0f}W  Min Power: {min_power:6.0f}W "
-                                    #     + f"RSC: {remaining_slot_capacity:6.0f}W"
-                                    # )
-                                    # if not df["available"][slot]:
-                                    #     str_log_x += " <== FULL"
-                                    # _LOGGER.debug(str_log_x)
-
                                     slots.append(
                                         (
                                             slot,
@@ -367,80 +357,68 @@ class PVsystemModel:
 
         return slots
 
-    def _low_cost_charging(self, log=True):
-        slots = [slot for slot in self.slots]
+    async def low_cost_charging(self, base_slots=[]):
         best_cost = self.best_cost
         slots_added = 0
 
+        slots = base_slots
+
+        flows = await self.flows(slots=slots)
+
         # Check how many slots which aren't full are at an import price less than any export price:
-        max_export_price = self.flows[self.flows["forced"] <= 0]["export"].max()
-        if log:
-            _LOGGER.info("")
-            _LOGGER.info("Low Cost Charging")
-            _LOGGER.info("------------------")
-            _LOGGER.info("")
+        max_export_price = flows[flows["forced"] <= 0]["export"].max()
+        _LOGGER.info("")
+        _LOGGER.info("Low Cost Charging")
+        _LOGGER.info("------------------")
+        _LOGGER.info("")
 
-        # net_cost_previous = best_cost
-
-        if log:
-            _LOGGER.info(f"Max export price when there is no forced charge: {max_export_price:0.2f}p/kWh.")
+        _LOGGER.info(f"Max export price when there is no forced charge: {max_export_price:0.2f}p/kWh.")
 
         i = 0
         available = (
-            (self.flows["import"] < max_export_price)
-            & (self.flows["forced"] < self.inverter.charger_power)
-            & (self.flows["forced"] >= 0)
+            (flows["import"] < max_export_price)  # import price < max export price
+            & (flows["forced"] < self.inverter.charger_power)  # forced charge capacity available
+            & (flows["forced"] >= 0)  # not forced discharging
         )
 
         a0 = available.sum()
-        if log:
-            _LOGGER.info(f"{available.sum()} slots have an import price less than the max export price")
-        done = available.sum() == 0
-
-        if "C" in self._debug_cat:
-            _LOGGER.debug(f"\n{self.flows.to_string()}")
+        _LOGGER.info(f"{a0} slots have an import price less than the max export price")
+        done = a0 == 0
 
         while not done:
-            x = (
-                self.flows.loc[available]
-                .loc[self.flows["import"] < max_export_price]
-                .loc[self.flows["forced"] < self.inverter.charger_power]
-                .loc[self.flows["forced"] >= 0]
-                .copy()
-            )
+            low_cost_import_slots = flows.loc[
+                available
+                & (flows["import"] < max_export_price)
+                & (flows["forced"] < self.inverter.charger_power)
+                & (flows["forced"] >= 0)
+            ]
             i += 1
             done = i > a0
 
-            min_price = x["import"].min()
+            min_price = low_cost_import_slots["import"].min()
 
-            # Add rounding to ensure matching (may not be needed)
-            x["import"] = x["import"].round(2)
-            min_price = min_price.round(2)
+            # # Add rounding to ensure matching (may not be needed)
+            # x["import"] = x["import"].round(2)
+            # min_price = min_price.round(2)
 
-            if len(x[x["import"] == min_price]) > 0:
-                start_window = x[x["import"] == min_price].index[0]
+            if len(low_cost_import_slots[low_cost_import_slots["import"] == min_price]) > 0:
+                start_window = low_cost_import_slots[low_cost_import_slots["import"] == min_price].index[0]
                 available.loc[start_window] = False
                 str_log = ""
-                str_log = f"{available.sum():>2d} Min import price {min_price:5.2f}p/kWh at {start_window.strftime(TIME_FORMAT)} {x.loc[start_window]['forced']:4.0f}W "
+                str_log = f"{available.sum():>2d} Min import price {min_price:5.2f}p/kWh at {start_window.strftime(TIME_FORMAT)} {flows.loc[start_window]['forced']:4.0f}W "
 
                 str_log += "  "
                 factor = 1
 
-                str_log += f"SOC: {x.loc[start_window]['soc']:5.1f}%->{x.loc[start_window]['soc_end']:5.1f}% "
-
-                if "C" in self._debug_cat:
-                    _LOGGER.debug(
-                        f"SOC (before modelling Forced Charge): {x.loc[start_window]['soc']:5.1f}%->{x.loc[start_window]['soc_end']:5.1f}% "
-                    )
+                str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
                 forced_charge = min(
                     min(self.battery.max_charge_power, self.inverter.charger_power)
-                    - x["forced"].loc[start_window]
-                    - x["solar"].loc[start_window],
-                    ((100 - x["soc_end"].loc[start_window]) / 100 * self.battery.capacity) * 2 * factor,
+                    - flows["forced"].loc[start_window]
+                    - flows["solar"].loc[start_window],
+                    ((100 - flows["soc_end"].loc[start_window]) / 100 * self.battery.capacity) * 2 * factor,
                 )
-                if "C" in self._debug_cat:
-                    _LOGGER.debug(f"Forced Charge = {forced_charge}")
+
                 slot = (
                     start_window,
                     forced_charge,
@@ -448,26 +426,21 @@ class PVsystemModel:
 
                 slots.append(slot)
 
-                self.calculate_flows(slots=slots)
+                flows = await self.flows(slots=slots)
 
-                if "F" in self._debug_cat:
-                    _LOGGER.debug("self.flows after flows called = ")
-                    _LOGGER.debug(f"\n{self.flows.to_string()}")
-
-                net_cost = self.net_cost
+                net_cost = await self.net_cost(slots=slots)
 
                 str_log += f"Net: {net_cost:5.1f} "
-                if net_cost < best_cost - self._get_config("slot_threshold_p"):
+                if net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
                     str_log += f"New SOC: {self.flows.loc[start_window]['soc']:5.1f}%->{self.flows.loc[start_window]['soc_end']:5.1f}% "
                     str_log += f"Max export: {-self.flows['grid'].min():0.0f}W "
                     best_cost = net_cost
                     slots_added += 1
-                    if log:
-                        _LOGGER.info(str_log)
+
                 else:
                     # done = True
                     slots = slots[:-1]
-                    self.calculate_flows(slots=slots)
+                    flows = await self.flows(slots=slots)
 
                 done = available.sum() == 0
             else:
@@ -475,57 +448,65 @@ class PVsystemModel:
 
         cost_delta = best_cost - self.best_cost
         str_log = f"Charge net cost delta:{(-cost_delta):5.1f}p"
-        if cost_delta > -self._get_config("pass_threshold_p"):
-            self.slots_added = 0
-            str_log += f": < Pass Threshold {self._get_config('pass_threshold_p'):0.1f}p => Slots Excluded"
-            self.calculate_flows(slots=self.slots)
+
+        if cost_delta > -CONTROL_PASS_THREHOLD:
+            slots_added = 0
+            slots = base_slots
+            str_log += f": < Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Excluded"
+
         else:
-            str_log += f": > Pass Threshold {self._get_config('pass_threshold_p'):0.1f}p => Slots Included"
-            self.slots = slots
-            self.slots_added = slots_added
+            str_log += f": > Pass Threshold {CONTROL_PASS_THREHOLD:0.1f}p => Slots Included"
             self.best_cost = best_cost
 
-        if log:
             _LOGGER.info("")
             _LOGGER.info(str_log)
 
-    def _discharging(self, log=True):
-        # -----------
-        # Discharging
-        # -----------
-        slots = [slot for slot in self.slots]
+        return slots
+
+    async def discharging(self, base_slots=[]):
         best_cost = self.best_cost
-        slots_added = self.slots_added
+        slots_added = 0
+
+        slots = base_slots
+
+        flows = await self.flows(slots=slots)
 
         # Check how many slots which aren't full are at an export price less than any import price:
         min_import_price = self.flows["import"].min()
-        if log:
-            _LOGGER.info("")
-            _LOGGER.info("Forced Discharging")
-            _LOGGER.info("------------------")
-            _LOGGER.info("")
+        _LOGGER.info("")
+        _LOGGER.info("Forced Discharging")
+        _LOGGER.info("------------------")
+        _LOGGER.info("")
+
+        _LOGGER.info(f"Min import price when there is no forced discharge: {min_import_price:0.2f}p/kWh.")
 
         i = 0
-        available = (self.flows["export"] > min_import_price) & (self.flows["forced"] == 0)
+        available = (
+            (self.flows["export"] > min_import_price)
+            & (-flows["forced"] < self.inverter.inverter_power)
+            & (self.flows["forced"] <= 0)
+        )
+
         a0 = available.sum()
-        if log:
-            _LOGGER.info(f"{available.sum()} slots have an export price greater than the min import price")
-        done = available.sum() == 0
+        _LOGGER.info(f"{available.sum()} slots have an export price greater than the min import price")
+        done = a0 == 0
 
         while not done:
-            x = self.flows[available].copy()
+            potential_discharge_slots = flows.loc[available]
             i += 1
             done = i > a0
-            max_price = x["export"].max()
+            max_export_price = potential_discharge_slots["export"].max()
 
-            if len(x[x["export"] == max_price]) > 0:
-                start_window = x[x["export"] == max_price].index[0]
+            if len(potential_discharge_slots[potential_discharge_slots["export"] == max_export_price]) > 0:
+                start_window = potential_discharge_slots[
+                    potential_discharge_slots["export"] == max_export_price
+                ].index[0]
                 available.loc[start_window] = False
-                str_log = f"{available.sum():>2d} Max export price {max_price:5.2f}p/kWh at {start_window.strftime(TIME_FORMAT)} "
+                str_log = f"{available.sum():>2d} Max export price {max_export_price:5.2f}p/kWh at {start_window.strftime(TIME_FORMAT)} "
                 str_log += "  "
 
                 factor = 1
-                str_log += f"SOC: {x.loc[start_window]['soc']:5.1f}%->{x.loc[start_window]['soc_end']:5.1f}% "
+                str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
                 slot = (
                     start_window,
@@ -534,8 +515,8 @@ class PVsystemModel:
                             self.battery.max_discharge_power,
                             self.inverter.charger_power,
                         )
-                        - x["solar"].loc[start_window],
-                        ((x["soc_end"].loc[start_window] - self.battery.max_dod) / 100 * self.battery.capacity)
+                        - flows["solar"].loc[start_window],
+                        ((flows["soc_end"].loc[start_window] - self.battery.max_dod) / 100 * self.battery.capacity)
                         * 2
                         * factor,
                     ),

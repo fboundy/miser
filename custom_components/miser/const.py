@@ -334,6 +334,10 @@ class MiserEntity(RestoreEntity):
             entry_type="service",
         )
 
+    @property
+    def name(self):
+        return self._attr_name.replace("_", " ").title()
+
 
 INVERTER_DEFS = {
     "solis": {
