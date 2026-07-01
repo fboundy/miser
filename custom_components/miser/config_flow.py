@@ -18,8 +18,8 @@ from .const import (
     DEFAULTS,
     DOMAIN,
     NAME,
-    INVERTER_DEFS,
 )
+from .inverters import INVERTER_DEFS
 from .utils import get_integration_entities, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)

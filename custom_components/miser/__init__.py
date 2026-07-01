@@ -12,7 +12,6 @@ from .const import (
     PV_SYSTEM_ENTITIES,
     DOMAIN,
     IMPORT_EXPORT,
-    INVERTER_DEFS,
     ENTITY_TYPES,
     PLATFORMS,
     CONF_BATTERY_CAPACITY,
@@ -26,6 +25,7 @@ from .const import (
     CONF_OPTIMISER_FREQUENCY,
     MODEL_ENTITIES_AVAILABLE_WAIT,
 )
+from .inverters import get_inverter_controller_class
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
 from .utils import (
     get_instance_id,
@@ -185,20 +185,27 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.debug(f"Checking entities for inverter brand {brand} with integration {integration}")
     integration_data, integration_entities = await get_integration_entities(hass=hass, integration=integration)
+    inverter_controller_class = get_inverter_controller_class(brand, integration)
+    inverter_controller = inverter_controller_class(
+        hass=hass,
+        integration_data=integration_data,
+    )
+    entity_defs = inverter_controller.entity_defs
     entity_ids = [entity.entity_id for entity in integration_entities]
     integration_device_name = _infer_integration_device_name(
         entity_ids=entity_ids,
-        entity_defs=INVERTER_DEFS[brand][integration],
+        entity_defs=entity_defs,
     )
     _LOGGER.debug(f"Integration device name: {integration_device_name}")
 
     hass.data[DOMAIN]["integration_data"] = integration_data
+    hass.data[DOMAIN]["inverter_controller"] = inverter_controller
     index_lookup = {entity_id: i for i, entity_id in enumerate(entity_ids)}
 
     success = True
 
     for entity_type in ENTITY_TYPES:
-        entity_ids = INVERTER_DEFS[brand][integration].get(entity_type, [])
+        entity_ids = entity_defs.get(entity_type, [])
         for key in entity_ids:
             expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
             str_log = f"  {key:35s}: {expected_entity_id:50s} "
