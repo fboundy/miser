@@ -205,13 +205,15 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     success = True
 
     for entity_type in ENTITY_TYPES:
-        entity_ids = entity_defs.get(entity_type, [])
-        for key in entity_ids:
-            expected_entity_id = entity_ids[key].replace("{device_name}", integration_device_name)
-            str_log = f"  {key:35s}: {expected_entity_id:50s} "
-            index = index_lookup.get(expected_entity_id, None)
+        entity_ids = entity_defs.get(entity_type, {})
+        for key, template in entity_ids.items():
+            expected_entity_ids = _entity_template_candidates(template, integration_device_name)
+            str_log = f"  {key:35s}: {expected_entity_ids[0]:50s} "
+            index = next((index_lookup.get(entity_id) for entity_id in expected_entity_ids if entity_id in index_lookup), None)
             if index is None:
                 str_log += "Not found"
+                if len(expected_entity_ids) > 1:
+                    str_log += f" (tried {expected_entity_ids})"
 
                 # We may not need all the control entities so only fail if the main entities aren't all there
                 if entity_type == "model_entities":
@@ -232,20 +234,33 @@ def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> 
     candidates: dict[str, int] = {}
 
     for entity_type in ENTITY_TYPES:
-        for template in entity_defs.get(entity_type, {}).values():
-            domain, object_template = template.split(".", 1)
-            suffix = object_template.split("{device_name}", 1)[1]
+        for entity_templates in entity_defs.get(entity_type, {}).values():
+            for template in _entity_templates(entity_templates):
+                if "{device_name}" not in template:
+                    continue
+                domain, object_template = template.split(".", 1)
+                suffix = object_template.split("{device_name}", 1)[1]
 
-            for entity_id in entity_ids:
-                entity_domain, entity_object_id = entity_id.split(".", 1)
-                if entity_domain == domain and entity_object_id.endswith(suffix):
-                    candidate = entity_object_id[: -len(suffix)]
-                    candidates[candidate] = candidates.get(candidate, 0) + 1
+                for entity_id in entity_ids:
+                    entity_domain, entity_object_id = entity_id.split(".", 1)
+                    if entity_domain == domain and entity_object_id.endswith(suffix):
+                        candidate = entity_object_id[: -len(suffix)]
+                        candidates[candidate] = candidates.get(candidate, 0) + 1
 
     if candidates:
         return max(candidates, key=candidates.get)
 
     return entity_ids[0].split(".", 1)[1].split("_", 1)[0]
+
+
+def _entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
+    return [template.replace("{device_name}", device_name) for template in _entity_templates(templates)]
+
+
+def _entity_templates(templates: str | list[str]) -> list[str]:
+    if isinstance(templates, str):
+        return [templates]
+    return list(templates)
 
 
 async def _load_pv_system_model(hass: HomeAssistant) -> bool:

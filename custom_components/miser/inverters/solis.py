@@ -191,14 +191,20 @@ class SolisSolaxModbusInverter(SolisInverter):
         },
         "control_entities": {
             CONTROL_BATTERY_VOLTAGE: "sensor.{device_name}_battery_voltage",
-            CONTROL_TIMED_CHARGE_ON: "switch.{device_name}_timed_charge_slot_1_enable",
+            CONTROL_TIMED_CHARGE_ON: [
+                "switch.{device_name}_timed_charge_slot_1_enable",
+                "switch.inverter_timed_charge_slot_1_enable",
+            ],
             CONTROL_TIMED_CHARGE_START_HOURS: "number.{device_name}_timed_charge_start_hours",
             CONTROL_TIMED_CHARGE_START_MINUTES: "number.{device_name}_timed_charge_start_minutes",
             CONTROL_TIMED_CHARGE_END_HOURS: "number.{device_name}_timed_charge_end_hours",
             CONTROL_TIMED_CHARGE_END_MINUTES: "number.{device_name}_timed_charge_end_minutes",
             CONTROL_TIMED_CHARGE_CURRENT: "number.{device_name}_timed_charge_current",
             CONTROL_TIMED_CHARGE_SOC: "number.{device_name}_timed_charge_soc",
-            CONTROL_TIMED_DISCHARGE_ON: "switch.{device_name}_timed_discharge_slot_1_enable",
+            CONTROL_TIMED_DISCHARGE_ON: [
+                "switch.{device_name}_timed_discharge_slot_1_enable",
+                "switch.inverter_timed_discharge_slot_1_enable",
+            ],
             CONTROL_TIMED_DISCHARGE_START_HOURS: "number.{device_name}_timed_discharge_start_hours",
             CONTROL_TIMED_DISCHARGE_START_MINUTES: "number.{device_name}_timed_discharge_start_minutes",
             CONTROL_TIMED_DISCHARGE_END_HOURS: "number.{device_name}_timed_discharge_end_hours",
