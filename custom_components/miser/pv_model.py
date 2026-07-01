@@ -67,12 +67,12 @@ class BatteryModel:
         battery_capacity: int,
         battery_minimum_soc: int,
         battery_current_limit: int,
-        # voltage: int = 50,
+        voltage: int = 50,
     ) -> None:
         self.capacity = battery_capacity
         self.max_dod = battery_minimum_soc / 100
         self.current_limit_amps = battery_current_limit
-        # self.voltage = voltage
+        self.voltage = voltage
 
     def __str__(self):
         pass
@@ -428,12 +428,12 @@ class PVsystemModel:
 
                 flows = await self.flows(slots=slots)
 
-                net_cost = await self.net_cost(slots=slots)
+                net_cost = (await self.net_cost(slots=slots)).sum()
 
                 str_log += f"Net: {net_cost:5.1f} "
                 if net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
-                    str_log += f"New SOC: {self.flows.loc[start_window]['soc']:5.1f}%->{self.flows.loc[start_window]['soc_end']:5.1f}% "
-                    str_log += f"Max export: {-self.flows['grid'].min():0.0f}W "
+                    str_log += f"New SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
+                    str_log += f"Max export: {-flows['grid'].min():0.0f}W "
                     best_cost = net_cost
                     slots_added += 1
 

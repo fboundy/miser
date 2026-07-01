@@ -20,7 +20,7 @@ from .const import (
     NAME,
     INVERTER_DEFS,
 )
-from .utils import get_integration_entities
+from .utils import get_integration_entities, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -70,7 +70,9 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
             config_entries = hass.config_entries.async_entries(integration)
             if config_entries:
                 for entry in config_entries:
-                    _LOGGER.debug(f"Config entry for integration '{integration}': {entry.as_dict()}")
+                    _LOGGER.debug(
+                        f"Config entry for integration '{integration}': {redact_sensitive(entry.as_dict())}"
+                    )
 
             else:
                 _LOGGER.debug(f"No config entries found for integration '{integration}'")

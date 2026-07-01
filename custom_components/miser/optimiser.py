@@ -31,7 +31,7 @@ from .const import (
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
 )
-from .utils import get_value, get_entity_for_key
+from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 
@@ -199,7 +199,7 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
 
 
 async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
-    _LOGGER.debug(hass.data[DOMAIN]["octopus_info"])
+    _LOGGER.debug(redact_sensitive(hass.data[DOMAIN]["octopus_info"]))
     price = {}
     for direction in IMPORT_EXPORT:
         tariff = hass.data[DOMAIN]["tariffs"].get(direction, None)

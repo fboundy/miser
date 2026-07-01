@@ -1,6 +1,7 @@
 import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.instance_id import async_get
 from homeassistant.helpers import entity_registry as er
 
 from numpy import nan
@@ -9,13 +10,14 @@ from .const import DOMAIN, NULL_STATES, SWITCH_STATES, ENTITY_TYPES, DEFAULTS, U
 
 
 _LOGGER = logging.getLogger(__name__)
+SENSITIVE_KEY_PARTS = ("key", "secret", "token", "password", "account_id", "mpan", "serial_number")
 
 
 async def get_instance_id(hass: HomeAssistant):
     """
     Example to retrieve Home Assistant instance ID.
     """
-    instance_id = await hass.helpers.instance_id.async_get()
+    instance_id = await async_get(hass)
     return instance_id[-8:]
 
 
@@ -41,6 +43,7 @@ async def get_value(hass: HomeAssistant, key: str, default_value=None) -> bool |
 
     _LOGGER.debug(f"Getting value for {key}:")
     entity_id = get_entity_for_key(hass, key)
+    value = None
 
     _LOGGER.debug(f"  Entity ID: {entity_id}")
     if entity_id is not None:
@@ -56,8 +59,11 @@ async def get_value(hass: HomeAssistant, key: str, default_value=None) -> bool |
         if isinstance(value, str) and value.lower() in UNAVAILABLE_UNKNOWN:
             value = None
 
-    if state is None:
-        _LOGGER.debug(f"  State is none. Looking for default.")
+    if value is not None and value != value:
+        value = None
+
+    if value is None:
+        _LOGGER.debug(f"  State is unavailable. Looking for default.")
         if default_value is not None:
             value = default_value
             _LOGGER.debug(f"  Value: {value} [Explicit Default]")
@@ -103,7 +109,23 @@ def get_entity_for_key(hass: HomeAssistant, key: str) -> str:
 
 def log_config_entry(entry: ConfigEntry) -> None:
     # Log ConfigEntry contents
-    _LOGGER.debug(f"ConfigEntry data: {entry.data}")
-    _LOGGER.debug(f"ConfigEntry options: {entry.options}")
+    _LOGGER.debug(f"ConfigEntry data: {redact_sensitive(entry.data)}")
+    _LOGGER.debug(f"ConfigEntry options: {redact_sensitive(entry.options)}")
     _LOGGER.debug(f"ConfigEntry unique ID: {entry.unique_id}")
     _LOGGER.debug(f"ConfigEntry title: {entry.title}")
+
+
+def redact_sensitive(value):
+    if isinstance(value, dict):
+        return {
+            key: "***REDACTED***" if _is_sensitive_key(key) else redact_sensitive(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_sensitive(item) for item in value]
+    return value
+
+
+def _is_sensitive_key(key) -> bool:
+    key = str(key).lower()
+    return any(part in key for part in SENSITIVE_KEY_PARTS)

@@ -1,5 +1,4 @@
 import logging
-import asyncio
 from datetime import timedelta
 from functools import partial
 from logging.handlers import RotatingFileHandler
@@ -28,7 +27,14 @@ from .const import (
     MODEL_ENTITIES_AVAILABLE_WAIT,
 )
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
-from .utils import get_instance_id, get_integration_entities, get_value, get_key_for_entity, log_config_entry
+from .utils import (
+    get_instance_id,
+    get_integration_entities,
+    get_value,
+    get_key_for_entity,
+    log_config_entry,
+    redact_sensitive,
+)
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
 from .optimiser import optimise
 
@@ -78,7 +84,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     Set up Miser PV System Optimiser from a config entry.
     """
     setup_custom_logging()
-    asyncio.sleep(1)
 
     # Test the logging setup
     _LOGGER.debug("Custom logging initialized.")
@@ -94,12 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Forward entries to platform setup
     _LOGGER.debug("Forwarding config entries to platforms: switch, number.")
-    tasks = [
-        hass.async_create_task(hass.config_entries.async_forward_entry_setup(entry, platform))
-        for platform in PLATFORMS
-    ]
-
-    await asyncio.gather(*tasks, return_exceptions=True)
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     """
     Check that all the required entities are available for the selected inverter controller
@@ -111,21 +111,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not entities_available:
         _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
-        octopus = False
+        return False
 
-    else:
-        _log_all_entities(hass)
-        pv_model = await _load_pv_system_model(hass)
+    _log_all_entities(hass)
+    pv_model = await _load_pv_system_model(hass)
 
-        # Load the tariffs
-        # Check if we are using the OE integration:
-        octopus = await _get_octopus_info(hass, entry)
+    # Load the tariffs
+    # Check if we are using the OE integration:
+    octopus = await _get_octopus_info(hass, entry)
 
-    while not (pv_model and octopus):
-        asyncio.sleep(1)
-        _LOGGER.debug(f"Waiting for PV model and tariff info.")
+    if not (pv_model and octopus):
+        _LOGGER.error("Could not retrieve necessary PV model or tariff data")
+        return False
 
-    _LOGGER.debug(hass.data[DOMAIN].get("octopus_info"))
+    _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
 
     # Set up the schedule for the optimise
     await _schedule_optimiser(hass)
@@ -165,9 +164,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     Unload a config entry.
     """
-    unload_ok = await hass.config_entries.async_forward_entry_unload(entry, "switch")
-    unload_ok &= await hass.config_entries.async_forward_entry_unload(entry, "number")
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -179,11 +176,15 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _LOGGER.debug(f"Checking entities for inverter brand {brand} with integration {integration}")
     integration_data, integration_entities = await get_integration_entities(hass=hass, integration=integration)
-    integration_device_name = integration_entities[0].entity_id.split(".")[1].split("_")[0]
+    entity_ids = [entity.entity_id for entity in integration_entities]
+    integration_device_name = _infer_integration_device_name(
+        entity_ids=entity_ids,
+        entity_defs=INVERTER_DEFS[brand][integration],
+    )
     _LOGGER.debug(f"Integration device name: {integration_device_name}")
 
     hass.data[DOMAIN]["integration_data"] = integration_data
-    index_lookup = {entity.entity_id: i for i, entity in enumerate(integration_entities)}
+    index_lookup = {entity_id: i for i, entity_id in enumerate(entity_ids)}
 
     success = True
 
@@ -205,9 +206,30 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 entity_id = integration_entities[index].entity_id
                 hass.data[DOMAIN][entity_type][key] = entity_id
 
-            # _LOGGER.debug(str_log)
+            _LOGGER.debug(str_log)
 
     return success
+
+
+def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str:
+    """Infer the entity object prefix used by the selected inverter integration."""
+    candidates: dict[str, int] = {}
+
+    for entity_type in ENTITY_TYPES:
+        for template in entity_defs.get(entity_type, {}).values():
+            domain, object_template = template.split(".", 1)
+            suffix = object_template.split("{device_name}", 1)[1]
+
+            for entity_id in entity_ids:
+                entity_domain, entity_object_id = entity_id.split(".", 1)
+                if entity_domain == domain and entity_object_id.endswith(suffix):
+                    candidate = entity_object_id[: -len(suffix)]
+                    candidates[candidate] = candidates.get(candidate, 0) + 1
+
+    if candidates:
+        return max(candidates, key=candidates.get)
+
+    return entity_ids[0].split(".", 1)[1].split("_", 1)[0]
 
 
 async def _load_pv_system_model(hass: HomeAssistant) -> bool:
