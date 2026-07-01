@@ -27,6 +27,7 @@ from .const import (
     CONF_WEEKDAY_WEIGHTING,
     CONF_SOLCAST_CONFIDENCE,
     CONF_SHAPE_CONSUMPTION,
+    CONF_OPTIMISE_DISCHARGING,
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
@@ -95,6 +96,12 @@ async def optimise(hass: HomeAssistant, now=None):
     net_cost = await model.net_cost(slots=low_cost_charging)
     model.lcc_cost = net_cost.sum()
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
+
+    if await get_value(hass, CONF_OPTIMISE_DISCHARGING):
+        discharge_slots = await model.discharging(base_slots=low_cost_charging)
+        net_cost = await model.net_cost(slots=discharge_slots)
+        model.discharge_cost = net_cost.sum()
+        _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
 
 
 async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
