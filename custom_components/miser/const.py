@@ -312,6 +312,7 @@ SENSOR_ENTITIES = {
     "swap_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "lcc_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "discharge_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "fill_first_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     "optimised_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
 }
 

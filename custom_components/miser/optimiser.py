@@ -99,38 +99,27 @@ async def optimise(hass: HomeAssistant, now=None):
     model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
-    discharge_base_slots = model.lcc_slots
-    for iteration in range(OPTIMISER_MAX_ITERS):
-        previous_discharge_cost = getattr(model, "discharge_cost", None)
-        previous_best_cost = model.best_cost
+    lcc_best_cost = model.best_cost
+    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _optimise_discharge(
+        model,
+        base_slots=model.lcc_slots,
+        base_cost=lcc_best_cost,
+        fill_first=False,
+    )
+    _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
 
-        _LOGGER.debug(f"Discharge iteration {iteration + 1}")
-
-        local_lcc_slots = await model.low_cost_charging(base_slots=discharge_base_slots)
-        local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, local_lcc_slots)
-        _LOGGER.debug(f"Discharge local LCC cost: {local_lcc_cost:6.1f}")
-
-        discharge_slots = await model.discharging(base_slots=local_lcc_slots)
-        discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
-        _LOGGER.debug(f"Discharge cost: {discharge_cost:6.1f}")
-
-        discharge_improved = previous_discharge_cost is None or discharge_cost < previous_discharge_cost
-
-        if not discharge_improved:
-            model.best_cost = previous_best_cost
-            _LOGGER.debug(f"No discharge improvement in iteration {iteration + 1}; stopping optimisation loop")
-            break
-
-        model.discharge_slots = discharge_slots
-        model.discharge_cost = discharge_cost
-        model.discharge_flows = discharge_flows
-
-        discharge_base_slots = model.discharge_slots
+    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _optimise_discharge(
+        model,
+        base_slots=model.lcc_slots,
+        base_cost=lcc_best_cost,
+        fill_first=True,
+    )
+    _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
 
     optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
     cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
     if optimise_discharging:
-        cost_keys.append("discharge_cost")
+        cost_keys.extend(["discharge_cost", "fill_first_cost"])
 
     optimised_key = min(cost_keys, key=lambda key: getattr(model, key))
     model.optimised_cost = getattr(model, optimised_key)
@@ -145,7 +134,7 @@ async def optimise(hass: HomeAssistant, now=None):
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
 
-    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "optimised_cost"]:
+    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "fill_first_cost", "optimised_cost"]:
         entity = cost_entities.get(key)
         if entity is not None:
             await entity.async_set_native_value(
@@ -153,6 +142,43 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
                 slots=_serialise_slots(getattr(model, key.replace("_cost", "_flows"), None)),
                 flows=_serialise_flows(getattr(model, key.replace("_cost", "_flows"), None)),
             )
+
+
+async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_first: bool) -> tuple:
+    best_slots = list(base_slots)
+    best_cost = base_cost
+    best_flows = await model.flows(slots=best_slots)
+    iteration_base_slots = list(base_slots)
+    label = "Fill-first discharge" if fill_first else "Discharge"
+
+    model.best_cost = base_cost
+
+    for iteration in range(OPTIMISER_MAX_ITERS):
+        previous_best_cost = model.best_cost
+        _LOGGER.debug(f"{label} iteration {iteration + 1}")
+
+        discharge_base_slots = iteration_base_slots
+        if fill_first:
+            discharge_base_slots = await model.low_cost_charging(base_slots=iteration_base_slots)
+            local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, discharge_base_slots)
+            _LOGGER.debug(f"{label} local LCC cost: {local_lcc_cost:6.1f}")
+
+        discharge_slots = await model.discharging(base_slots=discharge_base_slots)
+        discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
+        _LOGGER.debug(f"{label} cost: {discharge_cost:6.1f}")
+
+        if discharge_cost >= best_cost:
+            model.best_cost = previous_best_cost
+            _LOGGER.debug(f"No {label.lower()} improvement in iteration {iteration + 1}; stopping optimisation loop")
+            break
+
+        best_slots = discharge_slots
+        best_cost = discharge_cost
+        best_flows = discharge_flows
+        iteration_base_slots = best_slots
+
+    model.best_cost = best_cost
+    return best_slots, best_cost, best_flows
 
 
 async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:
