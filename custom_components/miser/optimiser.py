@@ -137,10 +137,11 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "fill_first_cost", "optimised_cost"]:
         entity = cost_entities.get(key)
         if entity is not None:
+            flows = getattr(model, key.replace("_cost", "_flows"), None)
             await entity.async_set_native_value(
                 getattr(model, key, None),
-                slots=_serialise_slots(getattr(model, key.replace("_cost", "_flows"), None)),
-                flows=_serialise_flows(getattr(model, key.replace("_cost", "_flows"), None)),
+                slots=_serialise_slots(flows, merge=key == "optimised_cost"),
+                flows=_serialise_flows(flows),
             )
 
 
@@ -188,20 +189,75 @@ async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataF
     return net_cost.sum(), flows
 
 
-def _serialise_slots(flows: pd.DataFrame | None) -> list[dict]:
+def _serialise_slots(flows: pd.DataFrame | None, merge: bool = False) -> list[dict]:
     if flows is None:
         return []
 
-    serialised = []
     forced_flows = flows[flows["forced"] != 0]
+    if merge:
+        return _merge_slots(forced_flows)
+
+    serialised = []
     for start, row in forced_flows.iterrows():
         serialised.append(
             {
                 "start": start.isoformat() if hasattr(start, "isoformat") else start,
-                "power": _serialise_number(row.get("grid")),
+                "power": _serialise_number(row.get("forced")),
             }
         )
     return serialised
+
+
+def _merge_slots(flows: pd.DataFrame) -> list[dict]:
+    if flows.empty:
+        return []
+
+    merged = []
+    current_start = None
+    current_end = None
+    current_powers = []
+
+    for start, row in flows.iterrows():
+        power = float(row.get("forced"))
+        end = start + pd.Timedelta(hours=float(row.get("dt_hours")))
+
+        if (
+            current_start is None
+            or start != current_end
+            or not _within_power_tolerance(power, sum(current_powers) / len(current_powers))
+        ):
+            if current_start is not None:
+                merged.append(_serialise_merged_slot(current_start, current_end, current_powers))
+
+            current_start = start
+            current_end = end
+            current_powers = [power]
+            continue
+
+        current_end = end
+        current_powers.append(power)
+
+    if current_start is not None:
+        merged.append(_serialise_merged_slot(current_start, current_end, current_powers))
+
+    return merged
+
+
+def _within_power_tolerance(power: float, reference_power: float) -> bool:
+    if power == 0 or reference_power == 0:
+        return power == reference_power
+    if (power > 0) != (reference_power > 0):
+        return False
+
+    return abs(power - reference_power) <= max(abs(power), abs(reference_power)) * 0.10
+
+
+def _serialise_merged_slot(start, end, powers: list[float]) -> dict:
+    return {
+        "start": start.isoformat() if hasattr(start, "isoformat") else start,
+        "end": end.isoformat() if hasattr(end, "isoformat") else end,
+        "power": _serialise_number(sum(powers) / len(powers)),
+    }
 
 
 def _serialise_flows(flows: pd.DataFrame | None) -> list[dict]:
