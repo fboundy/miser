@@ -1,4 +1,5 @@
 import logging
+from math import isfinite
 
 import pandas as pd
 from numpy import isnan
@@ -15,6 +16,13 @@ from .const import (
 from .utils import get_value
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _is_finite(value) -> bool:
+    try:
+        return isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def get_dt_hours(df: pd.DataFrame | pd.Series) -> pd.Series:
@@ -149,6 +157,23 @@ class PVsystemModel:
     async def flows(self, *args, **kwargs):
         df = pd.concat([self.solar, self.consumption, self.prices], axis=1)
         df.index = self.index
+        for col in ["solar", "consumption", "import", "export"]:
+            if col not in df.columns:
+                df[col] = 0
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        missing_counts = df[["solar", "consumption", "import", "export"]].isna().sum()
+        missing_counts = missing_counts[missing_counts > 0]
+        if not missing_counts.empty:
+            _LOGGER.warning(
+                "Model input contained missing values; filling gaps before optimisation: %s",
+                ", ".join(f"{col}={count}" for col, count in missing_counts.items()),
+            )
+
+        df["solar"] = df["solar"].fillna(0)
+        df["consumption"] = df["consumption"].fillna(0)
+        df["import"] = df["import"].ffill().bfill().fillna(0)
+        df["export"] = df["export"].ffill().bfill().fillna(0)
         df["dt_hours"] = get_dt_hours(df)
         df["battery_grid_requirement"] = df["consumption"] - df["solar"]
         df["battery_temp"] = df["consumption"] - df["solar"]
@@ -433,7 +458,7 @@ class PVsystemModel:
                 net_cost = (await self.net_cost(slots=slots)).sum()
 
                 str_log += f"Net: {net_cost:5.1f} "
-                if net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
+                if _is_finite(net_cost) and _is_finite(best_cost) and net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
                     str_log += f"New SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
                     str_log += f"Max export: {-flows['grid'].min():0.0f}W "
                     best_cost = net_cost
@@ -521,7 +546,7 @@ class PVsystemModel:
             )
             forced_charge = max(min(charger_capacity, battery_capacity), 0)
 
-            if forced_charge > MODEL_MIN_SLOT_POWER:
+            if _is_finite(forced_charge) and forced_charge > MODEL_MIN_SLOT_POWER:
                 slots.append((start_window, forced_charge))
                 slots_added += 1
                 flows = await self.flows(slots=slots)
@@ -618,7 +643,7 @@ class PVsystemModel:
                 net_cost = (await self.net_cost(slots=slots)).sum()
 
                 str_log += f"Net: {net_cost:5.1f} "
-                if net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
+                if _is_finite(net_cost) and _is_finite(best_cost) and net_cost < best_cost - CONTROL_SLOT_THRESHOLD:
                     str_log += f"New SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
                     str_log += f"Max export: {-flows['grid'].min():0.0f}W "
                     best_cost = net_cost
@@ -706,7 +731,7 @@ class PVsystemModel:
                 f"then refill from {first_cheap_slot.strftime(TIME_FORMAT)} Net: {candidate_cost:6.1f}"
             )
 
-            if candidate_cost < best_cost - CONTROL_SLOT_THRESHOLD:
+            if _is_finite(candidate_cost) and _is_finite(best_cost) and candidate_cost < best_cost - CONTROL_SLOT_THRESHOLD:
                 _LOGGER.info(str_log + " Included")
                 best_slots = candidate_slots
                 best_cost = candidate_cost
@@ -720,10 +745,20 @@ class PVsystemModel:
 
     async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
         flows = await self.flows(slots=[])
+        required_cols = ["dt_hours", "consumption", "solar", "import", "export"]
+        invalid = flows[required_cols].isna().any(axis=1)
+        if invalid.any():
+            _LOGGER.warning("Whole-horizon skipped because model inputs still contain missing values")
+            return []
+
         min_energy = self.battery.max_dod * self.battery.capacity
         max_energy = self.battery.capacity
         step_wh = self.battery.capacity * soc_step_percent / 100
         initial_energy = self.initial_soc / 100 * self.battery.capacity
+
+        if not all(_is_finite(v) for v in [min_energy, max_energy, step_wh, initial_energy]) or step_wh <= 0:
+            _LOGGER.warning("Whole-horizon skipped because battery state inputs are invalid")
+            return []
 
         energy_levels = sorted(
             {
@@ -749,6 +784,9 @@ class PVsystemModel:
             next_paths: dict[float, list[tuple[pd.Timestamp, float]]] = {}
             dt_hours = float(row["dt_hours"])
             requirement = float(row["consumption"] - row["solar"])
+            if not all(_is_finite(v) for v in [dt_hours, requirement, row["import"], row["export"]]):
+                _LOGGER.warning("Whole-horizon skipped invalid interval at %s", start)
+                continue
 
             for state_key, cost in costs.items():
                 energy = energies[state_key]
@@ -763,6 +801,8 @@ class PVsystemModel:
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
                     candidate_cost = cost + slot_cost
+                    if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
+                        continue
                     next_key = self._whole_horizon_state_key(next_energy, state_resolution_wh)
                     if candidate_cost >= next_costs.get(next_key, float("inf")):
                         continue
@@ -777,6 +817,10 @@ class PVsystemModel:
             costs = next_costs
             energies = next_energies
             paths = next_paths
+
+            if not costs:
+                _LOGGER.warning("Whole-horizon found no valid states at %s", start)
+                return []
 
         best_key = min(
             costs,

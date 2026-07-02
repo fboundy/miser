@@ -3,6 +3,7 @@ import asyncio
 import pandas as pd
 from numpy import arange
 from datetime import datetime
+from math import isfinite
 from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import history
 from homeassistant.helpers import entity_registry as er
@@ -48,6 +49,13 @@ from .const import (
 from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+
+
+def _is_finite(value) -> bool:
+    try:
+        return isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
 
 
 def cl_to_weights(cl):
@@ -149,7 +157,12 @@ async def optimise(hass: HomeAssistant, now=None):
         _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
         cost_keys.append("whole_horizon_cost")
 
-    optimised_key = min(cost_keys, key=lambda key: getattr(model, key))
+    finite_cost_keys = [key for key in cost_keys if _is_finite(getattr(model, key, None))]
+    if not finite_cost_keys:
+        _LOGGER.warning("No finite optimiser costs were produced; skipping optimiser output")
+        return
+
+    optimised_key = min(finite_cost_keys, key=lambda key: getattr(model, key))
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
     model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
@@ -434,7 +447,7 @@ async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_fi
         discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
         _LOGGER.debug(f"{label} cost: {discharge_cost:6.1f}")
 
-        if discharge_cost >= best_cost:
+        if not _is_finite(discharge_cost) or not _is_finite(best_cost) or discharge_cost >= best_cost:
             model.best_cost = previous_best_cost
             _LOGGER.debug(f"No {label.lower()} improvement in iteration {iteration + 1}; stopping optimisation loop")
             break
@@ -452,13 +465,17 @@ async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataF
     net_cost = await model.net_cost(slots=slots)
     flows = await model.flows(slots=slots)
     terminal_penalty = _terminal_battery_penalty(model, flows)
+    cost = net_cost.sum() + terminal_penalty
+    if not _is_finite(cost):
+        _LOGGER.warning("Calculated non-finite optimiser cost; rejecting candidate")
+        return float("inf"), flows
     if terminal_penalty:
         _LOGGER.debug(
             "Terminal battery penalty: %6.1fp, terminal SOC: %5.1f%%",
             terminal_penalty,
             flows["soc_end"].iloc[-1],
         )
-    return net_cost.sum() + terminal_penalty, flows
+    return cost, flows
 
 
 def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
@@ -468,6 +485,8 @@ def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
 
     terminal_energy = float(flows["chg_end"].iloc[-1])
     target_energy = float(model.initial_soc) / 100 * model.battery.capacity
+    if not _is_finite(terminal_energy) or not _is_finite(target_energy):
+        return 0.0
     deficit_wh = max(target_energy - terminal_energy, 0)
     if deficit_wh <= 0:
         return 0.0
@@ -485,6 +504,8 @@ def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
             break
 
         dt_hours = float(row["dt_hours"])
+        if not _is_finite(dt_hours) or not _is_finite(row["import"]):
+            continue
         battery_wh = min(remaining_wh, charge_power * dt_hours * model.inverter.charger_efficiency)
         grid_kwh = battery_wh / model.inverter.charger_efficiency / 1000
         penalty += grid_kwh * float(row["import"])
@@ -492,6 +513,8 @@ def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
 
     if remaining_wh > 0:
         fallback_price = float(prices["import"].max())
+        if not _is_finite(fallback_price):
+            return penalty
         grid_kwh = remaining_wh / model.inverter.charger_efficiency / 1000
         penalty += grid_kwh * fallback_price
 
