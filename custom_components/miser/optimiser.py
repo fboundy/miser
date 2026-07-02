@@ -435,7 +435,59 @@ async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_fi
 async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:
     net_cost = await model.net_cost(slots=slots)
     flows = await model.flows(slots=slots)
-    return net_cost.sum(), flows
+    terminal_penalty = _terminal_battery_penalty(model, flows)
+    if terminal_penalty:
+        _LOGGER.debug(
+            "Terminal battery penalty: %6.1fp, terminal SOC: %5.1f%%",
+            terminal_penalty,
+            flows["soc_end"].iloc[-1],
+        )
+    return net_cost.sum() + terminal_penalty, flows
+
+
+def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
+    valuation_prices = getattr(model, "valuation_prices", None)
+    if flows is None or flows.empty or valuation_prices is None or valuation_prices.empty:
+        return 0.0
+
+    terminal_energy = float(flows["chg_end"].iloc[-1])
+    target_energy = float(model.initial_soc) / 100 * model.battery.capacity
+    deficit_wh = max(target_energy - terminal_energy, 0)
+    if deficit_wh <= 0:
+        return 0.0
+
+    charge_power = min(model.battery.max_charge_power, model.inverter.charger_power)
+    remaining_wh = deficit_wh
+    penalty = 0.0
+
+    prices = valuation_prices.copy()
+    if "dt_hours" not in prices.columns:
+        prices["dt_hours"] = _price_dt_hours(prices)
+
+    for _start, row in prices.sort_values("import").iterrows():
+        if remaining_wh <= 0:
+            break
+
+        dt_hours = float(row["dt_hours"])
+        battery_wh = min(remaining_wh, charge_power * dt_hours * model.inverter.charger_efficiency)
+        grid_kwh = battery_wh / model.inverter.charger_efficiency / 1000
+        penalty += grid_kwh * float(row["import"])
+        remaining_wh -= battery_wh
+
+    if remaining_wh > 0:
+        fallback_price = float(prices["import"].max())
+        grid_kwh = remaining_wh / model.inverter.charger_efficiency / 1000
+        penalty += grid_kwh * fallback_price
+
+    return penalty
+
+
+def _price_dt_hours(prices: pd.DataFrame) -> pd.Series:
+    if len(prices.index) < 2:
+        return pd.Series(index=prices.index, data=MODEL_PERIOD_MINUTES / 60)
+
+    dt_hours = -prices.index.to_series().diff(-1) / pd.Timedelta("60min")
+    return dt_hours.ffill().fillna(MODEL_PERIOD_MINUTES / 60)
 
 
 def _serialise_slots(flows: pd.DataFrame | None, merge: bool = False) -> list[dict]:
@@ -648,10 +700,11 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
 async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
     _LOGGER.debug(redact_sensitive(hass.data[DOMAIN]["octopus_info"]))
     price = {}
+    valuation_end = end + pd.Timedelta(hours=24)
     for direction in IMPORT_EXPORT:
         tariff = hass.data[DOMAIN]["tariffs"].get(direction, None)
         if tariff is not None:
-            price[direction] = await tariff.to_df(start=start, end=end - freq)
+            price[direction] = await tariff.to_df(start=start, end=valuation_end - freq)
             price[direction].rename(columns={"unit": direction}, inplace=True)
             # _LOGGER.debug(f"\n{price[direction]}")
     if "import" not in price:
@@ -659,7 +712,8 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     prices = pd.concat(price.values(), axis=1)
     if "export" not in prices.columns:
         prices["export"] = 0
-    hass.data[DOMAIN]["model"].prices = prices
+    hass.data[DOMAIN]["model"].prices = prices.loc[start : end - freq]
+    hass.data[DOMAIN]["model"].valuation_prices = prices.loc[end : valuation_end - freq]
 
 
 async def _get_hass_power_from_daily_kwh(

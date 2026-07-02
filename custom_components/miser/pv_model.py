@@ -771,13 +771,14 @@ class PVsystemModel:
             costs = next_costs
             paths = next_paths
 
-        terminal_levels = [energy for energy in costs if energy >= initial_energy]
-        if not terminal_levels:
-            terminal_levels = list(costs)
-        best_terminal = min(terminal_levels, key=lambda energy: costs[energy])
+        best_terminal = min(
+            costs,
+            key=lambda energy: costs[energy] + self._whole_horizon_terminal_penalty(energy),
+        )
         _LOGGER.info(
-            "Whole-horizon cost estimate: %6.1fp, terminal SOC: %5.1f%%",
+            "Whole-horizon cost estimate: %6.1fp raw, %6.1fp adjusted, terminal SOC: %5.1f%%",
             costs[best_terminal],
+            costs[best_terminal] + self._whole_horizon_terminal_penalty(best_terminal),
             best_terminal / self.battery.capacity * 100,
         )
         return paths[best_terminal]
@@ -849,6 +850,45 @@ class PVsystemModel:
 
         grid = round(requirement - battery_power, 0)
         return next_energy, grid
+
+    def _whole_horizon_terminal_penalty(self, terminal_energy: float) -> float:
+        valuation_prices = getattr(self, "valuation_prices", None)
+        if valuation_prices is None or valuation_prices.empty:
+            return 0.0
+
+        target_energy = self.initial_soc / 100 * self.battery.capacity
+        remaining_wh = max(target_energy - terminal_energy, 0)
+        if remaining_wh <= 0:
+            return 0.0
+
+        charge_power = min(self.battery.max_charge_power, self.inverter.charger_power)
+        penalty = 0.0
+        prices = valuation_prices.copy()
+        if "dt_hours" not in prices.columns:
+            prices["dt_hours"] = self._price_dt_hours(prices)
+
+        for _start, row in prices.sort_values("import").iterrows():
+            if remaining_wh <= 0:
+                break
+
+            dt_hours = float(row["dt_hours"])
+            battery_wh = min(remaining_wh, charge_power * dt_hours * self.inverter.charger_efficiency)
+            grid_kwh = battery_wh / self.inverter.charger_efficiency / 1000
+            penalty += grid_kwh * float(row["import"])
+            remaining_wh -= battery_wh
+
+        if remaining_wh > 0:
+            fallback_price = float(prices["import"].max())
+            penalty += remaining_wh / self.inverter.charger_efficiency / 1000 * fallback_price
+
+        return penalty
+
+    def _price_dt_hours(self, prices: pd.DataFrame) -> pd.Series:
+        if len(prices.index) < 2:
+            return pd.Series(index=prices.index, data=0.5)
+
+        dt_hours = -prices.index.to_series().diff(-1) / pd.Timedelta("60min")
+        return dt_hours.ffill().fillna(0.5)
 
 
 #     async def optimised_force(
