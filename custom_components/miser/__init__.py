@@ -94,7 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     uuid = await get_instance_id(hass)
     _LOGGER.debug(f"UUID: {uuid}")
-    hass.data[DOMAIN] = {"uuid": uuid}
+    entry.runtime_data = {"uuid": uuid}
+    hass.data[DOMAIN] = entry.runtime_data
 
     log_config_entry(entry)
 
