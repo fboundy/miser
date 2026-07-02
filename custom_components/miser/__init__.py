@@ -173,7 +173,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """
     Unload a config entry.
     """
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    data = hass.data.get(DOMAIN, {})
+    data["unloading"] = True
+
+    for handle_key in ("optimiser_initial_schedule", "optimiser_schedule"):
+        unsubscribe = data.pop(handle_key, None)
+        if unsubscribe is not None:
+            unsubscribe()
+            _LOGGER.debug("Cancelled %s", handle_key)
+
+    for unsubscribe in data.pop("config_callbacks", []):
+        unsubscribe()
+    _LOGGER.debug("Cancelled Miser config callbacks")
+
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if unload_ok:
+        hass.data.pop(DOMAIN, None)
+    else:
+        data["unloading"] = False
+
+    return unload_ok
 
 
 async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -298,15 +317,20 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
 
 
 async def _schedule_optimiser(hass):
+    if hass.data.get(DOMAIN, {}).get("unloading"):
+        _LOGGER.debug("Skipping optimiser schedule while Miser is unloading")
+        return
+
     optimiser_minutes = await get_value(hass=hass, key=CONF_OPTIMISER_FREQUENCY, default_value=10)
     _LOGGER.debug(f"Optimiser frequency: {optimiser_minutes} minutes")
     optimiser_interval = timedelta(minutes=optimiser_minutes)
 
     try:
         # Cancel the current schedule if it exists
-        if DOMAIN in hass.data and "optimiser_schedule" in hass.data[DOMAIN]:
-            hass.data[DOMAIN]["optimiser_schedule"]()
-            _LOGGER.debug("Previous schedule cancelled.")
+        for handle_key in ("optimiser_initial_schedule", "optimiser_schedule"):
+            if DOMAIN in hass.data and handle_key in hass.data[DOMAIN]:
+                hass.data[DOMAIN].pop(handle_key)()
+                _LOGGER.debug("Previous %s cancelled.", handle_key)
 
         # Get the current time
         now = dt_util.utcnow()
@@ -322,7 +346,15 @@ async def _schedule_optimiser(hass):
 
         # Define a wrapper function for the initial run
         async def initial_run():
+            if hass.data.get(DOMAIN, {}).get("unloading"):
+                _LOGGER.debug("Skipping initial _optimise run while Miser is unloading")
+                return
+
             await optimise(hass)
+            if hass.data.get(DOMAIN, {}).get("unloading"):
+                _LOGGER.debug("Skipping recurring optimiser schedule while Miser is unloading")
+                return
+
             _LOGGER.debug("Initial run of _optimise completed.")
 
             # Calculate the next aligned run time after the initial run
@@ -342,21 +374,29 @@ async def _schedule_optimiser(hass):
             _LOGGER.debug("Recurring async_track_time_interval successfully set up.")
 
         # Schedule the initial run after 2 minutes
-        hass.loop.call_later(initial_delay, lambda: hass.async_create_task(initial_run()))
+        hass.data[DOMAIN]["optimiser_initial_schedule"] = hass.loop.call_later(
+            initial_delay,
+            lambda: hass.async_create_task(initial_run()),
+        ).cancel
 
     except Exception as e:
         _LOGGER.error(f"Failed to set up _schedule_optimiser: {e}")
 
 
 async def _setup_config_callbacks(hass):
+    callbacks = hass.data[DOMAIN].setdefault("config_callbacks", [])
     for entity_id in hass.data[DOMAIN]["config_entities"].values():
         callback = partial(_state_change_callback, hass)
-        async_track_state_change(hass, entity_id, callback)
+        callbacks.append(async_track_state_change(hass, entity_id, callback))
     return True
 
 
 async def _state_change_callback(hass, entity_id, old_state, new_state):
     """Callback function triggered when the config entity state changes."""
+    if hass.data.get(DOMAIN, {}).get("unloading"):
+        _LOGGER.debug("Ignoring config callback while Miser is unloading")
+        return
+
     _LOGGER.debug(
         f"Entity {entity_id} changed from {old_state.state if old_state else 'None'} to {new_state.state if new_state else 'None'}"
     )

@@ -58,7 +58,11 @@ def cl_to_weights(cl):
 
 
 async def optimise(hass: HomeAssistant, now=None):
-    data = hass.data[DOMAIN]
+    data = hass.data.get(DOMAIN)
+    if not data or data.get("unloading"):
+        _LOGGER.debug("Skipping optimise because Miser is unloading or unloaded")
+        return
+
     freq = pd.Timedelta(minutes=MODEL_PERIOD_MINUTES)
     # Access hass.data
     uuid = data["uuid"]
@@ -152,8 +156,20 @@ async def optimise(hass: HomeAssistant, now=None):
     model.best_cost = model.optimised_cost
     _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
 
+    if _is_unloading(hass):
+        _LOGGER.debug("Skipping optimiser output because Miser is unloading")
+        return
+
     await _write_cost_entities(hass, model)
+    if _is_unloading(hass):
+        _LOGGER.debug("Skipping inverter control because Miser is unloading")
+        return
+
     await _apply_inverter_control(hass, model)
+
+
+def _is_unloading(hass: HomeAssistant) -> bool:
+    return bool(hass.data.get(DOMAIN, {}).get("unloading"))
 
 
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
