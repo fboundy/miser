@@ -32,6 +32,7 @@ from .const import (
     CONF_SOLCAST_CONFIDENCE,
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
+    CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -244,7 +245,16 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
         next_slot=_find_next_control_slot(control_slots, now),
     )
 
-    slots_to_apply = _slots_to_apply(control_slots, now)
+    optimiser_minutes = float(
+        await get_value(
+            hass,
+            CONF_OPTIMISER_FREQUENCY,
+            default_value=DEFAULTS[CONF_OPTIMISER_FREQUENCY],
+        )
+        or DEFAULTS[CONF_OPTIMISER_FREQUENCY]
+    )
+    apply_window = pd.Timedelta(minutes=optimiser_minutes)
+    slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
     if schedule_checks:
         _schedule_control_compliance_checks(hass, control_slots)
     if slots_to_apply:
@@ -296,13 +306,16 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
             _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
 
 
-def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp) -> list[dict]:
+def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
+    apply_before = now + apply_window
     slots = []
     for state in ["charging", "discharging"]:
         state_slots = [
             slot
             for slot in control_slots
-            if slot["state"] == state and slot["end"] > now
+            if slot["state"] == state
+            and slot["end"] > now
+            and slot["start"] <= apply_before
         ]
         if state_slots:
             slots.append(sorted(state_slots, key=lambda slot: slot["start"])[0])
