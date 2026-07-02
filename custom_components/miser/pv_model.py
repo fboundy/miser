@@ -718,7 +718,7 @@ class PVsystemModel:
         self.best_cost = base_best_cost
         return best_slots, best_cost, paired_slots_added
 
-    async def whole_horizon(self, soc_step_percent: int = 5) -> list:
+    async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
         flows = await self.flows(slots=[])
         min_energy = self.battery.max_dod * self.battery.capacity
         max_energy = self.battery.capacity
@@ -734,8 +734,10 @@ class PVsystemModel:
         )
         initial_energy = round(initial_energy, 1)
 
-        costs: dict[float, float] = {initial_energy: 0.0}
-        paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_energy: []}
+        initial_key = self._whole_horizon_state_key(initial_energy, state_resolution_wh)
+        costs: dict[float, float] = {initial_key: 0.0}
+        energies: dict[float, float] = {initial_key: initial_energy}
+        paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_key: []}
 
         _LOGGER.info("")
         _LOGGER.info("Whole Horizon Optimisation (Beta)")
@@ -743,11 +745,13 @@ class PVsystemModel:
 
         for start, row in flows.iterrows():
             next_costs: dict[float, float] = {}
+            next_energies: dict[float, float] = {}
             next_paths: dict[float, list[tuple[pd.Timestamp, float]]] = {}
             dt_hours = float(row["dt_hours"])
             requirement = float(row["consumption"] - row["solar"])
 
-            for energy, cost in costs.items():
+            for state_key, cost in costs.items():
+                energy = energies[state_key]
                 for next_energy, forced_power, grid in self._whole_horizon_actions(
                     energy=energy,
                     energy_levels=energy_levels,
@@ -759,29 +763,36 @@ class PVsystemModel:
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
                     candidate_cost = cost + slot_cost
-                    if candidate_cost >= next_costs.get(next_energy, float("inf")):
+                    next_key = self._whole_horizon_state_key(next_energy, state_resolution_wh)
+                    if candidate_cost >= next_costs.get(next_key, float("inf")):
                         continue
 
-                    next_costs[next_energy] = candidate_cost
-                    path = list(paths[energy])
+                    next_costs[next_key] = candidate_cost
+                    next_energies[next_key] = next_energy
+                    path = list(paths[state_key])
                     if forced_power is not None and abs(forced_power) >= MODEL_MIN_SLOT_POWER:
                         path.append((start, round(forced_power, 0)))
-                    next_paths[next_energy] = path
+                    next_paths[next_key] = path
 
             costs = next_costs
+            energies = next_energies
             paths = next_paths
 
-        best_terminal = min(
+        best_key = min(
             costs,
-            key=lambda energy: costs[energy] + self._whole_horizon_terminal_penalty(energy),
+            key=lambda state_key: costs[state_key] + self._whole_horizon_terminal_penalty(energies[state_key]),
         )
+        best_terminal = energies[best_key]
         _LOGGER.info(
             "Whole-horizon cost estimate: %6.1fp raw, %6.1fp adjusted, terminal SOC: %5.1f%%",
-            costs[best_terminal],
-            costs[best_terminal] + self._whole_horizon_terminal_penalty(best_terminal),
+            costs[best_key],
+            costs[best_key] + self._whole_horizon_terminal_penalty(best_terminal),
             best_terminal / self.battery.capacity * 100,
         )
-        return paths[best_terminal]
+        return paths[best_key]
+
+    def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
+        return round(energy / state_resolution_wh) * state_resolution_wh
 
     def _whole_horizon_actions(
         self,
@@ -799,6 +810,18 @@ class PVsystemModel:
             dt_hours=dt_hours,
         )
         actions.append((natural_energy, None, natural_grid))
+
+        for forced_power in (
+            min(self.battery.max_charge_power, self.inverter.charger_power),
+            -min(self.battery.max_discharge_power, self.inverter.inverter_power),
+        ):
+            actual_energy, grid = self._whole_horizon_transition(
+                energy=energy,
+                requirement=requirement,
+                forced_power=forced_power,
+                dt_hours=dt_hours,
+            )
+            actions.append((actual_energy, forced_power, grid))
 
         for next_energy in energy_levels:
             delta = next_energy - energy

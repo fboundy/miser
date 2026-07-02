@@ -355,10 +355,20 @@ class Tariff:
                         ]
                     )
 
-            # If the index frequency >30 minutes so we need to just extend it:
-            if (len(df) > 1 and ((df.index[-1] - df.index[-2]).total_seconds() / 60) > 30) or len(df) == 1:
+            # If the index frequency >30 minutes this is a block tariff. Expand known blocks to
+            # 30-minute slots, then repeat the last 24-hour pattern for unpublished future slots.
+            if len(df) == 1:
                 newindex = pd.date_range(df.index[0], end, freq="30min")
                 df = df.reindex(index=newindex).ffill().loc[start:]
+            elif (df.index[-1] - df.index[-2]).total_seconds() / 60 > 30:
+                newindex = pd.date_range(df.index[0], df.index[-1], freq="30min")
+                df = df.reindex(index=newindex).ffill()
+                while df.index[-1] < end:
+                    dfx = df.iloc[-48:].copy()
+                    dfx.index = dfx.index + pd.Timedelta(hours=24)
+                    df = pd.concat([df, dfx])
+                    df = df[~df.index.duplicated(keep="first")]
+                df = df.loc[start:end]
             else:
                 i = 0
                 while df.index[-1] < end and i < 7:
