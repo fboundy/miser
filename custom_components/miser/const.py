@@ -130,6 +130,9 @@ CONTROL_TIMED_DISCHARGE_BUTTON = "update_discharge_times"
 CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON = "update_charge_discharge_times"
 CONTROL_INVERTER_MODE = "energy_storage_control_switch"
 CONTROL_BACKUP_MODE_SOC = "backup_mode_soc"
+CONTROL_RTC = "rtc"
+CONTROL_SYNC_RTC = "sync_rtc"
+CONTROL_SYNC_RTC_OFFSET = "sync_rtc_offset"
 CONTROL_PASS_THREHOLD = 4
 CONTROL_SLOT_THRESHOLD = 1
 

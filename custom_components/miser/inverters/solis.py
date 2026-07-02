@@ -10,6 +10,9 @@ from ..const import (
     CONTROL_BACKUP_MODE_SOC,
     CONTROL_BATTERY_VOLTAGE,
     CONTROL_INVERTER_MODE,
+    CONTROL_RTC,
+    CONTROL_SYNC_RTC,
+    CONTROL_SYNC_RTC_OFFSET,
     CONTROL_TIMED_CHARGE_BUTTON,
     CONTROL_TIMED_CHARGE_CURRENT,
     CONTROL_TIMED_CHARGE_END_HOURS,
@@ -216,14 +219,40 @@ class SolisSolaxModbusInverter(SolisInverter):
             CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON: "button.{device_name}_update_charge_discharge_times",
             CONTROL_INVERTER_MODE: "select.{device_name}_energy_storage_control_switch",
             CONTROL_BACKUP_MODE_SOC: "number.{device_name}_backup_mode_soc",
+            CONTROL_RTC: "sensor.{device_name}_rtc",
+            CONTROL_SYNC_RTC: "button.{device_name}_sync_rtc",
+            CONTROL_SYNC_RTC_OFFSET: "number.{device_name}_sync_rtc_offset",
         },
     }
 
     async def get_time(self) -> datetime:
-        return dt_util.now()
+        state = self._state(self._required_entity_id(CONTROL_RTC))
+        if not self._is_available(state):
+            raise RuntimeError("SolaX Modbus RTC sensor is unavailable")
+
+        parsed = self._parse_datetime_state(state.state)
+        if parsed is None:
+            raise RuntimeError(f"Unable to parse SolaX Modbus RTC state: {state.state!r}")
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        return dt_util.as_local(parsed)
 
     async def set_time(self, time: datetime) -> None:
-        _LOGGER.debug("SolaX Modbus time control is not exposed; ignoring set_time(%s)", time)
+        target = dt_util.as_local(time) if time.tzinfo is not None else time.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        target_naive = target.replace(tzinfo=None)
+        now_naive = dt_util.now().replace(tzinfo=None)
+        offset = round((target_naive - now_naive).total_seconds())
+        if abs(offset) > 3600:
+            raise RuntimeError(
+                "SolaX Modbus RTC sync only supports offsets within +/-3600 seconds; "
+                f"requested offset was {offset} seconds"
+            )
+
+        await self._set_number(CONTROL_SYNC_RTC_OFFSET, offset)
+        await self._press(CONTROL_SYNC_RTC)
+        if offset != 0:
+            await self._set_number(CONTROL_SYNC_RTC_OFFSET, 0)
 
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         await self._set_time_window(
@@ -353,6 +382,23 @@ class SolisSolaxModbusInverter(SolisInverter):
         if voltage is None or voltage <= 0:
             return None
         return abs(float(power)) / voltage
+
+    def _parse_datetime_state(self, value: str) -> datetime | None:
+        parsed = dt_util.parse_datetime(value)
+        if parsed is not None:
+            return parsed
+
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%d/%m/%y %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(value, fmt)
+            except ValueError:
+                continue
+        return None
 
     def _switch_on(self, key: str) -> bool:
         entity_id = self._entity_id(key)
