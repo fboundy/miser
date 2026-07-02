@@ -130,6 +130,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["integration"] = lookup.get(self._options["integration_name"], "")
 
             if self._options["integration"] in self._discovered_integrations:
+                await self.async_set_unique_id(f"{DOMAIN}_{self._data['inverter_brand']}_{self._options['integration']}")
+                self._abort_if_unique_id_configured()
                 user_input["controller_config_entry"], associated_entities = await get_integration_entities(
                     hass=self.hass, integration=self._options["integration"]
                 )

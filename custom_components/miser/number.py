@@ -7,6 +7,7 @@ from homeassistant.components.number import NumberEntity
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
+PARALLEL_UPDATES = 0
 
 from .const import DOMAIN, NUMBER_ENTITIES, MiserEntity, LAST_UPDATED
 

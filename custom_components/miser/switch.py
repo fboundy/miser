@@ -5,6 +5,7 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
+PARALLEL_UPDATES = 0
 
 from .const import DOMAIN, SWITCH_ENTITIES, MiserEntity
 
