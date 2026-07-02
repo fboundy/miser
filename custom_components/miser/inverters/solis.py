@@ -143,6 +143,33 @@ class SolisInverter(InverterController):
             blocking=True,
         )
 
+    async def _set_time(self, key: str, value: datetime) -> None:
+        value = dt_util.as_local(value)
+        await self.hass.services.async_call(
+            "time",
+            "set_value",
+            {
+                "entity_id": self._required_entity_id(key),
+                "time": value.strftime("%H:%M:%S"),
+            },
+            blocking=True,
+        )
+
+    async def _set_current(self, key: str, current: float) -> None:
+        actual_current = self._numeric_state(key)
+        if actual_current is None or abs(actual_current - current) < 0.1:
+            reference_current = current if actual_current is None else actual_current
+            nudge = reference_current - 0.1 if reference_current >= 0.1 else reference_current + 0.1
+            await self._set_number(key, nudge)
+
+        await self._set_number(key, current)
+
+    async def _power_to_current(self, power: float) -> float:
+        current = await self.power_to_current(power)
+        if current is None:
+            raise RuntimeError("Battery voltage is unavailable; cannot convert power to Solis current")
+        return current
+
     def _target_soc(self, target_soc: float) -> int:
         return round(max(0, min(100, float(target_soc))))
 
@@ -362,21 +389,6 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._set_number(end_hours_key, end.hour)
         await self._set_number(end_minutes_key, end.minute)
 
-    async def _set_current(self, key: str, current: float) -> None:
-        actual_current = self._numeric_state(key)
-        if actual_current is None or abs(actual_current - current) < 0.1:
-            reference_current = current if actual_current is None else actual_current
-            nudge = reference_current - 0.1 if reference_current >= 0.1 else reference_current + 0.1
-            await self._set_number(key, nudge)
-
-        await self._set_number(key, current)
-
-    async def _power_to_current(self, power: float) -> float:
-        current = await self.power_to_current(power)
-        if current is None:
-            raise RuntimeError("Battery voltage is unavailable; cannot convert power to Solax current")
-        return current
-
     async def power_to_current(self, power: float) -> float | None:
         voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
         if voltage is None or voltage <= 0:
@@ -414,12 +426,101 @@ class SolisCloudInverter(SolisInverter):
     integration: ClassVar[str] = "solis"
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {
         "model_entities": {
-            MODEL_BATTERY_SOC: "sensor.{device_name}_battery_soc",
-            MODEL_GRID_IMPORT_TODAY: "sensor.{device_name}_grid_import_today",
-            MODEL_GRID_EXPORT_TODAY: "sensor.{device_name}_grid_export_today",
-            MODEL_CONSUMPTION_TODAY: "sensor.{device_name}_consumption_today",
+            MODEL_BATTERY_SOC: "sensor.{device_name}_solis_remaining_battery_capacity",
+            MODEL_GRID_IMPORT_TODAY: "sensor.{device_name}_solis_daily_grid_energy_purchased",
+            MODEL_GRID_EXPORT_TODAY: "sensor.{device_name}_solis_daily_on_grid_energy",
+            MODEL_CONSUMPTION_TODAY: "sensor.{device_name}_solis_daily_grid_energy_used",
+        },
+        "control_entities": {
+            CONTROL_BATTERY_VOLTAGE: "sensor.{device_name}_solis_battery_voltage",
+            CONTROL_TIMED_CHARGE_START_HOURS: "time.{device_name}_solis_timed_charge_start_1",
+            CONTROL_TIMED_CHARGE_END_HOURS: "time.{device_name}_solis_timed_charge_end_1",
+            CONTROL_TIMED_CHARGE_CURRENT: "number.{device_name}_solis_timed_charge_current_1",
+            CONTROL_TIMED_CHARGE_SOC: "number.{device_name}_solis_timed_charge_soc_1",
+            CONTROL_TIMED_DISCHARGE_START_HOURS: "time.{device_name}_solis_timed_discharge_start_1",
+            CONTROL_TIMED_DISCHARGE_END_HOURS: "time.{device_name}_solis_timed_discharge_end_1",
+            CONTROL_TIMED_DISCHARGE_CURRENT: "number.{device_name}_solis_timed_discharge_current_1",
+            CONTROL_TIMED_DISCHARGE_SOC: "number.{device_name}_solis_timed_discharge_soc_1",
+            CONTROL_TIMED_CHARGE_BUTTON: "button.{device_name}_solis_update_timed_charge_1",
+            CONTROL_TIMED_DISCHARGE_BUTTON: "button.{device_name}_solis_update_timed_discharge_1",
+            CONTROL_INVERTER_MODE: "select.{device_name}_solis_energy_storage_control_switch",
+            CONTROL_BACKUP_MODE_SOC: "number.{device_name}_solis_backup_soc",
         },
     }
+
+    async def get_time(self) -> datetime:
+        return dt_util.now()
+
+    async def set_time(self, time: datetime) -> None:
+        _LOGGER.debug("Solis integration inverter RTC control is not exposed; ignoring set_time(%s)", time)
+
+    async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
+        await self._set_timed_mode()
+        await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
+        await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
+        await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._press(CONTROL_TIMED_CHARGE_BUTTON)
+
+    async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
+        await self._set_timed_mode()
+        await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
+        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
+        await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
+
+    async def control_idle(self) -> None:
+        await self.set_mode("Self-Use - No Timed Charge/Discharge")
+
+    async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
+        if state == "idle":
+            return await self.get_mode() == "Self-Use - No Timed Charge/Discharge"
+
+        if state == "charging":
+            current_key = CONTROL_TIMED_CHARGE_CURRENT
+            soc_key = CONTROL_TIMED_CHARGE_SOC
+        elif state == "discharging":
+            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
+            soc_key = CONTROL_TIMED_DISCHARGE_SOC
+        else:
+            return False
+
+        requested_current = await self._power_to_current(power)
+        actual_current = self._numeric_state(current_key)
+        actual_soc = self._numeric_state(soc_key)
+        return (
+            await self.get_mode() == "Self-Use"
+            and actual_current is not None
+            and actual_soc is not None
+            and abs(actual_current - requested_current) <= 0.1
+            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+        )
+
+    async def set_mode(self, mode: str) -> None:
+        await self.hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
+                "option": mode,
+            },
+            blocking=True,
+        )
+
+    async def get_mode(self) -> str:
+        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
+        return None if state is None else state.state
+
+    async def power_to_current(self, power: float) -> float | None:
+        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
+        if voltage is None or voltage <= 0:
+            return None
+        return abs(float(power)) / voltage
+
+    async def _set_timed_mode(self) -> None:
+        if await self.get_mode() != "Self-Use":
+            await self.set_mode("Self-Use")
 
 
 class SolisConnectInverter(SolisInverter):
