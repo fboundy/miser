@@ -270,11 +270,12 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     for slot in slots_to_apply:
         try:
             _LOGGER.debug(
-                "Applying inverter control: %s %s-%s %.1fW target %.1f%%",
+                "Applying inverter control: %s %s-%s %.1fW %.2fA target %.1f%%",
                 slot["state"],
                 slot["start"],
                 slot["end"],
                 slot["power"],
+                await _power_to_current(inverter_controller, abs(slot["power"])),
                 slot["target_soc"],
             )
             if slot["state"] == "charging":

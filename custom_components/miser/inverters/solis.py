@@ -160,10 +160,16 @@ class SolisInverter(InverterController):
 
     async def _set_current(self, key: str, current: float) -> None:
         actual_current = self._numeric_state(key)
-        if actual_current is None or abs(actual_current - current) < 0.1:
-            reference_current = current if actual_current is None else actual_current
-            nudge = reference_current - 0.1 if reference_current >= 0.1 else reference_current + 0.1
-            await self._set_number(key, nudge)
+        _LOGGER.debug(
+            "Setting %s current to %.2fA; current entity state is %s",
+            key,
+            current,
+            f"{actual_current:.2f}A" if actual_current is not None else "unavailable",
+        )
+
+        if actual_current is not None and abs(actual_current - current) < 0.1:
+            _LOGGER.debug("%s current already matches requested value; skipping write", key)
+            return
 
         await self._set_number(key, current)
 
