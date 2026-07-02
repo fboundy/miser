@@ -29,13 +29,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities_to_add = [
         OptimiserSensor(
             config_entry,
-            unique_id=f"{DOMAIN}.{uuid}_{name.lower().replace(' ', '_')}",
-            name=name,
+            unique_id=f"{DOMAIN}.{uuid}_{key.lower().replace(' ', '_')}",
+            key=key,
+            name=entity.get("name", key),
             unit_of_measurement=entity.get("unit", None),
             device_class=entity.get("device_class", None),
             state_class=entity.get("state_class", None),
         )
-        for name, entity in SENSOR_ENTITIES.items()
+        for key, entity in SENSOR_ENTITIES.items()
     ]
 
     _LOGGER.debug(f"Sensor entities to add: {[entity.unique_id for entity in entities_to_add]}")
@@ -46,8 +47,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {}
 
     for entity in entities_to_add:
-        hass.data[DOMAIN][COST_ENTITY_OBJECTS][entity._attr_name] = entity
-        entity_registry.async_get_entity_id("sensor", DOMAIN, entity.unique_id)
+        hass.data[DOMAIN][COST_ENTITY_OBJECTS][entity.key] = entity
+        entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, entity.unique_id)
+        if entity_id is not None and entity.key.endswith("_cost"):
+            entity_registry.async_update_entity(entity_id, name=f"Miser {entity.name}")
 
 
 class OptimiserSensor(MiserEntity, SensorEntity):
@@ -57,6 +60,7 @@ class OptimiserSensor(MiserEntity, SensorEntity):
         self,
         config_entry,
         unique_id,
+        key,
         name,
         unit_of_measurement=None,
         icon=None,
@@ -70,6 +74,7 @@ class OptimiserSensor(MiserEntity, SensorEntity):
             icon=icon,
             device_class=device_class,
         )
+        self.key = key
         self._attr_native_value = None
         self._attr_native_unit_of_measurement = unit_of_measurement
         self._attr_state_class = state_class

@@ -319,12 +319,25 @@ NUMBER_ENTITIES = {
 
 # Sensor entities
 SENSOR_ENTITIES = {
-    "base_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "swap_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "lcc_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "discharge_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "fill_first_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "optimised_cost": {"unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "base_cost": {"name": "Cost - Base", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "swap_cost": {"name": "Cost - Swap", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "lcc_cost": {
+        "name": "Cost - Low Cost Charging",
+        "unit": "p",
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    "discharge_cost": {"name": "Cost - Discharge", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
+    "fill_first_cost": {
+        "name": "Cost - Fill First",
+        "unit": "p",
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    "whole_horizon_cost": {
+        "name": "Cost - Whole Horizon",
+        "unit": "p",
+        "state_class": SensorStateClass.MEASUREMENT,
+    },
+    "optimised_cost": {"name": "Cost - Optimised", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
     CONTROL_STATE: {},
     CONTROL_FORCE_CURRENT: {
         "unit": UnitOfElectricCurrent.AMPERE,

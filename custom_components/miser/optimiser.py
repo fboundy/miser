@@ -132,6 +132,9 @@ async def optimise(hass: HomeAssistant, now=None):
     if optimise_discharging:
         cost_keys.extend(["discharge_cost", "fill_first_cost"])
 
+    model.whole_horizon_slots = []
+    model.whole_horizon_cost = None
+    model.whole_horizon_flows = None
     whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
     if whole_horizon_beta:
         model.whole_horizon_slots = await model.whole_horizon()
@@ -156,7 +159,15 @@ async def optimise(hass: HomeAssistant, now=None):
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
 
-    for key in ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "fill_first_cost", "optimised_cost"]:
+    for key in [
+        "base_cost",
+        "swap_cost",
+        "lcc_cost",
+        "discharge_cost",
+        "fill_first_cost",
+        "whole_horizon_cost",
+        "optimised_cost",
+    ]:
         entity = cost_entities.get(key)
         if entity is not None:
             flows = getattr(model, key.replace("_cost", "_flows"), None)
