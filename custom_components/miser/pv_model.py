@@ -732,7 +732,7 @@ class PVsystemModel:
             }
             | {round(initial_energy, 1), round(max_energy, 1)}
         )
-        initial_energy = min(energy_levels, key=lambda level: abs(level - initial_energy))
+        initial_energy = round(initial_energy, 1)
 
         costs: dict[float, float] = {initial_energy: 0.0}
         paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_energy: []}
@@ -798,8 +798,7 @@ class PVsystemModel:
             forced_power=None,
             dt_hours=dt_hours,
         )
-        natural_level = min(energy_levels, key=lambda level: abs(level - natural_energy))
-        actions.append((natural_level, None, natural_grid))
+        actions.append((natural_energy, None, natural_grid))
 
         for next_energy in energy_levels:
             delta = next_energy - energy
@@ -820,8 +819,7 @@ class PVsystemModel:
                     forced_power=forced_power,
                     dt_hours=dt_hours,
                 )
-                actual_level = min(energy_levels, key=lambda level: abs(level - actual_energy))
-                actions.append((actual_level, forced_power, grid))
+                actions.append((actual_energy, forced_power, grid))
 
         return actions
 
