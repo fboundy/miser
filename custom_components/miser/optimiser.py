@@ -30,6 +30,7 @@ from .const import (
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
+    CONF_WHOLE_HORIZON_BETA,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
     CONTROL_FORCE_POWER,
@@ -130,6 +131,16 @@ async def optimise(hass: HomeAssistant, now=None):
     cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
     if optimise_discharging:
         cost_keys.extend(["discharge_cost", "fill_first_cost"])
+
+    whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
+    if whole_horizon_beta:
+        model.whole_horizon_slots = await model.whole_horizon()
+        model.whole_horizon_cost, model.whole_horizon_flows = await _calculate_cost_and_flows(
+            model,
+            model.whole_horizon_slots,
+        )
+        _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
+        cost_keys.append("whole_horizon_cost")
 
     optimised_key = min(cost_keys, key=lambda key: getattr(model, key))
     model.optimised_cost = getattr(model, optimised_key)

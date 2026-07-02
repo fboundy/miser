@@ -633,6 +633,15 @@ class PVsystemModel:
             else:
                 done = True
 
+        paired_slots, paired_cost, paired_added = await self._paired_discharge_refill(
+            slots=slots,
+            best_cost=best_cost,
+        )
+        if paired_added:
+            slots = paired_slots
+            best_cost = paired_cost
+            slots_added += paired_added
+
         cost_delta = best_cost - self.best_cost
         str_log = f"Discharge net cost delta:{(-cost_delta):5.1f}p"
         if cost_delta > -CONTROL_PASS_THREHOLD:
@@ -647,6 +656,199 @@ class PVsystemModel:
             _LOGGER.info(str_log)
 
         return slots
+
+    async def _paired_discharge_refill(self, slots: list, best_cost: float) -> tuple[list, float, int]:
+        base_best_cost = self.best_cost
+        best_slots = list(slots)
+        paired_slots_added = 0
+        flows = await self.flows(slots=slots)
+
+        min_import_price = flows[flows["forced"] >= 0]["import"].min()
+        cheap_slots = flows[flows["import"] <= min_import_price + 0.01]
+        if cheap_slots.empty:
+            return best_slots, best_cost, paired_slots_added
+
+        first_cheap_slot = cheap_slots.index[0]
+        candidate_flows = flows[
+            (flows.index < first_cheap_slot)
+            & (flows["forced"] <= 0)
+            & (-flows["forced"] < self.inverter.inverter_power)
+            & (flows["soc_end"] > self.battery.max_dod * 100)
+        ]
+
+        if candidate_flows.empty:
+            return best_slots, best_cost, paired_slots_added
+
+        _LOGGER.info("")
+        _LOGGER.info("Paired Discharge/Refill")
+        _LOGGER.info("-----------------------")
+
+        for start_window, row in candidate_flows.sort_values("export", ascending=False).iterrows():
+            forced_discharge = min(
+                min(self.battery.max_discharge_power, self.inverter.inverter_power)
+                + row["forced"]
+                - row["solar"],
+                ((row["soc_end"] - self.battery.max_dod * 100) / 100 * self.battery.capacity) * 2,
+            )
+            forced_discharge = max(forced_discharge, 0)
+            if forced_discharge < MODEL_MIN_SLOT_POWER:
+                continue
+
+            candidate_slots = list(best_slots) + [(start_window, -forced_discharge)]
+            previous_best_cost = self.best_cost
+            self.best_cost = best_cost
+            candidate_slots = await self.fill_first_charging(base_slots=candidate_slots)
+            candidate_cost = (await self.net_cost(slots=candidate_slots)).sum()
+            self.best_cost = previous_best_cost
+
+            str_log = (
+                f"{start_window.strftime(TIME_FORMAT)} discharge {-forced_discharge:5.0f}W "
+                f"then refill from {first_cheap_slot.strftime(TIME_FORMAT)} Net: {candidate_cost:6.1f}"
+            )
+
+            if candidate_cost < best_cost - CONTROL_SLOT_THRESHOLD:
+                _LOGGER.info(str_log + " Included")
+                best_slots = candidate_slots
+                best_cost = candidate_cost
+                paired_slots_added += 1
+                flows = await self.flows(slots=best_slots)
+            else:
+                _LOGGER.info(str_log)
+
+        self.best_cost = base_best_cost
+        return best_slots, best_cost, paired_slots_added
+
+    async def whole_horizon(self, soc_step_percent: int = 5) -> list:
+        flows = await self.flows(slots=[])
+        min_energy = self.battery.max_dod * self.battery.capacity
+        max_energy = self.battery.capacity
+        step_wh = self.battery.capacity * soc_step_percent / 100
+        initial_energy = self.initial_soc / 100 * self.battery.capacity
+
+        energy_levels = sorted(
+            {
+                round(min_energy + i * step_wh, 1)
+                for i in range(int((max_energy - min_energy) / step_wh) + 1)
+            }
+            | {round(initial_energy, 1), round(max_energy, 1)}
+        )
+        initial_energy = min(energy_levels, key=lambda level: abs(level - initial_energy))
+
+        costs: dict[float, float] = {initial_energy: 0.0}
+        paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_energy: []}
+
+        _LOGGER.info("")
+        _LOGGER.info("Whole Horizon Optimisation (Beta)")
+        _LOGGER.info("---------------------------------")
+
+        for start, row in flows.iterrows():
+            next_costs: dict[float, float] = {}
+            next_paths: dict[float, list[tuple[pd.Timestamp, float]]] = {}
+            dt_hours = float(row["dt_hours"])
+            requirement = float(row["consumption"] - row["solar"])
+
+            for energy, cost in costs.items():
+                for next_energy, forced_power, grid in self._whole_horizon_actions(
+                    energy=energy,
+                    energy_levels=energy_levels,
+                    requirement=requirement,
+                    dt_hours=dt_hours,
+                ):
+                    slot_cost = (
+                        max(grid, 0) * dt_hours * float(row["import"])
+                        + min(grid, 0) * dt_hours * float(row["export"])
+                    ) / 1000
+                    candidate_cost = cost + slot_cost
+                    if candidate_cost >= next_costs.get(next_energy, float("inf")):
+                        continue
+
+                    next_costs[next_energy] = candidate_cost
+                    path = list(paths[energy])
+                    if forced_power is not None and abs(forced_power) >= MODEL_MIN_SLOT_POWER:
+                        path.append((start, round(forced_power, 0)))
+                    next_paths[next_energy] = path
+
+            costs = next_costs
+            paths = next_paths
+
+        terminal_levels = [energy for energy in costs if energy >= initial_energy]
+        if not terminal_levels:
+            terminal_levels = list(costs)
+        best_terminal = min(terminal_levels, key=lambda energy: costs[energy])
+        _LOGGER.info(
+            "Whole-horizon cost estimate: %6.1fp, terminal SOC: %5.1f%%",
+            costs[best_terminal],
+            best_terminal / self.battery.capacity * 100,
+        )
+        return paths[best_terminal]
+
+    def _whole_horizon_actions(
+        self,
+        energy: float,
+        energy_levels: list[float],
+        requirement: float,
+        dt_hours: float,
+    ) -> list[tuple[float, float | None, float]]:
+        actions: list[tuple[float, float | None, float]] = []
+
+        natural_energy, natural_grid = self._whole_horizon_transition(
+            energy=energy,
+            requirement=requirement,
+            forced_power=None,
+            dt_hours=dt_hours,
+        )
+        natural_level = min(energy_levels, key=lambda level: abs(level - natural_energy))
+        actions.append((natural_level, None, natural_grid))
+
+        for next_energy in energy_levels:
+            delta = next_energy - energy
+            if abs(delta) < 1:
+                continue
+
+            if delta > 0:
+                forced_power = delta / self.inverter.charger_efficiency / dt_hours
+                max_power = min(self.battery.max_charge_power, self.inverter.charger_power)
+            else:
+                forced_power = delta * self.inverter.inverter_efficiency / dt_hours
+                max_power = min(self.battery.max_discharge_power, self.inverter.inverter_power)
+
+            if abs(forced_power) <= max_power:
+                actual_energy, grid = self._whole_horizon_transition(
+                    energy=energy,
+                    requirement=requirement,
+                    forced_power=forced_power,
+                    dt_hours=dt_hours,
+                )
+                actual_level = min(energy_levels, key=lambda level: abs(level - actual_energy))
+                actions.append((actual_level, forced_power, grid))
+
+        return actions
+
+    def _whole_horizon_transition(
+        self,
+        energy: float,
+        requirement: float,
+        forced_power: float | None,
+        dt_hours: float,
+    ) -> tuple[float, float]:
+        min_energy = self.battery.max_dod * self.battery.capacity
+        max_energy = self.battery.capacity
+
+        battery_temp = requirement if forced_power is None else -forced_power
+        if battery_temp > 0:
+            battery_flow = battery_temp / self.inverter.inverter_efficiency
+        else:
+            battery_flow = battery_temp * self.inverter.charger_efficiency
+
+        next_energy = round(min(max(energy - battery_flow * dt_hours, min_energy), max_energy), 1)
+        battery_power = (energy - next_energy) / dt_hours
+        if battery_power > 0:
+            battery_power *= self.inverter.inverter_efficiency
+        elif battery_power < 0:
+            battery_power /= self.inverter.charger_efficiency
+
+        grid = round(requirement - battery_power, 0)
+        return next_energy, grid
 
 
 #     async def optimised_force(

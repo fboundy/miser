@@ -59,6 +59,7 @@ CONF_USE_SOLAR = "use_solar"
 CONF_READ_ONLY = "read_only"
 CONF_INCLUDE_EXPORT = "include_export"
 CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
+CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 
 # Default values
 DEFAULTS = {
@@ -84,6 +85,7 @@ DEFAULTS = {
     CONF_READ_ONLY: True,
     CONF_INCLUDE_EXPORT: True,
     CONF_OPTIMISE_DISCHARGING: True,
+    CONF_WHOLE_HORIZON_BETA: False,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -196,6 +198,7 @@ SWITCH_ENTITIES = {
         CONF_READ_ONLY,
         CONF_INCLUDE_EXPORT,
         CONF_OPTIMISE_DISCHARGING,
+        CONF_WHOLE_HORIZON_BETA,
     ]
 }
 
