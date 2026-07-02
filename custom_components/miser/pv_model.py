@@ -10,6 +10,7 @@ from .const import (
     OPTIMISER_HIGH_COST_MAX_ITERS,
     CONTROL_PASS_THREHOLD,
     CONTROL_SLOT_THRESHOLD,
+    DEFAULT_BATTERY_VOLTAGE,
     MODEL_MIN_SLOT_POWER,
     MODEL_MAX_SEARCH_WINDOW_SOC,
 )
@@ -75,7 +76,7 @@ class BatteryModel:
         battery_capacity: int,
         battery_minimum_soc: int,
         battery_current_limit: int,
-        voltage: int = 50,
+        voltage: int = DEFAULT_BATTERY_VOLTAGE,
     ) -> None:
         self.capacity = battery_capacity
         self.max_dod = battery_minimum_soc / 100
@@ -134,6 +135,14 @@ class PVsystemModel:
     def inverter(self):
         return self._inverter
 
+    @property
+    def charge_power_limit(self) -> float:
+        return min(self.battery.max_charge_power, self.inverter.charger_power)
+
+    @property
+    def discharge_power_limit(self) -> float:
+        return min(self.battery.max_discharge_power, self.inverter.inverter_power)
+
     def set_start(self, start: pd.Timestamp) -> bool:
         self._index = [start.floor("1min")] + list(self.consumption.index[1:])
 
@@ -181,6 +190,10 @@ class PVsystemModel:
         df["forced"] = await self.forced(*args, **kwargs)
         chg_mask = df["forced"] != 0
         df["battery_temp"][chg_mask] = -df["forced"][chg_mask]
+        df["battery_temp"] = df["battery_temp"].clip(
+            lower=-self.charge_power_limit,
+            upper=self.discharge_power_limit,
+        )
 
         chg = [self.initial_soc / 100 * self.battery.capacity]
 
@@ -295,7 +308,7 @@ class PVsystemModel:
                                 search_window["soc_end"] >= MODEL_MAX_SEARCH_WINDOW_SOC
                             ).sum() - (search_window["soc_end"] >= 97).cumsum()
                             search_window = search_window[search_window["countback"] == 0]
-                            search_window = search_window[search_window["forced"] < (self.inverter.charger_power)]
+                            search_window = search_window[search_window["forced"] < (self.charge_power_limit)]
                             search_window = search_window[search_window["soc_end"] <= MODEL_MAX_SEARCH_WINDOW_SOC]
 
                             str_log += f" {round_trip_energy_required:5.2f} kWh at {max_import_cost:6.2f}p."
@@ -318,7 +331,7 @@ class PVsystemModel:
                                         round_trip_energy_required * 1000 / flows["dt_hours"].loc[slot] * factor, 0
                                     )
                                     slot_charger_power_available = max(
-                                        self.inverter.charger_power
+                                        self.charge_power_limit
                                         - search_window["forced"].loc[slot]
                                         - search_window["solar"].loc[slot],
                                         0,
@@ -404,7 +417,7 @@ class PVsystemModel:
         i = 0
         available = (
             (flows["import"] < max_export_price)  # import price < max export price
-            & (flows["forced"] < self.inverter.charger_power)  # forced charge capacity available
+            & (flows["forced"] < self.charge_power_limit)  # forced charge capacity available
             & (flows["forced"] >= 0)  # not forced discharging
         )
 
@@ -416,7 +429,7 @@ class PVsystemModel:
             low_cost_import_slots = flows.loc[
                 available
                 & (flows["import"] < max_export_price)
-                & (flows["forced"] < self.inverter.charger_power)
+                & (flows["forced"] < self.charge_power_limit)
                 & (flows["forced"] >= 0)
             ]
             i += 1
@@ -440,7 +453,7 @@ class PVsystemModel:
                 str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
                 forced_charge = min(
-                    min(self.battery.max_charge_power, self.inverter.charger_power)
+                    self.charge_power_limit
                     - flows["forced"].loc[start_window]
                     - flows["solar"].loc[start_window],
                     ((100 - flows["soc_end"].loc[start_window]) / 100 * self.battery.capacity) * 2 * factor,
@@ -506,7 +519,7 @@ class PVsystemModel:
 
         available = (
             (flows["import"] < max_export_price)
-            & (flows["forced"] < self.inverter.charger_power)
+            & (flows["forced"] < self.charge_power_limit)
             & (flows["forced"] >= 0)
         )
 
@@ -516,7 +529,7 @@ class PVsystemModel:
             fill_slots = flows.loc[
                 available
                 & (flows["import"] < max_export_price)
-                & (flows["forced"] < self.inverter.charger_power)
+                & (flows["forced"] < self.charge_power_limit)
                 & (flows["forced"] >= 0)
             ]
             if fill_slots.empty:
@@ -534,7 +547,7 @@ class PVsystemModel:
 
             dt_hours = flows["dt_hours"].loc[start_window]
             charger_capacity = (
-                min(self.battery.max_charge_power, self.inverter.charger_power)
+                self.charge_power_limit
                 - flows["forced"].loc[start_window]
                 - flows["solar"].loc[start_window]
             )
@@ -589,7 +602,7 @@ class PVsystemModel:
         i = 0
         available = (
             (flows["export"] > min_import_price)
-            & (-flows["forced"] < self.inverter.inverter_power)
+            & (-flows["forced"] < self.discharge_power_limit)
             & (flows["forced"] <= 0)
         )
 
@@ -615,10 +628,7 @@ class PVsystemModel:
                 str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
                 forced_discharge = min(
-                    min(
-                        self.battery.max_discharge_power,
-                        self.inverter.inverter_power,
-                    )
+                    self.discharge_power_limit
                     + flows["forced"].loc[start_window]
                     - flows["solar"].loc[start_window],
                     (
@@ -697,7 +707,7 @@ class PVsystemModel:
         candidate_flows = flows[
             (flows.index < first_cheap_slot)
             & (flows["forced"] <= 0)
-            & (-flows["forced"] < self.inverter.inverter_power)
+            & (-flows["forced"] < self.discharge_power_limit)
             & (flows["soc_end"] > self.battery.max_dod * 100)
         ]
 
@@ -710,7 +720,7 @@ class PVsystemModel:
 
         for start_window, row in candidate_flows.sort_values("export", ascending=False).iterrows():
             forced_discharge = min(
-                min(self.battery.max_discharge_power, self.inverter.inverter_power)
+                self.discharge_power_limit
                 + row["forced"]
                 - row["solar"],
                 ((row["soc_end"] - self.battery.max_dod * 100) / 100 * self.battery.capacity) * 2,
@@ -856,8 +866,8 @@ class PVsystemModel:
         actions.append((natural_energy, None, natural_grid))
 
         for forced_power in (
-            min(self.battery.max_charge_power, self.inverter.charger_power),
-            -min(self.battery.max_discharge_power, self.inverter.inverter_power),
+            self.charge_power_limit,
+            -self.discharge_power_limit,
         ):
             actual_energy, grid = self._whole_horizon_transition(
                 energy=energy,
@@ -874,10 +884,10 @@ class PVsystemModel:
 
             if delta > 0:
                 forced_power = delta / self.inverter.charger_efficiency / dt_hours
-                max_power = min(self.battery.max_charge_power, self.inverter.charger_power)
+                max_power = self.charge_power_limit
             else:
                 forced_power = delta * self.inverter.inverter_efficiency / dt_hours
-                max_power = min(self.battery.max_discharge_power, self.inverter.inverter_power)
+                max_power = self.discharge_power_limit
 
             if abs(forced_power) <= max_power:
                 actual_energy, grid = self._whole_horizon_transition(
@@ -926,7 +936,7 @@ class PVsystemModel:
         if remaining_wh <= 0:
             return 0.0
 
-        charge_power = min(self.battery.max_charge_power, self.inverter.charger_power)
+        charge_power = self.charge_power_limit
         penalty = 0.0
         prices = valuation_prices.copy()
         if "dt_hours" not in prices.columns:
@@ -1009,8 +1019,8 @@ class PVsystemModel:
 #             for i, x in enumerate(zip(new_slots[:-1], new_slots[1:])):
 
 #                 if (
-#                     (int(x[0][1]) == self.inverter.charger_power)
-#                     & (int(-x[1][1]) == self.inverter.charger_power)
+#                     (int(x[0][1]) == self.charge_power_limit)
+#                     & (int(-x[1][1]) == self.charge_power_limit)
 #                     & (x[1][0] - x[0][0] == pd.Timedelta("30min"))
 #                 ):
 #                     skip_flag = True

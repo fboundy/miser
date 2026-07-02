@@ -267,7 +267,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
-                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS[CONF_BATTERY_CURRENT_LIMIT]): int,
+                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS[CONF_BATTERY_CURRENT_LIMIT]): vol.Coerce(float),
                 vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
                 vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
                 vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS[CONF_INVERTER_EFFICIENCY]): vol.All(
