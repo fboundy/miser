@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import timedelta
 from functools import partial
 from logging.handlers import RotatingFileHandler
@@ -24,6 +25,8 @@ from .const import (
     CONF_INVERTER_POWER,
     CONF_OPTIMISER_FREQUENCY,
     MODEL_ENTITIES_AVAILABLE_WAIT,
+    COST_ENTITY_OBJECTS,
+    CONTROL_STATE,
 )
 from .inverters import get_inverter_controller_class
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
@@ -181,6 +184,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if unsubscribe is not None:
             unsubscribe()
             _LOGGER.debug("Cancelled %s", handle_key)
+
+    for unsubscribe in data.pop("control_compliance_callbacks", []):
+        unsubscribe()
+    _LOGGER.debug("Cancelled Miser control compliance callbacks")
 
     for unsubscribe in data.pop("config_callbacks", []):
         unsubscribe()
@@ -350,6 +357,7 @@ async def _schedule_optimiser(hass):
                 _LOGGER.debug("Skipping initial _optimise run while Miser is unloading")
                 return
 
+            await _wait_for_initial_entities(hass)
             await optimise(hass)
             if hass.data.get(DOMAIN, {}).get("unloading"):
                 _LOGGER.debug("Skipping recurring optimiser schedule while Miser is unloading")
@@ -381,6 +389,26 @@ async def _schedule_optimiser(hass):
 
     except Exception as e:
         _LOGGER.error(f"Failed to set up _schedule_optimiser: {e}")
+
+
+async def _wait_for_initial_entities(hass: HomeAssistant) -> None:
+    inverter_controller = hass.data[DOMAIN].get("inverter_controller")
+    if inverter_controller is None:
+        return
+
+    while not hass.data.get(DOMAIN, {}).get("unloading"):
+        if await inverter_controller.is_online():
+            return
+
+        await _write_status(hass, "Awaiting Sensors")
+        _LOGGER.debug("Initial optimiser run waiting for inverter sensor entities")
+        await asyncio.sleep(5)
+
+
+async def _write_status(hass: HomeAssistant, state: str) -> None:
+    entity = hass.data.get(DOMAIN, {}).get(COST_ENTITY_OBJECTS, {}).get(CONTROL_STATE)
+    if entity is not None:
+        await entity.async_set_native_value(state)
 
 
 async def _setup_config_callbacks(hass):

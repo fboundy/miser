@@ -6,7 +6,9 @@ from datetime import datetime
 from math import isfinite
 from homeassistant.core import HomeAssistant
 from homeassistant.components.recorder import history
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.event import async_track_point_in_utc_time
 import homeassistant.util.dt as dt_util
 
 from .const import (
@@ -30,7 +32,6 @@ from .const import (
     CONF_SOLCAST_CONFIDENCE,
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
-    CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -49,6 +50,7 @@ from .const import (
 from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+CONTROL_COMPLIANCE_DELAY_SECONDS = 60
 
 
 def _is_finite(value) -> bool:
@@ -70,6 +72,7 @@ async def optimise(hass: HomeAssistant, now=None):
     if not data or data.get("unloading"):
         _LOGGER.debug("Skipping optimise because Miser is unloading or unloaded")
         return
+    await _write_status(hass, "Optimising")
 
     freq = pd.Timedelta(minutes=MODEL_PERIOD_MINUTES)
     # Access hass.data
@@ -104,6 +107,7 @@ async def optimise(hass: HomeAssistant, now=None):
 
     if model.initial_soc is None:
         _LOGGER.warning("Unable to get Battery SOC - run failed")
+        await _write_status(hass, "Awaiting Sensors")
         return
     else:
         model.set_start(pd.Timestamp.now(tz="UTC"))
@@ -160,6 +164,7 @@ async def optimise(hass: HomeAssistant, now=None):
     finite_cost_keys = [key for key in cost_keys if _is_finite(getattr(model, key, None))]
     if not finite_cost_keys:
         _LOGGER.warning("No finite optimiser costs were produced; skipping optimiser output")
+        await _write_status(hass, "Idle")
         return
 
     optimised_key = min(finite_cost_keys, key=lambda key: getattr(model, key))
@@ -179,6 +184,13 @@ async def optimise(hass: HomeAssistant, now=None):
         return
 
     await _apply_inverter_control(hass, model)
+
+
+async def _write_status(hass: HomeAssistant, state: str) -> None:
+    sensor_entities = hass.data.get(DOMAIN, {}).get(COST_ENTITY_OBJECTS, {})
+    entity = sensor_entities.get(CONTROL_STATE)
+    if entity is not None:
+        await entity.async_set_native_value(state)
 
 
 def _is_unloading(hass: HomeAssistant) -> bool:
@@ -207,17 +219,15 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
             )
 
 
-async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
+async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: bool = True) -> None:
     inverter_controller = hass.data[DOMAIN].get("inverter_controller")
     if inverter_controller is None:
         _LOGGER.warning("No inverter controller is available; unable to apply optimised controls")
+        await _write_status(hass, "Idle")
         return
 
     control_slots = _control_slots(model.optimised_flows)
     now = pd.Timestamp.now(tz="UTC")
-    optimiser_frequency = await get_value(hass, CONF_OPTIMISER_FREQUENCY)
-    next_optimiser_run = now + pd.Timedelta(minutes=optimiser_frequency)
-
     current_slot = _find_current_control_slot(control_slots, now)
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
@@ -226,7 +236,7 @@ async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
 
     await _write_control_entities(
         hass,
-        state=desired_state,
+        state=_display_state(desired_state),
         force_current=desired_current if desired_state != "idle" else 0,
         force_power=desired_power if desired_state != "idle" else 0,
         target_soc=desired_target_soc if desired_state != "idle" else None,
@@ -234,11 +244,17 @@ async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
         next_slot=_find_next_control_slot(control_slots, now),
     )
 
-    slots_to_apply = [
-        slot
-        for slot in control_slots
-        if slot["end"] > now and slot["start"] < next_optimiser_run
-    ]
+    slots_to_apply = _slots_to_apply(control_slots, now)
+    if schedule_checks:
+        _schedule_control_compliance_checks(hass, control_slots)
+    if slots_to_apply:
+        _LOGGER.debug(
+            "Applying inverter slot 1 controls for: %s",
+            ", ".join(
+                f"{slot['state']} {slot['start']}-{slot['end']}"
+                for slot in slots_to_apply
+            ),
+        )
 
     if not slots_to_apply:
         try:
@@ -247,20 +263,12 @@ async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
                 control_idle = getattr(inverter_controller, "control_idle", None)
                 if control_idle is not None:
                     await control_idle()
-        except RuntimeError as err:
+        except (RuntimeError, HomeAssistantError) as err:
             _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
         return
 
-    applied_states = set()
     for slot in slots_to_apply:
-        if slot["state"] in applied_states:
-            continue
-        applied_states.add(slot["state"])
-
         try:
-            if await inverter_controller.control_matches(slot["state"], slot["target_soc"], slot["power"]):
-                continue
-
             _LOGGER.debug(
                 "Applying inverter control: %s %s-%s %.1fW target %.1f%%",
                 slot["state"],
@@ -283,8 +291,77 @@ async def _apply_inverter_control(hass: HomeAssistant, model) -> None:
                     slot["target_soc"],
                     abs(slot["power"]),
                 )
-        except RuntimeError as err:
+        except (RuntimeError, HomeAssistantError) as err:
             _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
+
+
+def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp) -> list[dict]:
+    slots = []
+    for state in ["charging", "discharging"]:
+        state_slots = [
+            slot
+            for slot in control_slots
+            if slot["state"] == state and slot["end"] > now
+        ]
+        if state_slots:
+            slots.append(sorted(state_slots, key=lambda slot: slot["start"])[0])
+    return sorted(slots, key=lambda slot: slot["start"])
+
+
+def _display_state(state: str) -> str:
+    return {
+        "idle": "Idle",
+        "charging": "Charging",
+        "discharging": "Discharging",
+    }.get(state, state)
+
+
+def _schedule_control_compliance_checks(hass: HomeAssistant, control_slots: list[dict]) -> None:
+    data = hass.data.get(DOMAIN, {})
+    for unsubscribe in data.pop("control_compliance_callbacks", []):
+        unsubscribe()
+
+    now = pd.Timestamp.now(tz="UTC")
+    delay = pd.Timedelta(seconds=CONTROL_COMPLIANCE_DELAY_SECONDS)
+    callbacks = []
+
+    for slot in control_slots:
+        for boundary in ["start", "end"]:
+            check_at = slot[boundary] + delay
+            if check_at <= now:
+                continue
+
+            callbacks.append(
+                async_track_point_in_utc_time(
+                    hass,
+                    _control_compliance_callback(hass, slot, boundary),
+                    check_at.to_pydatetime(),
+                )
+            )
+
+    data["control_compliance_callbacks"] = callbacks
+    if callbacks:
+        _LOGGER.debug("Scheduled %d inverter compliance checks", len(callbacks))
+
+
+def _control_compliance_callback(hass: HomeAssistant, slot: dict, boundary: str):
+    async def _callback(_now):
+        data = hass.data.get(DOMAIN, {})
+        if data.get("unloading"):
+            return
+
+        _LOGGER.debug(
+            "Checking inverter compliance after %s of %s slot %s-%s",
+            boundary,
+            slot["state"],
+            slot["start"],
+            slot["end"],
+        )
+        model = data.get("model")
+        if model is not None:
+            await _apply_inverter_control(hass, model, schedule_checks=False)
+
+    return _callback
 
 
 async def _write_control_entities(

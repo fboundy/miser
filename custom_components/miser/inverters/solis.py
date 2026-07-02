@@ -42,6 +42,9 @@ from ..const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+SOLIS_CLOUD_TIMED_MODE = "Self-Use Mode - Allow Grid Charging"
+SOLIS_CLOUD_IDLE_MODE = "Self-Use Mode - No Grid Charging"
+
 
 class SolisInverter(InverterController):
     """Base class for Solis inverter controller integrations."""
@@ -471,11 +474,11 @@ class SolisCloudInverter(SolisInverter):
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
 
     async def control_idle(self) -> None:
-        await self.set_mode("Self-Use - No Timed Charge/Discharge")
+        await self.set_mode(SOLIS_CLOUD_IDLE_MODE)
 
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
         if state == "idle":
-            return await self.get_mode() == "Self-Use - No Timed Charge/Discharge"
+            return await self.get_mode() == SOLIS_CLOUD_IDLE_MODE
 
         if state == "charging":
             current_key = CONTROL_TIMED_CHARGE_CURRENT
@@ -490,7 +493,7 @@ class SolisCloudInverter(SolisInverter):
         actual_current = self._numeric_state(current_key)
         actual_soc = self._numeric_state(soc_key)
         return (
-            await self.get_mode() == "Self-Use"
+            await self.get_mode() == SOLIS_CLOUD_TIMED_MODE
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1
@@ -519,8 +522,8 @@ class SolisCloudInverter(SolisInverter):
         return abs(float(power)) / voltage
 
     async def _set_timed_mode(self) -> None:
-        if await self.get_mode() != "Self-Use":
-            await self.set_mode("Self-Use")
+        if await self.get_mode() != SOLIS_CLOUD_TIMED_MODE:
+            await self.set_mode(SOLIS_CLOUD_TIMED_MODE)
 
 
 class SolisConnectInverter(SolisInverter):
