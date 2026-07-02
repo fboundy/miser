@@ -17,7 +17,7 @@ from .const import (
     PLATFORMS,
     CONF_BATTERY_CAPACITY,
     MODEL_BATTERY_MINIMUM_SOC,
-    CONF_BATTERY_CURRENT_LIMIT,
+    DEFAULT_BATTERY_VOLTAGE,
     CONF_INVERTER_LOSS,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
@@ -306,11 +306,13 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Load the inverter model
     hass.data[DOMAIN]["inverter_model"] = InverterModel(**kw_inverter)
 
-    # Read the battery model parameters from the relevant config entities
+    # Read the battery model parameters from the relevant config entities.
+    # Current limit is derived so the battery power limit matches configured charger power.
     kw_battery = {
         kw: await get_value(hass, kw)
-        for kw in [CONF_BATTERY_CAPACITY, CONF_BATTERY_CURRENT_LIMIT, MODEL_BATTERY_MINIMUM_SOC]
+        for kw in [CONF_BATTERY_CAPACITY, MODEL_BATTERY_MINIMUM_SOC]
     }
+    kw_battery["battery_current_limit"] = kw_inverter[CONF_CHARGER_POWER] / DEFAULT_BATTERY_VOLTAGE
 
     # Load the battery model
     hass.data[DOMAIN]["battery_model"] = BatteryModel(**kw_battery)

@@ -92,7 +92,6 @@ DEFAULTS = {
 
 PV_SYSTEM_ENTITIES = [
     CONF_BATTERY_CAPACITY,
-    CONF_BATTERY_CURRENT_LIMIT,
     CONF_INVERTER_POWER,
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
@@ -266,14 +265,6 @@ NUMBER_ENTITIES = {
         "default": DEFAULTS[CONF_BATTERY_CAPACITY],
         "unit": UnitOfEnergy.WATT_HOUR,
         "device_class": SensorDeviceClass.ENERGY,
-    },
-    CONF_BATTERY_CURRENT_LIMIT: {
-        "min": 0,
-        "max": 400,
-        "step": 10,
-        "default": DEFAULTS[CONF_BATTERY_CURRENT_LIMIT],
-        "unit": UnitOfElectricCurrent.AMPERE,
-        "device_class": SensorDeviceClass.CURRENT,
     },
     CONF_INVERTER_POWER: {
         "min": 1000,

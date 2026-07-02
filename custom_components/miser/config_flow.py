@@ -9,7 +9,6 @@ from homeassistant.loader import async_get_custom_components, async_get_integrat
 
 from .const import (
     CONF_BATTERY_CAPACITY,
-    CONF_BATTERY_CURRENT_LIMIT,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
@@ -239,7 +238,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             # Collect and validate system parameters
             self._options["battery_capacity"] = user_input.get(CONF_BATTERY_CAPACITY)
-            self._options["battery_current_limit"] = user_input.get(CONF_BATTERY_CURRENT_LIMIT)
             self._options["inverter_power"] = user_input.get(CONF_INVERTER_POWER)
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
             self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
@@ -250,7 +248,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._options[x]
                     for x in [
                         "battery_capacity",
-                        "battery_current_limit",
                         "inverter_power",
                         "charger_power",
                         "inverter_efficiency",
@@ -267,7 +264,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         schema = vol.Schema(
             {
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
-                vol.Optional(CONF_BATTERY_CURRENT_LIMIT, default=DEFAULTS[CONF_BATTERY_CURRENT_LIMIT]): vol.Coerce(float),
                 vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
                 vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
                 vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS[CONF_INVERTER_EFFICIENCY]): vol.All(
