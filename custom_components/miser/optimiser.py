@@ -674,27 +674,51 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             else:
                 _LOGGER.warning(f"No usable consumption history available from {entity_id}; using configured fallback")
 
+    fallback = None
     if "final" not in consumption.columns:
-        # Need to add config entities for manual case
-        daily_consumption = await get_value(hass, CONF_DAILY_CONSUMPTION_KWH)
-        if await get_value(hass, CONF_SHAPE_CONSUMPTION):
-            daily = (
-                pd.DataFrame(CONSUMPTION_SHAPE)
-                .set_index("hours")
-                .reindex(arange(0, 24.5, 0.5))
-                .interpolate()
-                .iloc[:-1]
+        fallback = await _fallback_consumption(hass, consumption)
+        consumption["final"] = fallback
+    else:
+        consumption["final"] = pd.to_numeric(consumption["final"], errors="coerce")
+        missing_count = int(consumption["final"].isna().sum())
+        if missing_count:
+            fallback = await _fallback_consumption(hass, consumption)
+            valid_count = len(consumption["final"]) - missing_count
+            if valid_count < len(consumption["final"]) / 2:
+                consumption["final"] = fallback
+                source = "replaced with"
+            else:
+                consumption["final"] = consumption["final"].fillna(fallback)
+                source = "filled from"
+            _LOGGER.warning(
+                "Consumption history from %s left %s/%s model slots empty; %s configured fallback load profile",
+                entity_id,
+                missing_count,
+                len(consumption["final"]),
+                source,
             )
-            daily["final"] = daily["consumption"] * daily_consumption / (daily["consumption"].sum() / 2000)
-            daily.index = pd.to_datetime(daily.index, unit="h").time
-            consumption = consumption.merge(daily, left_on="time_of_day", right_index=True)
-
-        else:
-            consumption["final"] = daily_consumption / 24
 
     hass.data[DOMAIN]["model"].consumption = consumption["final"].rename("consumption")
 
     return True
+
+
+async def _fallback_consumption(hass: HomeAssistant, consumption: pd.DataFrame) -> pd.Series:
+    daily_consumption = await get_value(hass, CONF_DAILY_CONSUMPTION_KWH)
+    if await get_value(hass, CONF_SHAPE_CONSUMPTION):
+        daily = (
+            pd.DataFrame(CONSUMPTION_SHAPE)
+            .set_index("hours")
+            .reindex(arange(0, 24.5, 0.5))
+            .interpolate()
+            .iloc[:-1]
+        )
+        daily["fallback"] = daily["consumption"] * daily_consumption / (daily["consumption"].sum() / 2000)
+        daily.index = pd.to_datetime(daily.index, unit="h").time
+        fallback = consumption[["time_of_day"]].merge(daily["fallback"], "left", left_on="time_of_day", right_index=True)
+        return fallback["fallback"].set_axis(consumption.index)
+
+    return pd.Series(index=consumption.index, data=daily_consumption * 1000 / 24)
 
 
 async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
