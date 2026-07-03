@@ -44,6 +44,13 @@ _LOGGER = logging.getLogger(__name__)
 
 SOLIS_CLOUD_TIMED_MODE = "Self-Use Mode - Allow Grid Charging"
 SOLIS_CLOUD_IDLE_MODE = "Self-Use Mode - No Grid Charging"
+SOLIS_CONNECT_IDLE_MODE = "Self-Use"
+SOLIS_CONNECT_CLOCK_YEAR = "clock_year"
+SOLIS_CONNECT_CLOCK_MONTH = "clock_month"
+SOLIS_CONNECT_CLOCK_DAY = "clock_day"
+SOLIS_CONNECT_CLOCK_HOURS = "clock_hours"
+SOLIS_CONNECT_CLOCK_MINUTES = "clock_minutes"
+SOLIS_CONNECT_CLOCK_SECONDS = "clock_seconds"
 
 
 class SolisInverter(InverterController):
@@ -539,11 +546,147 @@ class SolisConnectInverter(SolisInverter):
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {
         "model_entities": {
             MODEL_BATTERY_SOC: "sensor.{device_name}_battery_soc",
-            MODEL_GRID_IMPORT_TODAY: "sensor.{device_name}_grid_import_today",
-            MODEL_GRID_EXPORT_TODAY: "sensor.{device_name}_grid_export_today",
-            MODEL_CONSUMPTION_TODAY: "sensor.{device_name}_consumption_today",
+            MODEL_GRID_IMPORT_TODAY: "sensor.{device_name}_today_energy_imported_from_grid",
+            MODEL_GRID_EXPORT_TODAY: "sensor.{device_name}_today_energy_fed_into_grid",
+            MODEL_CONSUMPTION_TODAY: [
+                "sensor.{device_name}_household_load_today_energy",
+                "sensor.{device_name}_today_energy_consumption",
+            ],
+            MODEL_BATTERY_MINIMUM_SOC: "number.{device_name}_overdischarge_soc",
+        },
+        "control_entities": {
+            CONTROL_BATTERY_VOLTAGE: "sensor.{device_name}_battery_voltage",
+            CONTROL_TIMED_CHARGE_ON: "switch.{device_name}_grid_time_of_use_charging_period_1",
+            CONTROL_TIMED_CHARGE_START_HOURS: "time.{device_name}_grid_time_of_use_charge_start_slot_1",
+            CONTROL_TIMED_CHARGE_END_HOURS: "time.{device_name}_grid_time_of_use_charge_end_slot_1",
+            CONTROL_TIMED_CHARGE_CURRENT: "number.{device_name}_grid_time_of_use_charge_battery_current_slot_1",
+            CONTROL_TIMED_CHARGE_SOC: "number.{device_name}_grid_time_of_use_charge_cut_off_soc_slot_1",
+            CONTROL_TIMED_DISCHARGE_ON: "switch.{device_name}_grid_time_of_use_discharge_period_1",
+            CONTROL_TIMED_DISCHARGE_START_HOURS: "time.{device_name}_grid_time_of_use_discharge_start_slot_1",
+            CONTROL_TIMED_DISCHARGE_END_HOURS: "time.{device_name}_grid_time_of_use_discharge_end_slot_1",
+            CONTROL_TIMED_DISCHARGE_CURRENT: "number.{device_name}_grid_time_of_use_discharge_battery_current_slot_1",
+            CONTROL_TIMED_DISCHARGE_SOC: "number.{device_name}_grid_time_of_use_discharge_cut_off_soc_slot_1",
+            CONTROL_INVERTER_MODE: "select.{device_name}_work_mode",
+            CONTROL_BACKUP_MODE_SOC: "number.{device_name}_backup_soc",
+            SOLIS_CONNECT_CLOCK_YEAR: "sensor.{device_name}_clock_year",
+            SOLIS_CONNECT_CLOCK_MONTH: "sensor.{device_name}_clock_month",
+            SOLIS_CONNECT_CLOCK_DAY: "sensor.{device_name}_clock_day",
+            SOLIS_CONNECT_CLOCK_HOURS: "sensor.{device_name}_clock_hours",
+            SOLIS_CONNECT_CLOCK_MINUTES: "sensor.{device_name}_clock_minutes",
+            SOLIS_CONNECT_CLOCK_SECONDS: "sensor.{device_name}_clock_seconds",
         },
     }
+
+    async def get_time(self) -> datetime:
+        values = {
+            key: self._numeric_state(key)
+            for key in (
+                SOLIS_CONNECT_CLOCK_YEAR,
+                SOLIS_CONNECT_CLOCK_MONTH,
+                SOLIS_CONNECT_CLOCK_DAY,
+                SOLIS_CONNECT_CLOCK_HOURS,
+                SOLIS_CONNECT_CLOCK_MINUTES,
+                SOLIS_CONNECT_CLOCK_SECONDS,
+            )
+        }
+        if any(value is None for value in values.values()):
+            raise RuntimeError("SolisConnect inverter clock sensors are unavailable")
+
+        return datetime(
+            int(values[SOLIS_CONNECT_CLOCK_YEAR]),
+            int(values[SOLIS_CONNECT_CLOCK_MONTH]),
+            int(values[SOLIS_CONNECT_CLOCK_DAY]),
+            int(values[SOLIS_CONNECT_CLOCK_HOURS]),
+            int(values[SOLIS_CONNECT_CLOCK_MINUTES]),
+            int(values[SOLIS_CONNECT_CLOCK_SECONDS]),
+            tzinfo=dt_util.DEFAULT_TIME_ZONE,
+        )
+
+    async def set_time(self, time: datetime) -> None:
+        _LOGGER.debug("SolisConnect inverter RTC write is not exposed; ignoring set_time(%s)", time)
+
+    async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
+        await self._set_self_use_mode()
+        await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
+        await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
+        await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_on(CONTROL_TIMED_CHARGE_ON)
+
+    async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
+        await self._set_self_use_mode()
+        await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
+        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
+        await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
+
+    async def control_idle(self) -> None:
+        await self._turn_off(CONTROL_TIMED_CHARGE_ON)
+        await self._turn_off(CONTROL_TIMED_DISCHARGE_ON)
+        await self.set_mode(SOLIS_CONNECT_IDLE_MODE)
+
+    async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
+        if state == "idle":
+            return (
+                await self.get_mode() == SOLIS_CONNECT_IDLE_MODE
+                and not self._switch_on(CONTROL_TIMED_CHARGE_ON)
+                and not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
+            )
+
+        if state == "charging":
+            enable_key = CONTROL_TIMED_CHARGE_ON
+            current_key = CONTROL_TIMED_CHARGE_CURRENT
+            soc_key = CONTROL_TIMED_CHARGE_SOC
+        elif state == "discharging":
+            enable_key = CONTROL_TIMED_DISCHARGE_ON
+            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
+            soc_key = CONTROL_TIMED_DISCHARGE_SOC
+        else:
+            return False
+
+        requested_current = await self._power_to_current(power)
+        actual_current = self._numeric_state(current_key)
+        actual_soc = self._numeric_state(soc_key)
+        return (
+            self._switch_on(enable_key)
+            and actual_current is not None
+            and actual_soc is not None
+            and abs(actual_current - requested_current) <= 0.1
+            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+        )
+
+    async def set_mode(self, mode: str) -> None:
+        await self.hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
+                "option": mode,
+            },
+            blocking=True,
+        )
+
+    async def get_mode(self) -> str:
+        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
+        return None if state is None else state.state
+
+    async def power_to_current(self, power: float) -> float | None:
+        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
+        if voltage is None or voltage <= 0:
+            return None
+        return abs(float(power)) / voltage
+
+    async def _set_self_use_mode(self) -> None:
+        if await self.get_mode() != SOLIS_CONNECT_IDLE_MODE:
+            await self.set_mode(SOLIS_CONNECT_IDLE_MODE)
+
+    def _switch_on(self, key: str) -> bool:
+        entity_id = self._entity_id(key)
+        if entity_id is None:
+            return False
+        state = self._state(entity_id)
+        return state is not None and state.state.lower() == "on"
 
 
 SOLIS_INVERTER_CLASSES = {
