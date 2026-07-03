@@ -18,7 +18,7 @@ from .const import (
     DOMAIN,
     NAME,
 )
-from .inverters import INVERTER_DEFS
+from .inverters import INVERTER_DEFS, get_inverter_controller_class
 from .utils import get_integration_entities, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +83,50 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
         return []
 
 
+def _entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
+    if isinstance(templates, str):
+        templates = [templates]
+    return [template.replace("{device_name}", device_name) for template in templates]
+
+
+def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str | None:
+    candidates: dict[str, int] = {}
+
+    for entity_templates in entity_defs.get("model_entities", {}).values():
+        templates = [entity_templates] if isinstance(entity_templates, str) else entity_templates
+        for template in templates:
+            if "{device_name}" not in template:
+                continue
+            domain, object_template = template.split(".", 1)
+            suffix = object_template.split("{device_name}", 1)[1]
+            for entity_id in entity_ids:
+                entity_domain, entity_object_id = entity_id.split(".", 1)
+                if entity_domain == domain and entity_object_id.endswith(suffix):
+                    candidate = entity_object_id[: -len(suffix)]
+                    candidates[candidate] = candidates.get(candidate, 0) + 1
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=candidates.get)
+
+
+def _has_required_model_entities(brand: str, integration: str, associated_entities: list) -> bool:
+    entity_ids = [entity.entity_id for entity in associated_entities]
+    controller = get_inverter_controller_class(brand, integration)
+    entity_defs = controller.entity_defs
+    device_name = _infer_integration_device_name(entity_ids, entity_defs)
+    if device_name is None:
+        return False
+
+    for templates in entity_defs.get("model_entities", {}).values():
+        expected_entity_ids = _entity_template_candidates(templates, device_name)
+        if not any(entity_id in entity_ids for entity_id in expected_entity_ids):
+            return False
+
+    return True
+
+
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
     Handle the configuration flow for the integration.
@@ -130,13 +174,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["integration"] = lookup.get(self._options["integration_name"], "")
 
             if self._options["integration"] in self._discovered_integrations:
+                await self.async_set_unique_id(f"{DOMAIN}_{self._data['inverter_brand']}_{self._options['integration']}")
+                self._abort_if_unique_id_configured()
                 user_input["controller_config_entry"], associated_entities = await get_integration_entities(
                     hass=self.hass, integration=self._options["integration"]
                 )
-                if associated_entities:
-                    _LOGGER.debug(
-                        f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                if not associated_entities or not _has_required_model_entities(
+                    self._data["inverter_brand"],
+                    self._options["integration"],
+                    associated_entities,
+                ):
+                    errors["base"] = "missing_controller_entities"
+                    return self.async_show_form(
+                        step_id="select_controller",
+                        data_schema=vol.Schema({vol.Required("inverter_integration"): vol.In(self._names.values())}),
+                        errors=errors,
                     )
+
+                _LOGGER.debug(
+                    f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                )
 
                 self._use_octopus_energy = await _is_installed(self.hass, "octopus_energy")
                 return await self.async_step_tariff_source()

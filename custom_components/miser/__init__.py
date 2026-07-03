@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.util.dt as dt_util
 from homeassistant.helpers.event import async_track_time_interval, async_track_state_change
 
@@ -93,7 +94,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     uuid = await get_instance_id(hass)
     _LOGGER.debug(f"UUID: {uuid}")
-    hass.data[DOMAIN] = {"uuid": uuid}
+    entry.runtime_data = {"uuid": uuid}
+    hass.data[DOMAIN] = entry.runtime_data
 
     log_config_entry(entry)
 
@@ -113,8 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entities_available = await _get_entities(hass, entry)
 
     if not entities_available:
-        _LOGGER.error("Could not retrieve necessary entities to set up inverter model")
-        return False
+        raise ConfigEntryNotReady("Could not retrieve necessary entities to set up inverter model")
 
     _log_all_entities(hass)
     pv_model = await _load_pv_system_model(hass)
@@ -124,8 +125,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     octopus = await _get_octopus_info(hass, entry)
 
     if not (pv_model and octopus):
-        _LOGGER.error("Could not retrieve necessary PV model or tariff data")
-        return False
+        raise ConfigEntryNotReady("Could not retrieve necessary PV model or tariff data")
 
     _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
 
@@ -163,8 +163,7 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
         if tariff_code
     }
     if not tariff_codes.get("import"):
-        _LOGGER.error("No import tariff code available")
-        return False
+        raise ConfigEntryNotReady("No import tariff code available")
 
     for direction, tariff_code in tariff_codes.items():
         hass.data[DOMAIN]["tariffs"][direction] = await Tariff.create(tariff_code, export=(direction == "export"))
