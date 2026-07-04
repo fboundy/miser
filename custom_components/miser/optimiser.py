@@ -35,6 +35,7 @@ from .const import (
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
+    CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
     CONTROL_FORCE_POWER,
@@ -44,15 +45,18 @@ from .const import (
     CONTROL_NEXT_SLOT_TARGET_SOC,
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
+    CONTROL_PASS_THREHOLD,
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
+    MODEL_MIN_SLOT_POWER,
     OPTIMISER_MAX_ITERS,
 )
 from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
+PRICE_PERIOD_TOLERANCE = 0.05
 
 
 def _is_finite(value) -> bool:
@@ -177,6 +181,7 @@ async def optimise(hass: HomeAssistant, now=None):
     model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
     model.best_cost = model.optimised_cost
     _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
+    await _finalise_optimised_output(hass, model)
 
     if _is_unloading(hass):
         _LOGGER.debug("Skipping optimiser output because Miser is unloading")
@@ -515,6 +520,160 @@ def _slot_value(slot: dict | None, key: str, local_time: bool = False):
             value = dt_util.as_local(value)
         return value.isoformat()
     return value
+
+
+async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
+    """Reduce inverter writes where that does not materially affect the chosen cost."""
+    if model.optimised_flows is None or model.optimised_flows.empty:
+        return
+
+    original_control_slots = _control_slots(model.optimised_flows)
+    final_slots = _minimise_inverter_write_slots(model.optimised_flows)
+    if not final_slots:
+        return
+
+    final_cost, final_flows = await _calculate_cost_and_flows(model, final_slots)
+    if not _is_finite(final_cost):
+        _LOGGER.warning("Skipping inverter-write minimisation because finalised cost is not finite")
+        return
+
+    cost_delta = final_cost - model.optimised_cost
+    threshold = await get_value(
+        hass,
+        CONF_WRITE_MINIMISATION_COST_THRESHOLD,
+        default_value=DEFAULTS[CONF_WRITE_MINIMISATION_COST_THRESHOLD],
+    )
+    if threshold is None or not _is_finite(threshold):
+        threshold = CONTROL_PASS_THREHOLD
+
+    if cost_delta > float(threshold):
+        _LOGGER.info(
+            "Skipping inverter-write minimisation: cost delta %.1fp exceeds %.1fp threshold",
+            cost_delta,
+            float(threshold),
+        )
+        return
+
+    final_control_slots = _control_slots(final_flows)
+    if len(final_control_slots) > len(original_control_slots):
+        _LOGGER.info(
+            "Skipping inverter-write minimisation: control slots would increase from %s to %s",
+            len(original_control_slots),
+            len(final_control_slots),
+        )
+        return
+
+    model.optimised_slots = final_slots
+    model.optimised_cost = final_cost
+    model.optimised_flows = final_flows
+    model.best_cost = final_cost
+    _LOGGER.info(
+        "Finalised optimiser output: control slots %s -> %s, cost delta %.1fp",
+        len(original_control_slots),
+        len(final_control_slots),
+        cost_delta,
+    )
+
+
+def _minimise_inverter_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    final_forced = pd.Series(index=flows.index, data=0.0)
+
+    for direction, price_col in ((1, "import"), (-1, "export")):
+        for period in _similar_price_periods(flows, direction=direction, price_col=price_col):
+            forced = period["forced"]
+            selected = forced[forced * direction > 0]
+            if selected.empty:
+                continue
+
+            energy_wh = float((selected.abs() * period.loc[selected.index, "dt_hours"]).sum())
+            if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+                continue
+
+            if direction > 0:
+                _spread_charge_across_period(final_forced, period, energy_wh)
+            else:
+                _defer_discharge_within_period(final_forced, period, energy_wh, selected)
+
+    return [
+        (start, round(float(power), 0))
+        for start, power in final_forced.items()
+        if abs(float(power)) >= MODEL_MIN_SLOT_POWER
+    ]
+
+
+def _similar_price_periods(flows: pd.DataFrame, direction: int, price_col: str) -> list[pd.DataFrame]:
+    periods = []
+    current_rows = []
+    current_price = None
+
+    for start, row in flows.iterrows():
+        forced = float(row.get("forced", 0))
+        if forced * direction < 0:
+            if current_rows:
+                periods.append(flows.loc[current_rows])
+            current_rows = []
+            current_price = None
+            continue
+
+        price = float(row.get(price_col, 0))
+        if current_price is None or abs(price - current_price) <= PRICE_PERIOD_TOLERANCE:
+            current_rows.append(start)
+            if current_price is None:
+                current_price = price
+            continue
+
+        if current_rows:
+            periods.append(flows.loc[current_rows])
+        current_rows = [start]
+        current_price = price
+
+    if current_rows:
+        periods.append(flows.loc[current_rows])
+
+    return periods
+
+
+def _spread_charge_across_period(final_forced: pd.Series, period: pd.DataFrame, energy_wh: float) -> None:
+    duration_hours = float(period["dt_hours"].sum())
+    if duration_hours <= 0:
+        return
+
+    power = energy_wh / duration_hours
+    if power < MODEL_MIN_SLOT_POWER:
+        return
+
+    for start in period.index:
+        if final_forced.loc[start] == 0:
+            final_forced.loc[start] = power
+
+
+def _defer_discharge_within_period(
+    final_forced: pd.Series,
+    period: pd.DataFrame,
+    energy_wh: float,
+    selected: pd.Series,
+) -> None:
+    remaining_wh = energy_wh
+    power_limit = float(selected.abs().max())
+    if power_limit < MODEL_MIN_SLOT_POWER:
+        return
+
+    for start, row in reversed(list(period.iterrows())):
+        if remaining_wh <= 0:
+            break
+        if final_forced.loc[start] != 0:
+            continue
+
+        dt_hours = float(row.get("dt_hours", 0))
+        if dt_hours <= 0:
+            continue
+
+        power = min(power_limit, remaining_wh / dt_hours)
+        if power < MODEL_MIN_SLOT_POWER:
+            continue
+
+        final_forced.loc[start] = -power
+        remaining_wh -= power * dt_hours
 
 
 async def _optimise_discharge(

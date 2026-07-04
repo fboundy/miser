@@ -62,6 +62,7 @@ CONF_READ_ONLY = "read_only"
 CONF_INCLUDE_EXPORT = "include_export"
 CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
+CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 
 # Default values
 DEFAULT_CHARGER_POWER = 3000  # W
@@ -90,6 +91,7 @@ DEFAULTS = {
     CONF_INCLUDE_EXPORT: True,
     CONF_OPTIMISE_DISCHARGING: True,
     CONF_WHOLE_HORIZON_BETA: False,
+    CONF_WRITE_MINIMISATION_COST_THRESHOLD: 4,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -318,6 +320,13 @@ NUMBER_ENTITIES = {
         "step": 1,
         "default": DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
+    },
+    CONF_WRITE_MINIMISATION_COST_THRESHOLD: {
+        "min": 0,
+        "max": 20,
+        "step": 1,
+        "default": DEFAULTS[CONF_WRITE_MINIMISATION_COST_THRESHOLD],
+        "unit": "p",
     },
 }
 
