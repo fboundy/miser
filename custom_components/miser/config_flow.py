@@ -11,6 +11,7 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
+    CONF_DAILY_CONSUMPTION_KWH,
     CONF_INVERTER_EFFICIENCY,
     CONF_INVERTER_POWER,
     CONF_INVERTER_LOSS,
@@ -370,9 +371,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._options["daily_consumption"] = user_input.get("daily_consumption")
+            self._options[CONF_DAILY_CONSUMPTION_KWH] = user_input.get("daily_amount")
             self._options["scaling_option"] = user_input.get("scaling_option")
-            if self._options["daily_consumption"] is not None and self._options["scaling_option"] is not None:
+            if self._options[CONF_DAILY_CONSUMPTION_KWH] is not None and self._options["scaling_option"] is not None:
                 return self.async_create_entry(
                     title=NAME,
                     data=self._data,

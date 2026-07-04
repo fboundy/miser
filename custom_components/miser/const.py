@@ -304,7 +304,7 @@ NUMBER_ENTITIES = {
         "unit": UnitOfPower.WATT,
     },
     CONF_DAILY_CONSUMPTION_KWH: {
-        "min": 0,
+        "min": 1,
         "max": 30,
         "step": 1,
         "default": DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],

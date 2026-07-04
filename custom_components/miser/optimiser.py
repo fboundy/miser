@@ -757,6 +757,15 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             consumption_history = await _get_hass_power_from_daily_kwh(hass, entity_id, history_days, freq=freq)
 
             if consumption_history is not None and not consumption_history.empty:
+                consumption_history = pd.to_numeric(consumption_history, errors="coerce").dropna()
+                if consumption_history.empty or consumption_history.mean() <= 0:
+                    _LOGGER.warning(
+                        "Consumption history from %s contains no positive load; using configured fallback",
+                        entity_id,
+                    )
+                    consumption_history = None
+
+            if consumption_history is not None and not consumption_history.empty:
                 # Add consumption margin
                 consumption_history = consumption_history * (1 + load_margin / 100)
 
@@ -795,7 +804,7 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             valid_count = len(consumption["final"]) - missing_count
             if valid_count < len(consumption["final"]) / 2:
                 average_load = consumption["final"].mean()
-                if pd.notna(average_load):
+                if pd.notna(average_load) and average_load > 0:
                     consumption["final"] = average_load
                     fallback_action = "using average available history"
                 else:
@@ -819,6 +828,14 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
 
 async def _fallback_consumption(hass: HomeAssistant, consumption: pd.DataFrame) -> pd.Series:
     daily_consumption = await get_value(hass, CONF_DAILY_CONSUMPTION_KWH)
+    if daily_consumption is None or not _is_finite(daily_consumption) or daily_consumption <= 0:
+        _LOGGER.warning(
+            "Configured daily consumption is %s; using default %skWh/day fallback",
+            daily_consumption,
+            DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],
+        )
+        daily_consumption = DEFAULTS[CONF_DAILY_CONSUMPTION_KWH]
+
     if await get_value(hass, CONF_SHAPE_CONSUMPTION):
         daily = (
             pd.DataFrame(CONSUMPTION_SHAPE)
