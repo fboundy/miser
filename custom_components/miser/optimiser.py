@@ -653,13 +653,16 @@ def _defer_discharge_within_period(
     energy_wh: float,
     selected: pd.Series,
 ) -> None:
-    remaining_wh = energy_wh
     power_limit = float(selected.abs().max())
     if power_limit < MODEL_MIN_SLOT_POWER:
         return
 
+    target_duration_hours = energy_wh / power_limit
+    selected_rows = []
+    selected_duration_hours = 0.0
+
     for start, row in reversed(list(period.iterrows())):
-        if remaining_wh <= 0:
+        if selected_duration_hours >= target_duration_hours:
             break
         if final_forced.loc[start] != 0:
             continue
@@ -668,12 +671,18 @@ def _defer_discharge_within_period(
         if dt_hours <= 0:
             continue
 
-        power = min(power_limit, remaining_wh / dt_hours)
-        if power < MODEL_MIN_SLOT_POWER:
-            continue
+        selected_rows.append(start)
+        selected_duration_hours += dt_hours
 
+    if selected_duration_hours <= 0:
+        return
+
+    power = energy_wh / selected_duration_hours
+    if power < MODEL_MIN_SLOT_POWER or power > power_limit + 0.1:
+        return
+
+    for start in selected_rows:
         final_forced.loc[start] = -power
-        remaining_wh -= power * dt_hours
 
 
 async def _optimise_discharge(
