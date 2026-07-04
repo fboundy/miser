@@ -776,17 +776,22 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             fallback = await _fallback_consumption(hass, consumption)
             valid_count = len(consumption["final"]) - missing_count
             if valid_count < len(consumption["final"]) / 2:
-                consumption["final"] = fallback
-                source = "replaced with"
+                average_load = consumption["final"].mean()
+                if pd.notna(average_load):
+                    consumption["final"] = average_load
+                    fallback_action = "using average available history"
+                else:
+                    consumption["final"] = fallback
+                    fallback_action = "using configured fallback load profile"
             else:
                 consumption["final"] = consumption["final"].fillna(fallback)
-                source = "filled from"
+                fallback_action = "filling gaps from configured fallback load profile"
             _LOGGER.warning(
-                "Consumption history from %s left %s/%s model slots empty; %s configured fallback load profile",
+                "Consumption history from %s left %s/%s model slots empty; %s",
                 entity_id,
                 missing_count,
                 len(consumption["final"]),
-                source,
+                fallback_action,
             )
 
     hass.data[DOMAIN]["model"].consumption = consumption["final"].rename("consumption")
