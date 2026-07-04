@@ -127,11 +127,12 @@ async def optimise(hass: HomeAssistant, now=None):
     model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
-    lcc_best_cost = model.best_cost
+    lcc_raw_cost = model.best_cost
     model.discharge_slots, model.discharge_cost, model.discharge_flows = await _optimise_discharge(
         model,
         base_slots=model.lcc_slots,
-        base_cost=lcc_best_cost,
+        base_cost=model.lcc_cost,
+        base_raw_cost=lcc_raw_cost,
         fill_first=False,
     )
     _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
@@ -139,7 +140,8 @@ async def optimise(hass: HomeAssistant, now=None):
     model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _optimise_discharge(
         model,
         base_slots=model.lcc_slots,
-        base_cost=lcc_best_cost,
+        base_cost=model.lcc_cost,
+        base_raw_cost=lcc_raw_cost,
         fill_first=True,
     )
     _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
@@ -514,32 +516,46 @@ def _slot_value(slot: dict | None, key: str, local_time: bool = False):
     return value
 
 
-async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_first: bool) -> tuple:
+async def _optimise_discharge(
+    model,
+    base_slots: list,
+    base_cost: float,
+    base_raw_cost: float,
+    fill_first: bool,
+) -> tuple:
     best_slots = list(base_slots)
     best_cost = base_cost
     best_flows = await model.flows(slots=best_slots)
     iteration_base_slots = list(base_slots)
+    iteration_base_raw_cost = base_raw_cost
     label = "Fill-first discharge" if fill_first else "Discharge"
 
-    model.best_cost = base_cost
+    model.best_cost = base_raw_cost
 
     for iteration in range(OPTIMISER_MAX_ITERS):
-        previous_best_cost = model.best_cost
+        previous_best_raw_cost = model.best_cost
         _LOGGER.debug(f"{label} iteration {iteration + 1}")
 
         discharge_base_slots = iteration_base_slots
+        discharge_base_raw_cost = iteration_base_raw_cost
         if fill_first:
+            model.best_cost = iteration_base_raw_cost
             discharge_base_slots = await model.fill_first_charging(base_slots=iteration_base_slots)
             local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, discharge_base_slots)
-            model.best_cost = local_lcc_cost
+            discharge_base_raw_cost = (await model.net_cost(slots=discharge_base_slots)).sum()
+            model.best_cost = discharge_base_raw_cost
             _LOGGER.debug(f"{label} local fill cost: {local_lcc_cost:6.1f}")
+            if _is_finite(local_lcc_cost) and _is_finite(best_cost) and local_lcc_cost < best_cost:
+                best_slots = discharge_base_slots
+                best_cost = local_lcc_cost
+                best_flows = _local_lcc_flows
 
         discharge_slots = await model.discharging(base_slots=discharge_base_slots)
         discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
         _LOGGER.debug(f"{label} cost: {discharge_cost:6.1f}")
 
         if not _is_finite(discharge_cost) or not _is_finite(best_cost) or discharge_cost >= best_cost:
-            model.best_cost = previous_best_cost
+            model.best_cost = previous_best_raw_cost
             _LOGGER.debug(f"No {label.lower()} improvement in iteration {iteration + 1}; stopping optimisation loop")
             break
 
@@ -547,6 +563,8 @@ async def _optimise_discharge(model, base_slots: list, base_cost: float, fill_fi
         best_cost = discharge_cost
         best_flows = discharge_flows
         iteration_base_slots = best_slots
+        iteration_base_raw_cost = (await model.net_cost(slots=best_slots)).sum()
+        model.best_cost = iteration_base_raw_cost
 
     model.best_cost = best_cost
     return best_slots, best_cost, best_flows
