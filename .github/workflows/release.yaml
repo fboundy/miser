@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version part to bump"
+        required: true
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+env:
+  COMPONENT_NAME: miser
+
+jobs:
+  release:
+    name: Prepare release
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       contains(fromJson('["patch", "dev"]'), github.event.pull_request.head.ref))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.PAT }}
+
+      - name: Install jq and semver
+        run: |
+          sudo apt-get install -y jq
+          pip install semver
+
+      - name: Determine bump type
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          BUMP_INPUT: ${{ inputs.bump }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            bump="$BUMP_INPUT"
+          elif [ "$HEAD_REF" = "dev" ]; then
+            bump="minor"
+          else
+            bump="patch"
+          fi
+          echo "Bump type: $bump"
+          echo "bump=$bump" >> "$GITHUB_ENV"
+
+      - name: Bump version in manifest.json
+        run: |
+          manifest="custom_components/${{ env.COMPONENT_NAME }}/manifest.json"
+          current=$(jq -r '.version' "$manifest")
+          new=$(python -c "import semver; print(semver.bump_${{ env.bump }}('$current'))")
+          echo "Bumping $current -> $new (${{ env.bump }})"
+          jq ".version = \"$new\"" "$manifest" > package.tmp.json && mv package.tmp.json "$manifest"
+          echo "version=$new" >> "$GITHUB_ENV"
+
+      - name: Commit and push version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "custom_components/${{ env.COMPONENT_NAME }}/manifest.json"
+          git commit -m "chore: release v${{ env.version }}"
+          git push origin HEAD:main
+
+      - name: Zip ${{ env.COMPONENT_NAME }} dir
+        run: |
+          cd "custom_components/${{ env.COMPONENT_NAME }}"
+          zip "${{ env.COMPONENT_NAME }}.zip" -r ./
+
+      - name: Upload zip to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: custom_components/${{ env.COMPONENT_NAME }}/${{ env.COMPONENT_NAME }}.zip
+          tag_name: v${{ env.version }}
+          name: v${{ env.version }}
+          token: ${{ secrets.PAT }}
+          generate_release_notes: true
+
+      - name: Update latest tag
+        uses: EndBug/latest-tag@latest
+        with:
+          github-token: ${{ secrets.PAT }}

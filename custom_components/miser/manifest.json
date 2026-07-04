@@ -1,8 +1,8 @@
 {
   "domain": "miser",
   "name": "Miser PV System Optimiser",
-  "version": "1.0.0",
-  "documentation": "https://github.com/fboundy/miser", 
+  "version": "0.0.0",
+  "documentation": "https://github.com/fboundy/miser",
   "requirements": ["pandas"],
   "dependencies": ["solcast_solar"],
   "codeowners": ["@fboundy"],
