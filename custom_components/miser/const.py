@@ -52,6 +52,7 @@ CONF_WEEKDAY_WEIGHTING = "weekday_weighting"
 CONF_LOAD_MARGIN = "load_margin"
 CONF_SHAPE_CONSUMPTION = "shape_consumption"
 CONF_DAILY_CONSUMPTION_KWH = "daily_consumption_kwh"
+CONF_MINIMUM_DAILY_CONSUMPTION_KWH = "minimum_daily_consumption_kwh"
 CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
 CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
 CONF_POWER_RESOLUTION = "power_resolution"
@@ -79,6 +80,7 @@ DEFAULTS = {
     CONF_LOAD_MARGIN: 10,
     CONF_SHAPE_CONSUMPTION: True,
     CONF_DAILY_CONSUMPTION_KWH: 17,
+    CONF_MINIMUM_DAILY_CONSUMPTION_KWH: 5,
     CONF_OPTIMISER_FREQUENCY: 10,
     CONF_SOLCAST_CONFIDENCE: 50,
     CONF_POWER_RESOLUTION: 100,
@@ -308,6 +310,13 @@ NUMBER_ENTITIES = {
         "max": 30,
         "step": 1,
         "default": DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],
+        "unit": UnitOfEnergy.KILO_WATT_HOUR,
+    },
+    CONF_MINIMUM_DAILY_CONSUMPTION_KWH: {
+        "min": 1,
+        "max": 30,
+        "step": 1,
+        "default": DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
     },
 }

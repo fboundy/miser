@@ -26,6 +26,7 @@ from .const import (
     SOLCAST_COLUMNS,
     CONF_USE_CONSUMPTION_HISTORY,
     CONF_DAILY_CONSUMPTION_KWH,
+    CONF_MINIMUM_DAILY_CONSUMPTION_KWH,
     CONF_HISTORY_DAYS,
     CONF_LOAD_MARGIN,
     CONF_WEEKDAY_WEIGHTING,
@@ -805,7 +806,8 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
             if valid_count < len(consumption["final"]) / 2:
                 average_load = consumption["final"].mean()
                 if pd.notna(average_load) and average_load > 0:
-                    consumption["final"] = average_load
+                    minimum_load = await _minimum_consumption_watts(hass)
+                    consumption["final"] = max(average_load, minimum_load)
                     fallback_action = "using average available history"
                 else:
                     consumption["final"] = fallback
@@ -821,9 +823,35 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
                 fallback_action,
             )
 
+    consumption["final"] = await _apply_minimum_consumption(hass, consumption["final"])
     hass.data[DOMAIN]["model"].consumption = consumption["final"].rename("consumption")
 
     return True
+
+
+async def _apply_minimum_consumption(hass: HomeAssistant, consumption: pd.Series) -> pd.Series:
+    minimum_load = await _minimum_consumption_watts(hass)
+    if minimum_load <= 0:
+        return consumption
+
+    average_load = pd.to_numeric(consumption, errors="coerce").mean()
+    if pd.notna(average_load) and average_load > 0 and average_load < minimum_load:
+        scale = minimum_load / average_load
+        _LOGGER.warning(
+            "Consumption model averages %.1fW; scaling to configured minimum %.1fW",
+            average_load,
+            minimum_load,
+        )
+        return consumption * scale
+
+    return consumption
+
+
+async def _minimum_consumption_watts(hass: HomeAssistant) -> float:
+    minimum_daily_consumption = await get_value(hass, CONF_MINIMUM_DAILY_CONSUMPTION_KWH)
+    if minimum_daily_consumption is None or not _is_finite(minimum_daily_consumption):
+        minimum_daily_consumption = DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH]
+    return max(float(minimum_daily_consumption), 0) * 1000 / 24
 
 
 async def _fallback_consumption(hass: HomeAssistant, consumption: pd.DataFrame) -> pd.Series:
