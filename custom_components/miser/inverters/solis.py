@@ -556,18 +556,51 @@ class SolisConnectInverter(SolisInverter):
         },
         "control_entities": {
             CONTROL_BATTERY_VOLTAGE: "sensor.{device_name}_battery_voltage",
-            CONTROL_TIMED_CHARGE_ON: "switch.{device_name}_grid_time_of_use_charging_period_1",
-            CONTROL_TIMED_CHARGE_START_HOURS: "time.{device_name}_grid_time_of_use_charge_start_slot_1",
-            CONTROL_TIMED_CHARGE_END_HOURS: "time.{device_name}_grid_time_of_use_charge_end_slot_1",
-            CONTROL_TIMED_CHARGE_CURRENT: "number.{device_name}_grid_time_of_use_charge_battery_current_slot_1",
-            CONTROL_TIMED_CHARGE_SOC: "number.{device_name}_grid_time_of_use_charge_cut_off_soc_slot_1",
-            CONTROL_TIMED_DISCHARGE_ON: "switch.{device_name}_grid_time_of_use_discharge_period_1",
-            CONTROL_TIMED_DISCHARGE_START_HOURS: "time.{device_name}_grid_time_of_use_discharge_start_slot_1",
-            CONTROL_TIMED_DISCHARGE_END_HOURS: "time.{device_name}_grid_time_of_use_discharge_end_slot_1",
-            CONTROL_TIMED_DISCHARGE_CURRENT: "number.{device_name}_grid_time_of_use_discharge_battery_current_slot_1",
-            CONTROL_TIMED_DISCHARGE_SOC: "number.{device_name}_grid_time_of_use_discharge_cut_off_soc_slot_1",
+            CONTROL_TIMED_CHARGE_ON: [
+                "switch.{device_name}_timed_charge_enable_1",
+                "switch.{device_name}_grid_time_of_use_charging_period_1",
+            ],
+            CONTROL_TIMED_CHARGE_START_HOURS: [
+                "time.{device_name}_timed_charge_start_1",
+                "time.{device_name}_grid_time_of_use_charge_start_slot_1",
+            ],
+            CONTROL_TIMED_CHARGE_END_HOURS: [
+                "time.{device_name}_timed_charge_end_1",
+                "time.{device_name}_grid_time_of_use_charge_end_slot_1",
+            ],
+            CONTROL_TIMED_CHARGE_CURRENT: [
+                "number.{device_name}_timed_charge_current_1",
+                "number.{device_name}_grid_time_of_use_charge_battery_current_slot_1",
+            ],
+            CONTROL_TIMED_CHARGE_SOC: [
+                "number.{device_name}_timed_charge_soc_1",
+                "number.{device_name}_grid_time_of_use_charge_cut_off_soc_slot_1",
+            ],
+            CONTROL_TIMED_DISCHARGE_ON: [
+                "switch.{device_name}_timed_discharge_enable_1",
+                "switch.{device_name}_grid_time_of_use_discharge_period_1",
+            ],
+            CONTROL_TIMED_DISCHARGE_START_HOURS: [
+                "time.{device_name}_timed_discharge_start_1",
+                "time.{device_name}_grid_time_of_use_discharge_start_slot_1",
+            ],
+            CONTROL_TIMED_DISCHARGE_END_HOURS: [
+                "time.{device_name}_timed_discharge_end_1",
+                "time.{device_name}_grid_time_of_use_discharge_end_slot_1",
+            ],
+            CONTROL_TIMED_DISCHARGE_CURRENT: [
+                "number.{device_name}_timed_discharge_current_1",
+                "number.{device_name}_grid_time_of_use_discharge_battery_current_slot_1",
+            ],
+            CONTROL_TIMED_DISCHARGE_SOC: [
+                "number.{device_name}_timed_discharge_soc_1",
+                "number.{device_name}_grid_time_of_use_discharge_cut_off_soc_slot_1",
+            ],
             CONTROL_INVERTER_MODE: "select.{device_name}_work_mode",
-            CONTROL_BACKUP_MODE_SOC: "number.{device_name}_backup_soc",
+            CONTROL_BACKUP_MODE_SOC: [
+                "number.{device_name}_backup_mode_soc",
+                "number.{device_name}_backup_soc",
+            ],
             SOLIS_CONNECT_CLOCK_YEAR: "sensor.{device_name}_clock_year",
             SOLIS_CONNECT_CLOCK_MONTH: "sensor.{device_name}_clock_month",
             SOLIS_CONNECT_CLOCK_DAY: "sensor.{device_name}_clock_day",
@@ -592,8 +625,12 @@ class SolisConnectInverter(SolisInverter):
         if any(value is None for value in values.values()):
             raise RuntimeError("SolisConnect inverter clock sensors are unavailable")
 
+        year = int(values[SOLIS_CONNECT_CLOCK_YEAR])
+        if year < 100:
+            year += 2000
+
         return datetime(
-            int(values[SOLIS_CONNECT_CLOCK_YEAR]),
+            year,
             int(values[SOLIS_CONNECT_CLOCK_MONTH]),
             int(values[SOLIS_CONNECT_CLOCK_DAY]),
             int(values[SOLIS_CONNECT_CLOCK_HOURS]),
