@@ -6,17 +6,20 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
 
-from homeassistant.loader import (async_get_custom_components,
-                                  async_get_integration)
-
-from .const import (CONF_BATTERY_CAPACITY, CONF_CHARGER_EFFICIENCY,
-                    CONF_CHARGER_POWER, CONF_INVERTER_EFFICIENCY,
-                    CONF_INVERTER_POWER, CONFIG, DEFAULT_BATTERY_CAPACITY,
-                    DEFAULT_CHARGER_EFFICIENCY, DEFAULT_CHARGER_POWER,
-                    DEFAULT_INVERTER_EFFICIENCY, DEFAULT_INVERTER_POWER,
-                    DOMAIN, NAME)
-
-from .utils import get_integration_entities
+from .const import (
+    CONF_BATTERY_CAPACITY,
+    CONF_CHARGER_EFFICIENCY,
+    CONF_CHARGER_POWER,
+    CONF_DAILY_CONSUMPTION_KWH,
+    CONF_INVERTER_EFFICIENCY,
+    CONF_INVERTER_POWER,
+    CONF_INVERTER_LOSS,
+    DEFAULTS,
+    DOMAIN,
+    NAME,
+)
+from .inverters import INVERTER_DEFS, get_inverter_controller_class
+from .utils import get_integration_entities, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,7 +61,7 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
 
         # Find installed integrations for the specified inverter brand
         installed_integrations = [
-            integration for integration in CONFIG.get(inverter_brand, []) if integration in custom_components
+            integration for integration in INVERTER_DEFS.get(inverter_brand, []) if integration in custom_components
         ]
 
         # Log configuration entries and associated entities for each installed integration
@@ -66,7 +69,9 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
             config_entries = hass.config_entries.async_entries(integration)
             if config_entries:
                 for entry in config_entries:
-                    _LOGGER.debug(f"Config entry for integration '{integration}': {entry.as_dict()}")
+                    _LOGGER.debug(
+                        f"Config entry for integration '{integration}': {redact_sensitive(entry.as_dict())}"
+                    )
 
             else:
                 _LOGGER.debug(f"No config entries found for integration '{integration}'")
@@ -76,6 +81,50 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
         # Log any errors during the discovery process
         _LOGGER.error(f"Error discovering integrations for brand '{inverter_brand}': {e}")
         return []
+
+
+def _entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
+    if isinstance(templates, str):
+        templates = [templates]
+    return [template.replace("{device_name}", device_name) for template in templates]
+
+
+def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str | None:
+    candidates: dict[str, int] = {}
+
+    for entity_templates in entity_defs.get("model_entities", {}).values():
+        templates = [entity_templates] if isinstance(entity_templates, str) else entity_templates
+        for template in templates:
+            if "{device_name}" not in template:
+                continue
+            domain, object_template = template.split(".", 1)
+            suffix = object_template.split("{device_name}", 1)[1]
+            for entity_id in entity_ids:
+                entity_domain, entity_object_id = entity_id.split(".", 1)
+                if entity_domain == domain and entity_object_id.endswith(suffix):
+                    candidate = entity_object_id[: -len(suffix)]
+                    candidates[candidate] = candidates.get(candidate, 0) + 1
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=candidates.get)
+
+
+def _has_required_model_entities(brand: str, integration: str, associated_entities: list) -> bool:
+    entity_ids = [entity.entity_id for entity in associated_entities]
+    controller = get_inverter_controller_class(brand, integration)
+    entity_defs = controller.entity_defs
+    device_name = _infer_integration_device_name(entity_ids, entity_defs)
+    if device_name is None:
+        return False
+
+    for templates in entity_defs.get("model_entities", {}).values():
+        expected_entity_ids = _entity_template_candidates(templates, device_name)
+        if not any(entity_id in entity_ids for entity_id in expected_entity_ids):
+            return False
+
+    return True
 
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -108,7 +157,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_select_controller()
 
         # Display a form for selecting the inverter brand
-        schema = vol.Schema({vol.Required("inverter_brand"): vol.In([brand.title() for brand in CONFIG.keys()])})
+        schema = vol.Schema(
+            {vol.Required("inverter_brand"): vol.In([brand.title() for brand in INVERTER_DEFS.keys()])}
+        )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     async def async_step_select_controller(self, user_input=None):
@@ -123,13 +174,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["integration"] = lookup.get(self._options["integration_name"], "")
 
             if self._options["integration"] in self._discovered_integrations:
+                await self.async_set_unique_id(f"{DOMAIN}_{self._data['inverter_brand']}_{self._options['integration']}")
+                self._abort_if_unique_id_configured()
                 user_input["controller_config_entry"], associated_entities = await get_integration_entities(
                     hass=self.hass, integration=self._options["integration"]
                 )
-                if associated_entities:
-                    _LOGGER.debug(
-                        f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                if not associated_entities or not _has_required_model_entities(
+                    self._data["inverter_brand"],
+                    self._options["integration"],
+                    associated_entities,
+                ):
+                    errors["base"] = "missing_controller_entities"
+                    return self.async_show_form(
+                        step_id="select_controller",
+                        data_schema=vol.Schema({vol.Required("inverter_integration"): vol.In(self._names.values())}),
+                        errors=errors,
                     )
+
+                _LOGGER.debug(
+                    f"First entity for integration '{self._options['integration']}': {associated_entities[0]}"
+                )
 
                 self._use_octopus_energy = await _is_installed(self.hass, "octopus_energy")
                 return await self.async_step_tariff_source()
@@ -235,6 +299,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
             self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
             self._options["charger_efficiency"] = user_input.get(CONF_CHARGER_EFFICIENCY)
+            self._options["inverter_loss"] = user_input.get(CONF_INVERTER_LOSS)
             if all(
                 [
                     self._options[x]
@@ -244,6 +309,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "charger_power",
                         "inverter_efficiency",
                         "charger_efficiency",
+                        "inverter_loss",
                     ]
                 ]
             ):
@@ -254,15 +320,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Display a form for entering system parameters
         schema = vol.Schema(
             {
-                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULT_BATTERY_CAPACITY): int,
-                vol.Optional(CONF_INVERTER_POWER, default=DEFAULT_INVERTER_POWER): int,
-                vol.Optional(CONF_CHARGER_POWER, default=DEFAULT_CHARGER_POWER): int,
-                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULT_INVERTER_EFFICIENCY): vol.All(
+                vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
+                vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
+                vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
+                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS[CONF_INVERTER_EFFICIENCY]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULT_CHARGER_EFFICIENCY): vol.All(
+                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS[CONF_CHARGER_EFFICIENCY]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
+                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULTS[CONF_INVERTER_LOSS]): int,
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)
@@ -303,9 +370,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            self._options["daily_consumption"] = user_input.get("daily_consumption")
+            self._options[CONF_DAILY_CONSUMPTION_KWH] = user_input.get("daily_amount")
             self._options["scaling_option"] = user_input.get("scaling_option")
-            if self._options["daily_consumption"] is not None and self._options["scaling_option"] is not None:
+            if self._options[CONF_DAILY_CONSUMPTION_KWH] is not None and self._options["scaling_option"] is not None:
                 return self.async_create_entry(
                     title=NAME,
                     data=self._data,

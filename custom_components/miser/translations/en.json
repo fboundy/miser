@@ -70,6 +70,7 @@
         "invalid_selection": "Your selection is invalid.",
         "missing_credentials": "Both Account ID and API Key are required.",
         "missing_codes": "Both import and export tariff codes are required.",
+        "missing_controller_entities": "The selected inverter integration does not expose the required entities.",
         "missing_parameters": "All system parameters must be provided.",
         "missing_fields": "All required fields must be completed."
       },
@@ -84,4 +85,3 @@
       }
     }
   }
-  

@@ -1,10 +1,15 @@
 import asyncio
 import logging
+
+from datetime import datetime
+
 from homeassistant.components.number import NumberEntity
+from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
+PARALLEL_UPDATES = 0
 
-from .const import DOMAIN, NUMBER_ENTITIES, MiserEntity
+from .const import DOMAIN, NUMBER_ENTITIES, MiserEntity, LAST_UPDATED
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -33,6 +38,15 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     _LOGGER.debug(f"Number entities to add: {[entity.unique_id for entity in entities_to_add]}")
     async_add_entities(entities_to_add, update_before_add=True)
+    await asyncio.sleep(1)
+
+    # Add these entities to the config_entities
+    entity_registry = er.async_get(hass=hass)
+
+    for entity in entities_to_add:
+        hass.data[DOMAIN]["config_entities"][entity._attr_name] = entity_registry.async_get_entity_id(
+            "number", DOMAIN, entity.unique_id
+        )
 
 
 class OptimiserNumber(MiserEntity, NumberEntity):
@@ -65,3 +79,24 @@ class OptimiserNumber(MiserEntity, NumberEntity):
         self._attr_native_step = step
         self._attr_native_value = default
         self._attr_unit_of_measurement = unit_of_measurement
+
+    async def async_set_native_value(self, value: float) -> None:
+        _LOGGER.debug(f"async_set_native_value for {self._attr_name}")
+        self._attr_native_value = value
+        self._attributes[LAST_UPDATED] = datetime.now().isoformat()
+        self.async_write_ha_state()
+
+    async def async_added_to_hass(self):
+        """Restore the entity state after a restart."""
+        # Call the superclass method to ensure proper initialization
+        await super().async_added_to_hass()
+
+        # Retrieve the last known state
+        last_state = await self.async_get_last_state()
+
+        if last_state and last_state.state:
+            try:
+                # Restore the value from the last state
+                self._attr_native_value = float(last_state.state)
+            except ValueError:
+                self._attr_native_value = None
