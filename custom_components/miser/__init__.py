@@ -8,7 +8,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.util.dt as dt_util
-from homeassistant.helpers.event import async_track_time_interval, async_track_state_change
+from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval, async_track_state_change
 
 from .const import (
     PV_SYSTEM_ENTITIES,
@@ -40,7 +40,13 @@ from .utils import (
     redact_sensitive,
 )
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
-from .optimiser import optimise
+from .optimiser import (
+    AXLE_VPP_DOMAIN,
+    AXLE_VPP_END_ENTITIES,
+    AXLE_VPP_START_ENTITIES,
+    axle_vpp_control_window,
+    optimise,
+)
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 VERSION = "0.0.1"
@@ -134,6 +140,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Set up callbacks for when the config entities change
     await _setup_config_callbacks(hass)
+    await _setup_axle_vpp_callbacks(hass)
 
     return True
 
@@ -191,6 +198,14 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for unsubscribe in data.pop("config_callbacks", []):
         unsubscribe()
     _LOGGER.debug("Cancelled Miser config callbacks")
+
+    for unsubscribe in data.pop("axle_vpp_callbacks", []):
+        unsubscribe()
+    _LOGGER.debug("Cancelled Miser Axle VPP callbacks")
+
+    for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
+        unsubscribe()
+    _LOGGER.debug("Cancelled Miser Axle VPP boundary callbacks")
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
@@ -418,6 +433,91 @@ async def _setup_config_callbacks(hass):
         callback = partial(_state_change_callback, hass)
         callbacks.append(async_track_state_change(hass, entity_id, callback))
     return True
+
+
+async def _setup_axle_vpp_callbacks(hass: HomeAssistant) -> bool:
+    data = hass.data[DOMAIN]
+    for unsubscribe in data.pop("axle_vpp_callbacks", []):
+        unsubscribe()
+
+    if not hass.config_entries.async_entries(AXLE_VPP_DOMAIN):
+        data["axle_vpp_installed"] = False
+        _LOGGER.debug("Axle VPP integration is not installed; Miser retains inverter control")
+        return True
+
+    data["axle_vpp_installed"] = True
+    _LOGGER.info("Axle VPP integration detected; Miser will cede inverter control during Axle events")
+
+    callbacks = []
+    for entity_id in AXLE_VPP_START_ENTITIES + AXLE_VPP_END_ENTITIES:
+        callbacks.append(async_track_state_change(hass, entity_id, _axle_vpp_state_change_callback(hass)))
+    data["axle_vpp_callbacks"] = callbacks
+    _schedule_axle_vpp_boundary_callbacks(hass)
+    return True
+
+
+def _axle_vpp_state_change_callback(hass: HomeAssistant):
+    async def _callback(entity_id, old_state, new_state):
+        if hass.data.get(DOMAIN, {}).get("unloading"):
+            return
+
+        _LOGGER.debug(
+            "Axle VPP entity %s changed from %s to %s",
+            entity_id,
+            old_state.state if old_state else None,
+            new_state.state if new_state else None,
+        )
+        _schedule_axle_vpp_boundary_callbacks(hass)
+        await optimise(hass=hass)
+
+    return _callback
+
+
+def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
+    data = hass.data.get(DOMAIN, {})
+    for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
+        unsubscribe()
+
+    window = axle_vpp_control_window(hass)
+    if window is None:
+        data["axle_vpp_boundary_callbacks"] = []
+        return
+
+    callbacks = []
+    now = dt_util.utcnow()
+    for boundary in ["start", "end"]:
+        check_at = window[boundary].to_pydatetime()
+        if check_at <= now:
+            continue
+
+        callbacks.append(
+            async_track_point_in_utc_time(
+                hass,
+                _axle_vpp_boundary_callback(hass, boundary),
+                check_at,
+            )
+        )
+
+    data["axle_vpp_boundary_callbacks"] = callbacks
+    if callbacks:
+        _LOGGER.debug(
+            "Scheduled %d Axle VPP boundary callbacks for %s - %s",
+            len(callbacks),
+            window["start"].isoformat(),
+            window["end"].isoformat(),
+        )
+
+
+def _axle_vpp_boundary_callback(hass: HomeAssistant, boundary: str):
+    async def _callback(_now):
+        if hass.data.get(DOMAIN, {}).get("unloading"):
+            return
+
+        _LOGGER.info("Axle VPP %s buffer boundary reached; rechecking Miser inverter control", boundary)
+        _schedule_axle_vpp_boundary_callbacks(hass)
+        await optimise(hass=hass)
+
+    return _callback
 
 
 async def _state_change_callback(hass, entity_id, old_state, new_state):

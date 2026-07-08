@@ -56,6 +56,16 @@ from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
+AXLE_VPP_DOMAIN = "axle_vpp"
+AXLE_VPP_BUFFER = pd.Timedelta(minutes=2)
+AXLE_VPP_START_ENTITIES = [
+    "sensor.axle_vpp_axle_start_time",
+    "sensor.axle_vpp_axle_start_time_friendly",
+]
+AXLE_VPP_END_ENTITIES = [
+    "sensor.axle_vpp_axle_end_time",
+    "sensor.axle_vpp_axle_end_time_friendly",
+]
 PRICE_PERIOD_TOLERANCE = 0.05
 
 
@@ -238,6 +248,11 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     control_slots = _control_slots(model.optimised_flows)
     now = pd.Timestamp.now(tz="UTC")
     current_slot = _find_current_control_slot(control_slots, now)
+    axle_window = axle_vpp_control_window(hass)
+    if axle_window is not None and _timestamp_in_window(now, axle_window):
+        await _cede_inverter_control_to_axle(hass, inverter_controller, control_slots, axle_window, now)
+        return
+
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
     desired_target_soc = current_slot["target_soc"] if current_slot is not None else None
@@ -263,6 +278,14 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     )
     apply_window = pd.Timedelta(minutes=optimiser_minutes)
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
+    if axle_window is not None:
+        original_count = len(slots_to_apply)
+        slots_to_apply = [
+            slot for slot in slots_to_apply if not _slot_overlaps_window(slot, axle_window)
+        ]
+        if len(slots_to_apply) != original_count:
+            _LOGGER.debug("Skipping inverter writes for Miser slots overlapping Axle VPP event window")
+
     if schedule_checks:
         _schedule_control_compliance_checks(hass, control_slots)
     if slots_to_apply:
@@ -312,6 +335,105 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
                 )
         except (RuntimeError, HomeAssistantError) as err:
             _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
+
+
+async def _cede_inverter_control_to_axle(
+    hass: HomeAssistant,
+    inverter_controller,
+    control_slots: list[dict],
+    axle_window: dict,
+    now: pd.Timestamp,
+) -> None:
+    await _write_control_entities(
+        hass,
+        state="Axle VPP",
+        force_current=0,
+        force_power=0,
+        target_soc=None,
+        current_slot=None,
+        next_slot=_find_next_control_slot(control_slots, now),
+    )
+
+    if now >= axle_window["event_start"]:
+        _LOGGER.debug("Axle VPP event is active; skipping Miser inverter control writes")
+        return
+
+    data = hass.data.get(DOMAIN, {})
+    window_key = f"{axle_window['start'].isoformat()}-{axle_window['end'].isoformat()}"
+    if data.get("axle_vpp_released_window") == window_key:
+        return
+
+    try:
+        if not await inverter_controller.control_matches("idle", None, 0):
+            control_idle = getattr(inverter_controller, "control_idle", None)
+            if control_idle is not None:
+                _LOGGER.info(
+                    "Ceding inverter control to Axle VPP until %s",
+                    axle_window["end"].isoformat(),
+                )
+                await control_idle()
+    except (RuntimeError, HomeAssistantError) as err:
+        _LOGGER.warning("Unable to release inverter control before Axle VPP event: %s", err)
+
+    data["axle_vpp_released_window"] = window_key
+
+
+def axle_vpp_control_window(hass: HomeAssistant) -> dict | None:
+    if not hass.config_entries.async_entries(AXLE_VPP_DOMAIN):
+        return None
+
+    start = _first_valid_datetime_state(hass, AXLE_VPP_START_ENTITIES)
+    end = _first_valid_datetime_state(hass, AXLE_VPP_END_ENTITIES)
+    if start is None or end is None or end <= start:
+        return None
+
+    now = pd.Timestamp.now(tz="UTC")
+    buffered_start = start - AXLE_VPP_BUFFER
+    buffered_end = end + AXLE_VPP_BUFFER
+    if buffered_end <= now:
+        return None
+
+    return {
+        "event_start": start,
+        "event_end": end,
+        "start": buffered_start,
+        "end": buffered_end,
+    }
+
+
+def _first_valid_datetime_state(hass: HomeAssistant, entity_ids: list[str]) -> pd.Timestamp | None:
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        if state is None:
+            continue
+
+        timestamp = _parse_datetime_state(state.state)
+        if timestamp is not None:
+            return timestamp
+
+    return None
+
+
+def _parse_datetime_state(value) -> pd.Timestamp | None:
+    if value is None or str(value).lower() in {"", "unknown", "unavailable", "none"}:
+        return None
+
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return None
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize(dt_util.DEFAULT_TIME_ZONE)
+    return timestamp.tz_convert("UTC")
+
+
+def _timestamp_in_window(timestamp: pd.Timestamp, window: dict) -> bool:
+    return window["start"] <= timestamp <= window["end"]
+
+
+def _slot_overlaps_window(slot: dict, window: dict) -> bool:
+    return slot["start"] < window["end"] and slot["end"] > window["start"]
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
