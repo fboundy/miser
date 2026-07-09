@@ -73,8 +73,10 @@
         "missing_controller_entities": "The selected inverter integration does not expose the required entities.",
         "missing_parameters": "All system parameters must be provided.",
         "missing_fields": "All required fields must be completed."
-      },
-      "option": {
+      }
+    },
+    "options": {
+      "step": {
         "init": {
           "title": "Configure Options",
           "description": "Update the configuration options for this integration.",
