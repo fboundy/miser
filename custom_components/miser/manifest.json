@@ -3,6 +3,7 @@
   "name": "Miser PV System Optimiser",
   "version": "0.0.0",
   "documentation": "https://github.com/fboundy/miser",
+  "issue_tracker": "https://github.com/fboundy/miser/issues",
   "requirements": ["pandas"],
   "dependencies": ["solcast_solar"],
   "after_dependencies": ["recorder"],
