@@ -4,6 +4,10 @@ Miser is a Home Assistant custom integration that models a PV, battery, inverter
 
 The integration is currently focused on Solis inverter systems and Octopus-style import/export tariffs.
 
+## Documentation
+
+Read the Docs source files are in `docs/`. They include user documentation and a developer guide for extending Miser to additional inverter integrations through the abstract inverter controller class.
+
 ## Prerequisites
 
 - Home Assistant with custom integrations enabled.
