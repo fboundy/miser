@@ -16,8 +16,3 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
-          # HACS currently downloads branch refs from raw.githubusercontent.com as
-          # refs/heads/<branch>, which makes hacs.json and manifest checks fail
-          # on branch pushes even when the files are valid. Hassfest covers the
-          # integration manifest; keep HACS for repo-level checks.
-          ignore: "brands hacsjson integration_manifest"
