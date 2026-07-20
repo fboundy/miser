@@ -69,6 +69,7 @@ AXLE_VPP_END_ENTITIES = [
     "sensor.axle_vpp_axle_end_time_friendly",
 ]
 AXLE_VPP_DISCHARGE_CHECK_DELAY = pd.Timedelta(minutes=1)
+AXLE_VPP_EXPORT_PRICE = 100
 PRICE_PERIOD_TOLERANCE = 0.05
 
 
@@ -1326,8 +1327,32 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     prices = pd.concat(price.values(), axis=1)
     if "export" not in prices.columns:
         prices["export"] = 0
+    _apply_axle_vpp_export_price(hass, prices, freq)
     hass.data[DOMAIN]["model"].prices = prices.loc[start : end - freq]
     hass.data[DOMAIN]["model"].valuation_prices = prices.loc[end : valuation_end - freq]
+
+
+def _apply_axle_vpp_export_price(hass: HomeAssistant, prices: pd.DataFrame, freq: pd.Timedelta) -> None:
+    """Value export during an Axle VPP session at the fixed Axle session price."""
+    axle_window = axle_vpp_control_window(hass)
+    if axle_window is None:
+        return
+
+    session_start = axle_window["event_start"]
+    session_end = axle_window["event_end"]
+    slot_ends = prices.index + freq
+    mask = (prices.index < session_end) & (slot_ends > session_start)
+    if not mask.any():
+        return
+
+    prices.loc[mask, "export"] = AXLE_VPP_EXPORT_PRICE
+    _LOGGER.info(
+        "Applied Axle VPP export price %.1fp/kWh to %d optimiser price slots from %s to %s",
+        AXLE_VPP_EXPORT_PRICE,
+        int(mask.sum()),
+        session_start.isoformat(),
+        session_end.isoformat(),
+    )
 
 
 async def _get_hass_power_from_daily_kwh(
