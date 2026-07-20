@@ -34,6 +34,8 @@ from .const import (
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
+    CONF_INVERTER_POWER,
+    CONF_BATTERY_MINIMUM_SOC,
     CONF_WHOLE_HORIZON_BETA,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
@@ -66,6 +68,7 @@ AXLE_VPP_END_ENTITIES = [
     "sensor.axle_vpp_axle_end_time",
     "sensor.axle_vpp_axle_end_time_friendly",
 ]
+AXLE_VPP_DISCHARGE_CHECK_DELAY = pd.Timedelta(minutes=1)
 PRICE_PERIOD_TOLERANCE = 0.05
 
 
@@ -376,6 +379,105 @@ async def _cede_inverter_control_to_axle(
         _LOGGER.warning("Unable to release inverter control before Axle VPP event: %s", err)
 
     data["axle_vpp_released_window"] = window_key
+
+
+async def enforce_axle_vpp_discharge(hass: HomeAssistant) -> None:
+    """Force maximum discharge during an active Axle event if Axle has not done so."""
+    data = hass.data.get(DOMAIN, {})
+    if data.get("unloading"):
+        return
+
+    inverter_controller = data.get("inverter_controller")
+    if inverter_controller is None:
+        _LOGGER.warning("No inverter controller is available; unable to enforce Axle VPP discharge")
+        return
+
+    axle_window = axle_vpp_control_window(hass)
+    if axle_window is None:
+        _LOGGER.debug("Skipping Axle VPP discharge enforcement because no current event window is available")
+        return
+
+    now = pd.Timestamp.now(tz="UTC")
+    if not (axle_window["event_start"] <= now <= axle_window["event_end"]):
+        _LOGGER.debug(
+            "Skipping Axle VPP discharge enforcement outside event window %s - %s",
+            axle_window["event_start"].isoformat(),
+            axle_window["event_end"].isoformat(),
+        )
+        return
+
+    discharge_power = await _axle_vpp_discharge_power(hass)
+    target_soc = await _axle_vpp_target_soc(hass)
+    requested_current = await _power_to_current(inverter_controller, discharge_power)
+
+    await _write_control_entities(
+        hass,
+        state="Axle VPP Discharging",
+        force_current=requested_current,
+        force_power=-discharge_power,
+        target_soc=target_soc,
+        current_slot={
+            "start": axle_window["event_start"],
+            "end": axle_window["event_end"],
+            "state": "discharging",
+            "power": -discharge_power,
+            "target_soc": target_soc,
+        },
+        next_slot=None,
+    )
+
+    try:
+        if await inverter_controller.control_matches("discharging", target_soc, discharge_power):
+            _LOGGER.info("Axle VPP discharge already matches maximum discharge request")
+            return
+
+        _LOGGER.warning(
+            "Axle VPP event is active but inverter is not at maximum discharge; forcing %.0fW until %s",
+            discharge_power,
+            axle_window["event_end"].isoformat(),
+        )
+        await inverter_controller.control_discharge(
+            now.to_pydatetime(),
+            axle_window["event_end"].to_pydatetime(),
+            target_soc,
+            discharge_power,
+        )
+    except (RuntimeError, HomeAssistantError) as err:
+        _LOGGER.warning("Unable to enforce Axle VPP maximum discharge: %s", err)
+
+
+async def _axle_vpp_discharge_power(hass: HomeAssistant) -> float:
+    model = hass.data.get(DOMAIN, {}).get("model")
+    if model is not None:
+        power = getattr(getattr(model, "inverter", None), "inverter_power", None)
+        if power is not None:
+            return abs(float(power))
+
+    return abs(
+        float(
+            await get_value(
+                hass,
+                CONF_INVERTER_POWER,
+                default_value=DEFAULTS[CONF_INVERTER_POWER],
+            )
+            or DEFAULTS[CONF_INVERTER_POWER]
+        )
+    )
+
+
+async def _axle_vpp_target_soc(hass: HomeAssistant) -> float:
+    value = await get_value(
+        hass,
+        CONF_BATTERY_MINIMUM_SOC,
+        default_value=DEFAULTS[CONF_BATTERY_MINIMUM_SOC],
+    )
+    if value is None:
+        value = await get_value(
+            hass,
+            "battery_minimum_soc",
+            default_value=DEFAULTS[CONF_BATTERY_MINIMUM_SOC],
+        )
+    return float(value if value is not None else DEFAULTS[CONF_BATTERY_MINIMUM_SOC])
 
 
 def axle_vpp_control_window(hass: HomeAssistant) -> dict | None:

@@ -42,9 +42,11 @@ from .utils import (
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
 from .optimiser import (
     AXLE_VPP_DOMAIN,
+    AXLE_VPP_DISCHARGE_CHECK_DELAY,
     AXLE_VPP_END_ENTITIES,
     AXLE_VPP_START_ENTITIES,
     axle_vpp_control_window,
+    enforce_axle_vpp_discharge,
     optimise,
 )
 
@@ -206,6 +208,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
         unsubscribe()
     _LOGGER.debug("Cancelled Miser Axle VPP boundary callbacks")
+    for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
+        unsubscribe()
+    _LOGGER.debug("Cancelled Miser Axle VPP discharge callbacks")
 
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
@@ -477,13 +482,17 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
     data = hass.data.get(DOMAIN, {})
     for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
         unsubscribe()
+    for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
+        unsubscribe()
 
     window = axle_vpp_control_window(hass)
     if window is None:
         data["axle_vpp_boundary_callbacks"] = []
+        data["axle_vpp_discharge_callbacks"] = []
         return
 
     callbacks = []
+    discharge_callbacks = []
     now = dt_util.utcnow()
     for boundary in ["start", "end"]:
         check_at = window[boundary].to_pydatetime()
@@ -498,13 +507,33 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
             )
         )
 
+    discharge_check_at = (window["event_start"] + AXLE_VPP_DISCHARGE_CHECK_DELAY).to_pydatetime()
+    discharge_window_key = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
+    if discharge_check_at > now:
+        discharge_callbacks.append(
+            async_track_point_in_utc_time(
+                hass,
+                _axle_vpp_discharge_callback(hass),
+                discharge_check_at,
+            )
+        )
+    elif window["event_end"].to_pydatetime() > now and data.get("axle_vpp_discharge_checked_window") != discharge_window_key:
+        data["axle_vpp_discharge_checked_window"] = discharge_window_key
+        hass.async_create_task(enforce_axle_vpp_discharge(hass))
+
     data["axle_vpp_boundary_callbacks"] = callbacks
+    data["axle_vpp_discharge_callbacks"] = discharge_callbacks
     if callbacks:
         _LOGGER.debug(
             "Scheduled %d Axle VPP boundary callbacks for %s - %s",
             len(callbacks),
             window["start"].isoformat(),
             window["end"].isoformat(),
+        )
+    if discharge_callbacks:
+        _LOGGER.debug(
+            "Scheduled Axle VPP discharge compliance check for %s",
+            discharge_check_at.isoformat(),
         )
 
 
@@ -516,6 +545,23 @@ def _axle_vpp_boundary_callback(hass: HomeAssistant, boundary: str):
         _LOGGER.info("Axle VPP %s buffer boundary reached; rechecking Miser inverter control", boundary)
         _schedule_axle_vpp_boundary_callbacks(hass)
         await optimise(hass=hass)
+
+    return _callback
+
+
+def _axle_vpp_discharge_callback(hass: HomeAssistant):
+    async def _callback(_now):
+        data = hass.data.get(DOMAIN, {})
+        if data.get("unloading"):
+            return
+
+        window = axle_vpp_control_window(hass)
+        if window is not None:
+            data["axle_vpp_discharge_checked_window"] = (
+                f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
+            )
+        _LOGGER.info("Axle VPP event-start compliance check reached; verifying maximum discharge")
+        await enforce_axle_vpp_discharge(hass)
 
     return _callback
 
