@@ -24,6 +24,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         OptimiserSwitch(
             config_entry,
             unique_id=f"{DOMAIN}.{uuid}_{name.lower().replace(" ","_")}",
+            key=name,
             name=name,
             default_state=entity["default"],
         )
@@ -39,7 +40,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     # Checking the entity registry should handle duplicates better
     for entity in entities_to_add:
-        hass.data[DOMAIN]["config_entities"][entity._attr_name] = entity_registry.async_get_entity_id(
+        hass.data[DOMAIN]["config_entities"][entity.key] = entity_registry.async_get_entity_id(
             "switch", DOMAIN, entity.unique_id
         )
 
@@ -53,6 +54,7 @@ class OptimiserSwitch(MiserEntity, SwitchEntity):
         self,
         config_entry,
         unique_id: str,
+        key: str,
         name: str,
         default_state,
     ):
@@ -61,6 +63,7 @@ class OptimiserSwitch(MiserEntity, SwitchEntity):
             unique_id,
             name,
         )
+        self.key = key
         self._attr_is_on = default_state
 
     async def async_turn_on(self, **kwargs):

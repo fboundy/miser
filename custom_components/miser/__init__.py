@@ -67,9 +67,9 @@ def setup_custom_logging():
     log_filename = f"/config/{DOMAIN}.log"
     file_handler = RotatingFileHandler(
         log_filename,
-        maxBytes=2**10,
+        maxBytes=2**20,
         backupCount=3,
-        mode="a",  # 1 MB max size, 3 backups
+        mode="a",
     )
 
     # Force rotation of the log file
