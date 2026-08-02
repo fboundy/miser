@@ -52,6 +52,7 @@ from .optimiser import (
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 VERSION = "0.0.1"
+AXLE_VPP_REFRESH_INTERVAL = timedelta(minutes=1)
 
 
 def setup_custom_logging():
@@ -187,7 +188,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     data = hass.data.get(DOMAIN, {})
     data["unloading"] = True
 
-    for handle_key in ("optimiser_initial_schedule", "optimiser_schedule"):
+    for handle_key in ("optimiser_initial_schedule", "optimiser_schedule", "axle_vpp_refresh_callback"):
         unsubscribe = data.pop(handle_key, None)
         if unsubscribe is not None:
             unsubscribe()
@@ -442,23 +443,72 @@ async def _setup_config_callbacks(hass):
 
 async def _setup_axle_vpp_callbacks(hass: HomeAssistant) -> bool:
     data = hass.data[DOMAIN]
-    for unsubscribe in data.pop("axle_vpp_callbacks", []):
+    unsubscribe = data.pop("axle_vpp_refresh_callback", None)
+    if unsubscribe is not None:
         unsubscribe()
 
-    if not hass.config_entries.async_entries(AXLE_VPP_DOMAIN):
-        data["axle_vpp_installed"] = False
-        _LOGGER.debug("Axle VPP integration is not installed; Miser retains inverter control")
-        return True
-
-    data["axle_vpp_installed"] = True
-    _LOGGER.info("Axle VPP integration detected; Miser will cede inverter control during Axle events")
-
-    callbacks = []
-    for entity_id in AXLE_VPP_START_ENTITIES + AXLE_VPP_END_ENTITIES:
-        callbacks.append(async_track_state_change(hass, entity_id, _axle_vpp_state_change_callback(hass)))
-    data["axle_vpp_callbacks"] = callbacks
-    _schedule_axle_vpp_boundary_callbacks(hass)
+    await _refresh_axle_vpp_callbacks(hass, optimise_on_window_change=False)
+    data["axle_vpp_refresh_callback"] = async_track_time_interval(
+        hass,
+        _axle_vpp_refresh_callback(hass),
+        AXLE_VPP_REFRESH_INTERVAL,
+    )
+    _LOGGER.debug("Axle VPP refresh callback set up")
     return True
+
+
+async def _refresh_axle_vpp_callbacks(hass: HomeAssistant, optimise_on_window_change: bool = False) -> None:
+    data = hass.data.get(DOMAIN, {})
+    if data.get("unloading"):
+        return
+
+    if not hass.config_entries.async_entries(AXLE_VPP_DOMAIN):
+        if data.get("axle_vpp_installed"):
+            _LOGGER.info("Axle VPP integration is no longer available; Miser retains inverter control")
+        data["axle_vpp_installed"] = False
+        _cancel_axle_vpp_event_callbacks(data)
+        return
+
+    was_installed = data.get("axle_vpp_installed")
+    data["axle_vpp_installed"] = True
+    if not was_installed:
+        _LOGGER.info("Axle VPP integration detected; Miser will cede inverter control during Axle events")
+
+    if not data.get("axle_vpp_callbacks"):
+        callbacks = []
+        for entity_id in AXLE_VPP_START_ENTITIES + AXLE_VPP_END_ENTITIES:
+            callbacks.append(async_track_state_change(hass, entity_id, _axle_vpp_state_change_callback(hass)))
+        data["axle_vpp_callbacks"] = callbacks
+        _LOGGER.debug("Registered Axle VPP state-change callbacks")
+
+    previous_window_key = data.get("axle_vpp_window_key")
+    window = _schedule_axle_vpp_boundary_callbacks(hass)
+    window_key = data.get("axle_vpp_window_key")
+    if (
+        optimise_on_window_change
+        and window is not None
+        and window_key != previous_window_key
+        and dt_util.utcnow() >= window["start"].to_pydatetime()
+    ):
+        _LOGGER.info("Axle VPP window discovered inside the active buffer; rechecking Miser inverter control")
+        await optimise(hass=hass)
+
+
+def _cancel_axle_vpp_event_callbacks(data: dict) -> None:
+    for unsubscribe in data.pop("axle_vpp_callbacks", []):
+        unsubscribe()
+    for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
+        unsubscribe()
+    for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
+        unsubscribe()
+    data["axle_vpp_window_key"] = None
+
+
+def _axle_vpp_refresh_callback(hass: HomeAssistant):
+    async def _callback(_now):
+        await _refresh_axle_vpp_callbacks(hass, optimise_on_window_change=True)
+
+    return _callback
 
 
 def _axle_vpp_state_change_callback(hass: HomeAssistant):
@@ -472,13 +522,13 @@ def _axle_vpp_state_change_callback(hass: HomeAssistant):
             old_state.state if old_state else None,
             new_state.state if new_state else None,
         )
-        _schedule_axle_vpp_boundary_callbacks(hass)
+        await _refresh_axle_vpp_callbacks(hass, optimise_on_window_change=False)
         await optimise(hass=hass)
 
     return _callback
 
 
-def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
+def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> dict | None:
     data = hass.data.get(DOMAIN, {})
     for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
         unsubscribe()
@@ -489,11 +539,13 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
     if window is None:
         data["axle_vpp_boundary_callbacks"] = []
         data["axle_vpp_discharge_callbacks"] = []
-        return
+        data["axle_vpp_window_key"] = None
+        return None
 
     callbacks = []
     discharge_callbacks = []
     now = dt_util.utcnow()
+    data["axle_vpp_window_key"] = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
     for boundary in ["start", "end"]:
         check_at = window[boundary].to_pydatetime()
         if check_at <= now:
@@ -535,6 +587,7 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> None:
             "Scheduled Axle VPP discharge compliance check for %s",
             discharge_check_at.isoformat(),
         )
+    return window
 
 
 def _axle_vpp_boundary_callback(hass: HomeAssistant, boundary: str):
