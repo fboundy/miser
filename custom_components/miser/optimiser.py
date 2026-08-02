@@ -222,6 +222,9 @@ def _is_unloading(hass: HomeAssistant) -> bool:
 
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
+    if not cost_entities:
+        _LOGGER.warning("No Miser sensor entity objects are available; optimiser attributes were not written")
+        return
 
     for key in [
         "base_cost",
@@ -235,10 +238,18 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
         entity = cost_entities.get(key)
         if entity is not None:
             flows = getattr(model, key.replace("_cost", "_flows"), None)
+            slots = _serialise_slots(flows, merge=key == "optimised_cost")
+            serialised_flows = _serialise_flows(flows)
             await entity.async_set_native_value(
                 getattr(model, key, None),
-                slots=_serialise_slots(flows, merge=key == "optimised_cost"),
-                flows=_serialise_flows(flows),
+                slots=slots,
+                flows=serialised_flows,
+            )
+            _LOGGER.debug(
+                "Updated %s attributes: %d slots, %d flows",
+                key,
+                len(slots),
+                len(serialised_flows),
             )
 
 

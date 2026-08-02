@@ -101,9 +101,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Test the logging setup
     _LOGGER.debug("Custom logging initialized.")
 
+    existing_data = hass.data.get(DOMAIN)
+    if (
+        existing_data
+        and existing_data.get("entry_id") == entry.entry_id
+        and not existing_data.get("unloading")
+    ):
+        entry.runtime_data = existing_data
+        if existing_data.get("setup_complete"):
+            _LOGGER.debug("Refreshing duplicate Miser setup call for already loaded entry %s", entry.entry_id)
+            await _schedule_optimiser(hass)
+            await _setup_config_callbacks(hass)
+            await _setup_axle_vpp_callbacks(hass)
+            return True
+        if existing_data.get("setup_in_progress"):
+            _LOGGER.debug("Ignoring duplicate Miser setup call while entry %s is still loading", entry.entry_id)
+            return True
+
     uuid = await get_instance_id(hass)
     _LOGGER.debug(f"UUID: {uuid}")
-    entry.runtime_data = {"uuid": uuid}
+    entry.runtime_data = {
+        "uuid": uuid,
+        "entry_id": entry.entry_id,
+        "setup_in_progress": True,
+    }
     hass.data[DOMAIN] = entry.runtime_data
 
     log_config_entry(entry)
@@ -145,6 +166,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _setup_config_callbacks(hass)
     await _setup_axle_vpp_callbacks(hass)
 
+    hass.data[DOMAIN]["setup_in_progress"] = False
+    hass.data[DOMAIN]["setup_complete"] = True
     return True
 
 
@@ -434,10 +457,13 @@ async def _write_status(hass: HomeAssistant, state: str) -> None:
 
 
 async def _setup_config_callbacks(hass):
-    callbacks = hass.data[DOMAIN].setdefault("config_callbacks", [])
+    for unsubscribe in hass.data[DOMAIN].pop("config_callbacks", []):
+        unsubscribe()
+    callbacks = []
     for entity_id in hass.data[DOMAIN]["config_entities"].values():
         callback = partial(_state_change_callback, hass)
         callbacks.append(async_track_state_change(hass, entity_id, callback))
+    hass.data[DOMAIN]["config_callbacks"] = callbacks
     return True
 
 
