@@ -190,6 +190,25 @@ async def optimise(hass: HomeAssistant, now=None):
         return
 
     optimised_key = min(finite_cost_keys, key=lambda key: getattr(model, key))
+    if _flows_have_alternating_control(getattr(model, optimised_key.replace("_cost", "_flows"), None)):
+        non_alternating_keys = [
+            key
+            for key in finite_cost_keys
+            if not _flows_have_alternating_control(getattr(model, key.replace("_cost", "_flows"), None))
+        ]
+        if non_alternating_keys:
+            replacement_key = min(non_alternating_keys, key=lambda key: getattr(model, key))
+            _LOGGER.warning(
+                "Replacing alternating optimiser output %s (%.1fp) with %s (%.1fp)",
+                optimised_key,
+                getattr(model, optimised_key),
+                replacement_key,
+                getattr(model, replacement_key),
+            )
+            optimised_key = replacement_key
+        else:
+            _LOGGER.warning("All finite optimiser outputs contain alternating charge/discharge control slots")
+
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
     model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
@@ -697,6 +716,39 @@ def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
     return slots
 
 
+def _flows_have_alternating_control(flows: pd.DataFrame | None) -> bool:
+    return _has_alternating_control_slots(_control_slots(flows))
+
+
+def _has_alternating_control_slots(control_slots: list[dict]) -> bool:
+    """Detect rapid charge/discharge/charge style alternation.
+
+    A single transition is permitted because discharging ahead of a cheap
+    charging window is a legitimate optimiser output. A later transition
+    back to the previous state is treated as inverter-churn and rejected.
+    """
+    if len(control_slots) < 3:
+        return False
+
+    transition_count = 0
+    previous_slot = None
+
+    for slot in sorted(control_slots, key=lambda item: item["start"]):
+        if previous_slot is None:
+            previous_slot = slot
+            continue
+
+        state_changed = slot["state"] != previous_slot["state"]
+        if state_changed:
+            transition_count += 1
+            if transition_count >= 2:
+                return True
+
+        previous_slot = slot
+
+    return False
+
+
 def _build_control_slot(start, end, powers: list[float], target_soc: float) -> dict:
     power = sum(powers) / len(powers)
     return {
@@ -791,6 +843,12 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         return
 
     final_control_slots = _control_slots(final_flows)
+    if _has_alternating_control_slots(final_control_slots):
+        _LOGGER.info(
+            "Skipping inverter-write minimisation: finalised output would alternate charge/discharge control slots"
+        )
+        return
+
     if len(final_control_slots) > len(original_control_slots):
         _LOGGER.info(
             "Skipping inverter-write minimisation: control slots would increase from %s to %s",
