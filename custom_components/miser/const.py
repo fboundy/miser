@@ -63,6 +63,7 @@ CONF_INCLUDE_EXPORT = "include_export"
 CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
+CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 
 # Default values
 DEFAULT_CHARGER_POWER = 3000  # W
@@ -92,6 +93,7 @@ DEFAULTS = {
     CONF_OPTIMISE_DISCHARGING: True,
     CONF_WHOLE_HORIZON_BETA: False,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD: 10,
+    CONF_WHOLE_HORIZON_WRITE_COST: 0,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -326,6 +328,13 @@ NUMBER_ENTITIES = {
         "max": 20,
         "step": 1,
         "default": DEFAULTS[CONF_WRITE_MINIMISATION_COST_THRESHOLD],
+        "unit": "p",
+    },
+    CONF_WHOLE_HORIZON_WRITE_COST: {
+        "min": 0,
+        "max": 50,
+        "step": 1,
+        "default": DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
         "unit": "p",
     },
 }

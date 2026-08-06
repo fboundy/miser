@@ -37,6 +37,7 @@ from .const import (
     CONF_INVERTER_POWER,
     CONF_BATTERY_MINIMUM_SOC,
     CONF_WHOLE_HORIZON_BETA,
+    CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -175,6 +176,11 @@ async def optimise(hass: HomeAssistant, now=None):
     model.whole_horizon_flows = None
     whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
     if whole_horizon_beta:
+        model.whole_horizon_write_cost = await get_value(
+            hass,
+            CONF_WHOLE_HORIZON_WRITE_COST,
+            default_value=DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
+        )
         model.whole_horizon_slots = await model.whole_horizon()
         model.whole_horizon_cost, model.whole_horizon_flows = await _calculate_cost_and_flows(
             model,

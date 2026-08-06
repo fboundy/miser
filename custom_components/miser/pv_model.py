@@ -779,19 +779,25 @@ class PVsystemModel:
         )
         initial_energy = round(initial_energy, 1)
 
-        initial_key = self._whole_horizon_state_key(initial_energy, state_resolution_wh)
-        costs: dict[float, float] = {initial_key: 0.0}
-        energies: dict[float, float] = {initial_key: initial_energy}
-        paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_key: []}
+        initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), "idle")
+        costs: dict[tuple[float, str], float] = {initial_key: 0.0}
+        energies: dict[tuple[float, str], float] = {initial_key: initial_energy}
+        paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {initial_key: []}
 
         _LOGGER.info("")
         _LOGGER.info("Whole Horizon Optimisation (Beta)")
         _LOGGER.info("---------------------------------")
+        write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
+        if not _is_finite(write_cost):
+            write_cost = 0
+        write_cost = float(write_cost)
+        if write_cost:
+            _LOGGER.info("Whole-horizon inverter write cost: %.1fp per control change", write_cost)
 
         for start, row in flows.iterrows():
-            next_costs: dict[float, float] = {}
-            next_energies: dict[float, float] = {}
-            next_paths: dict[float, list[tuple[pd.Timestamp, float]]] = {}
+            next_costs: dict[tuple[float, str], float] = {}
+            next_energies: dict[tuple[float, str], float] = {}
+            next_paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {}
             dt_hours = float(row["dt_hours"])
             requirement = float(row["consumption"] - row["solar"])
             if not all(_is_finite(v) for v in [dt_hours, requirement, row["import"], row["export"]]):
@@ -799,6 +805,7 @@ class PVsystemModel:
                 continue
 
             for state_key, cost in costs.items():
+                previous_mode = state_key[1]
                 energy = energies[state_key]
                 for next_energy, forced_power, grid in self._whole_horizon_actions(
                     energy=energy,
@@ -810,10 +817,18 @@ class PVsystemModel:
                         max(grid, 0) * dt_hours * float(row["import"])
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
-                    candidate_cost = cost + slot_cost
+                    mode = self._whole_horizon_control_mode(forced_power)
+                    candidate_cost = cost + slot_cost + self._whole_horizon_write_penalty(
+                        previous_mode=previous_mode,
+                        mode=mode,
+                        write_cost=write_cost,
+                    )
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
                         continue
-                    next_key = self._whole_horizon_state_key(next_energy, state_resolution_wh)
+                    next_key = (
+                        self._whole_horizon_state_key(next_energy, state_resolution_wh),
+                        mode,
+                    )
                     if candidate_cost >= next_costs.get(next_key, float("inf")):
                         continue
 
@@ -847,6 +862,16 @@ class PVsystemModel:
 
     def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
         return round(energy / state_resolution_wh) * state_resolution_wh
+
+    def _whole_horizon_control_mode(self, forced_power: float | None) -> str:
+        if forced_power is None or abs(forced_power) < MODEL_MIN_SLOT_POWER:
+            return "idle"
+        return "charging" if forced_power > 0 else "discharging"
+
+    def _whole_horizon_write_penalty(self, previous_mode: str, mode: str, write_cost: float) -> float:
+        if write_cost <= 0 or previous_mode == mode:
+            return 0.0
+        return write_cost
 
     def _whole_horizon_actions(
         self,
