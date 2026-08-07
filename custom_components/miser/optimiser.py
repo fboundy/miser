@@ -12,6 +12,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    CONF_ALTERNATION_COST_THRESHOLD,
     DOMAIN,
     IMPORT_EXPORT,
     DATETIME_FORMAT_LONG,
@@ -60,6 +61,13 @@ from .utils import get_value, get_entity_for_key, redact_sensitive
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
 AXLE_VPP_DOMAIN = "axle_vpp"
+
+# Working hypothesis, not a proven setting: how close the two transitions of an
+# A -> B -> A control reversal must be before it counts as inverter churn rather
+# than an ordinary daily cycle. Measured end-of-first-A to start-of-second-A, so
+# it spans the middle window plus both idle gaps. Deliberately not user-facing
+# until live schedules justify a value.
+RAPID_ALTERNATION_HORIZON = pd.Timedelta(minutes=60)
 AXLE_VPP_BUFFER = pd.Timedelta(minutes=2)
 AXLE_VPP_START_ENTITIES = [
     "sensor.axle_vpp_axle_start_time",
@@ -195,25 +203,7 @@ async def optimise(hass: HomeAssistant, now=None):
         await _write_status(hass, "Idle")
         return
 
-    optimised_key = min(finite_cost_keys, key=lambda key: getattr(model, key))
-    if _flows_have_alternating_control(getattr(model, optimised_key.replace("_cost", "_flows"), None)):
-        non_alternating_keys = [
-            key
-            for key in finite_cost_keys
-            if not _flows_have_alternating_control(getattr(model, key.replace("_cost", "_flows"), None))
-        ]
-        if non_alternating_keys:
-            replacement_key = min(non_alternating_keys, key=lambda key: getattr(model, key))
-            _LOGGER.warning(
-                "Replacing alternating optimiser output %s (%.1fp) with %s (%.1fp)",
-                optimised_key,
-                getattr(model, optimised_key),
-                replacement_key,
-                getattr(model, replacement_key),
-            )
-            optimised_key = replacement_key
-        else:
-            _LOGGER.warning("All finite optimiser outputs contain alternating charge/discharge control slots")
+    optimised_key = await _select_optimised_key(hass, model, finite_cost_keys)
 
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
@@ -232,6 +222,96 @@ async def optimise(hass: HomeAssistant, now=None):
         return
 
     await _apply_inverter_control(hass, model)
+
+
+async def _select_optimised_key(hass: HomeAssistant, model, finite_cost_keys: list[str]) -> str:
+    """Choose the plan to apply, bounding how much a rapid-alternation swap may cost.
+
+    The cheapest plan wins unless it alternates rapidly. If it does, the
+    cheapest non-rapid alternative is substituted only when doing so costs no
+    more than the configured threshold in raw pence across the horizon.
+    Otherwise the original is kept: bounded inverter churn is preferable to an
+    unbounded financial regression, and the previous unbounded substitution
+    once replaced a -61p plan with a +15p one, taking the overnight charge with
+    it.
+
+    Deltas here are raw money only. Write penalties are reported separately and
+    must not be folded into this comparison.
+    """
+    winner = min(finite_cost_keys, key=lambda key: getattr(model, key))
+    if not _flows_have_rapid_alternation(_flows_for_key(model, winner)):
+        return winner
+
+    safe_keys = [
+        key
+        for key in finite_cost_keys
+        if not _flows_have_rapid_alternation(_flows_for_key(model, key))
+    ]
+    rapid_summary = _rapid_alternation_summary(_flows_for_key(model, winner))
+
+    if not safe_keys:
+        _LOGGER.warning(
+            "All optimiser outputs alternate rapidly; keeping %s (%.1fp). %s",
+            winner,
+            getattr(model, winner),
+            rapid_summary,
+        )
+        return winner
+
+    best_safe = min(safe_keys, key=lambda key: getattr(model, key))
+    winner_cost = float(getattr(model, winner))
+    safe_cost = float(getattr(model, best_safe))
+    delta = safe_cost - winner_cost
+
+    threshold = await get_value(
+        hass,
+        CONF_ALTERNATION_COST_THRESHOLD,
+        default_value=DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
+    )
+    if threshold is None or not _is_finite(threshold):
+        threshold = DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD]
+    threshold = float(threshold)
+
+    if delta <= threshold:
+        _LOGGER.warning(
+            "Replacing rapidly alternating %s (raw %.1fp) with %s (raw %.1fp); "
+            "delta %.1fp within %.1fp threshold. %s",
+            winner,
+            winner_cost,
+            best_safe,
+            safe_cost,
+            delta,
+            threshold,
+            rapid_summary,
+        )
+        return best_safe
+
+    _LOGGER.warning(
+        "Keeping rapidly alternating %s (raw %.1fp): cheapest non-alternating "
+        "option %s (raw %.1fp) would cost %.1fp more, exceeding the %.1fp "
+        "threshold. %s",
+        winner,
+        winner_cost,
+        best_safe,
+        safe_cost,
+        delta,
+        threshold,
+        rapid_summary,
+    )
+    return winner
+
+
+def _flows_for_key(model, cost_key: str) -> pd.DataFrame | None:
+    return getattr(model, cost_key.replace("_cost", "_flows"), None)
+
+
+def _rapid_alternation_summary(flows: pd.DataFrame | None) -> str:
+    windows = _control_windows(flows)
+    if not windows:
+        return "No control windows."
+    return "Windows: " + ", ".join(
+        f"{window['state']} {window['start']}-{window['end']}" for window in windows
+    )
 
 
 async def _write_status(hass: HomeAssistant, state: str) -> None:
@@ -794,35 +874,72 @@ def _build_segment_slot(
     )
 
 
-def _flows_have_alternating_control(flows: pd.DataFrame | None) -> bool:
-    return _has_alternating_control_slots(_control_slots(flows))
+def _control_windows(flows: pd.DataFrame | None) -> list[dict]:
+    """Collapse control segments into their parent direction windows.
 
-
-def _has_alternating_control_slots(control_slots: list[dict]) -> bool:
-    """Detect rapid charge/discharge/charge style alternation.
-
-    A single transition is permitted because discharging ahead of a cheap
-    charging window is a legitimate optimiser output. A later transition
-    back to the previous state is treated as inverter-churn and rejected.
+    Derived from `_control_slots` rather than re-deriving in parallel, so the
+    two representations cannot drift. Power-tolerance splits are invisible
+    here: a window changes only when the force direction changes or the flows
+    stop being contiguous.
     """
-    if len(control_slots) < 3:
-        return False
+    windows: list[dict] = []
 
-    transition_count = 0
-    previous_slot = None
+    for slot in _control_slots(flows):
+        start = _control_window_start(slot)
+        end = _control_window_end(slot)
 
-    for slot in sorted(control_slots, key=lambda item: item["start"]):
-        if previous_slot is None:
-            previous_slot = slot
+        if windows and windows[-1]["start"] == start and windows[-1]["end"] == end:
+            if windows[-1]["state"] != slot["state"]:
+                # Segments of one window must agree on direction; if they ever
+                # disagree the segmentation upstream is wrong, not the caller.
+                raise ValueError(
+                    f"Control window {start}-{end} contains conflicting states "
+                    f"{windows[-1]['state']} and {slot['state']}"
+                )
             continue
 
-        state_changed = slot["state"] != previous_slot["state"]
-        if state_changed:
-            transition_count += 1
-            if transition_count >= 2:
-                return True
+        windows.append({"start": start, "end": end, "state": slot["state"]})
 
-        previous_slot = slot
+    return windows
+
+
+def _flows_have_rapid_alternation(flows: pd.DataFrame | None) -> bool:
+    return _has_rapid_alternation(_control_windows(flows))
+
+
+def _has_rapid_alternation(windows: list[dict]) -> bool:
+    """Detect rapid charge/discharge/charge reversal.
+
+    "Rapid" is the elapsed time across *both* transitions of an A -> B -> A
+    triple: from the end of the first A window to the start of the second. That
+    span covers the middle window plus the idle gaps either side, so a brief
+    blip counts while an ordinary daily cycle - discharge evening, charge
+    overnight, discharge next evening - does not, however adjacent its windows
+    happen to be.
+
+    Counting bare transitions instead, as this previously did, rejected the
+    normal daily cycle as churn and cost the overnight charge with it.
+    """
+    if len(windows) < 3:
+        return False
+
+    ordered = sorted(windows, key=lambda window: window["start"])
+
+    for first, middle, last in zip(ordered, ordered[1:], ordered[2:]):
+        if first["state"] != last["state"] or middle["state"] == first["state"]:
+            continue
+
+        span = last["start"] - first["end"]
+        if span <= RAPID_ALTERNATION_HORIZON:
+            _LOGGER.debug(
+                "Rapid alternation: %s -> %s -> %s, span %s <= horizon %s",
+                first["state"],
+                middle["state"],
+                last["state"],
+                span,
+                RAPID_ALTERNATION_HORIZON,
+            )
+            return True
 
     return False
 
@@ -949,9 +1066,9 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         return
 
     final_control_slots = _control_slots(final_flows)
-    if _has_alternating_control_slots(final_control_slots):
+    if _has_rapid_alternation(_control_windows(final_flows)):
         _LOGGER.info(
-            "Skipping inverter-write minimisation: finalised output would alternate charge/discharge control slots"
+            "Skipping inverter-write minimisation: finalised output would alternate charge/discharge rapidly"
         )
         return
 

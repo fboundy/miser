@@ -64,6 +64,7 @@ CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
+CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
 
 # Default values
 DEFAULT_CHARGER_POWER = 3000  # W
@@ -94,6 +95,9 @@ DEFAULTS = {
     CONF_WHOLE_HORIZON_BETA: False,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD: 10,
     CONF_WHOLE_HORIZON_WRITE_COST: 0,
+    # Maximum raw financial regression, in pence across the whole optimisation
+    # horizon, that may be accepted to avoid a rapidly alternating plan.
+    CONF_ALTERNATION_COST_THRESHOLD: 10,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -335,6 +339,13 @@ NUMBER_ENTITIES = {
         "max": 50,
         "step": 1,
         "default": DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
+        "unit": "p",
+    },
+    CONF_ALTERNATION_COST_THRESHOLD: {
+        "min": 0,
+        "max": 50,
+        "step": 1,
+        "default": DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
         "unit": "p",
     },
 }
