@@ -295,7 +295,9 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
 
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
-    desired_target_soc = current_slot["target_soc"] if current_slot is not None else None
+    # Report the window's terminal target, not the current fragment's, so the
+    # reported target matches what is programmed into the inverter.
+    desired_target_soc = _control_window_target_soc(current_slot) if current_slot is not None else None
     desired_current = await _power_to_current(inverter_controller, desired_power)
 
     await _write_control_entities(
@@ -321,7 +323,7 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     if axle_window is not None:
         original_count = len(slots_to_apply)
         slots_to_apply = [
-            slot for slot in slots_to_apply if not _slot_overlaps_window(slot, axle_window)
+            slot for slot in slots_to_apply if not _programmed_window_overlaps(slot, axle_window)
         ]
         if len(slots_to_apply) != original_count:
             _LOGGER.debug("Skipping inverter writes for Miser slots overlapping Axle VPP event window")
@@ -349,28 +351,35 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
         return
 
     for slot in slots_to_apply:
+        # Programme the inverter with the whole control window and its terminal
+        # target, but with the power of the segment that is actually running.
+        window_start = _control_window_start(slot)
+        window_end = _control_window_end(slot)
+        window_target_soc = _control_window_target_soc(slot)
         try:
             _LOGGER.debug(
-                "Applying inverter control: %s %s-%s %.1fW %.2fA target %.1f%%",
+                "Applying inverter control: %s window %s-%s (segment %s-%s) %.1fW %.2fA target %.1f%%",
                 slot["state"],
+                window_start,
+                window_end,
                 slot["start"],
                 slot["end"],
                 slot["power"],
                 await _power_to_current(inverter_controller, abs(slot["power"])),
-                slot["target_soc"],
+                window_target_soc,
             )
             if slot["state"] == "charging":
                 await inverter_controller.control_charge(
-                    slot["start"].to_pydatetime(),
-                    slot["end"].to_pydatetime(),
-                    slot["target_soc"],
+                    window_start.to_pydatetime(),
+                    window_end.to_pydatetime(),
+                    window_target_soc,
                     slot["power"],
                 )
             elif slot["state"] == "discharging":
                 await inverter_controller.control_discharge(
-                    slot["start"].to_pydatetime(),
-                    slot["end"].to_pydatetime(),
-                    slot["target_soc"],
+                    window_start.to_pydatetime(),
+                    window_end.to_pydatetime(),
+                    window_target_soc,
                     abs(slot["power"]),
                 )
         except (RuntimeError, HomeAssistantError) as err:
@@ -571,8 +580,29 @@ def _timestamp_in_window(timestamp: pd.Timestamp, window: dict) -> bool:
     return window["start"] <= timestamp <= window["end"]
 
 
-def _slot_overlaps_window(slot: dict, window: dict) -> bool:
-    return slot["start"] < window["end"] and slot["end"] > window["start"]
+def _control_window_start(slot: dict):
+    """Start of the control window a segment belongs to."""
+    return slot.get("window_start", slot["start"])
+
+
+def _control_window_end(slot: dict):
+    """End of the control window a segment belongs to."""
+    return slot.get("window_end", slot["end"])
+
+
+def _control_window_target_soc(slot: dict) -> float:
+    """Terminal SOC of the control window a segment belongs to."""
+    return slot.get("window_target_soc", slot["target_soc"])
+
+
+def _programmed_window_overlaps(slot: dict, window: dict) -> bool:
+    """Does the interval that will actually be programmed overlap `window`?
+
+    Compares the *control window*, not the segment. The inverter is programmed
+    with the whole window, so an exclusion decided on segment bounds could let a
+    segment through and then programme straight across the excluded interval.
+    """
+    return _control_window_start(slot) < window["end"] and _control_window_end(slot) > window["start"]
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
@@ -667,10 +697,11 @@ async def _write_control_entities(
         CONTROL_FORCE_CURRENT: force_current,
         CONTROL_FORCE_POWER: force_power,
         CONTROL_TARGET_SOC: target_soc,
-        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "start", local_time=True),
-        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "end", local_time=True),
+        # Report the next control window, matching what will be programmed.
+        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "window_start", local_time=True),
+        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "window_end", local_time=True),
         CONTROL_NEXT_SLOT_POWER: _slot_value(next_slot, "power"),
-        CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "target_soc"),
+        CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "window_target_soc"),
     }
 
     for key, value in updates.items():
@@ -680,6 +711,20 @@ async def _write_control_entities(
 
 
 def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
+    """Split forced flows into power segments, each tagged with its control window.
+
+    A *control window* is a maximal run of contiguous, same-direction forced
+    flows. A *power segment* subdivides a window wherever the forced power moves
+    outside `_within_power_tolerance`, so the inverter can still be given a
+    current that suits the part of the window actually running.
+
+    Segments keep their own start/end so time-based lookups stay precise, but
+    they also carry the window's start, end, and terminal SOC. The inverter must
+    be programmed from those window values: writing a segment's own end and
+    `soc_end` truncates an in-progress window to the current fragment and sets a
+    target barely above present charge, which stops the very charge it is meant
+    to be running.
+    """
     if flows is None:
         return []
 
@@ -688,38 +733,65 @@ def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
         return []
 
     slots = []
-    current_start = None
-    current_end = None
-    current_powers = []
-    current_target_soc = None
+    window_rows: list[tuple] = []
 
     for start, row in forced_flows.iterrows():
         power = float(row.get("forced"))
         end = start + pd.Timedelta(hours=float(row.get("dt_hours")))
+        soc_end = float(row.get("soc_end"))
 
-        if (
-            current_start is None
-            or start != current_end
-            or not _same_force_direction(power, current_powers[-1])
-            or not _within_power_tolerance(power, sum(current_powers) / len(current_powers))
-        ):
-            if current_start is not None:
-                slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+        if window_rows and (start != window_rows[-1][1] or not _same_force_direction(power, window_rows[-1][2])):
+            slots.extend(_window_control_slots(window_rows))
+            window_rows = []
 
-            current_start = start
-            current_end = end
-            current_powers = [power]
-            current_target_soc = float(row.get("soc_end"))
-            continue
+        window_rows.append((start, end, power, soc_end))
 
-        current_end = end
-        current_powers.append(power)
-        current_target_soc = float(row.get("soc_end"))
-
-    if current_start is not None:
-        slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+    slots.extend(_window_control_slots(window_rows))
 
     return slots
+
+
+def _window_control_slots(window_rows: list[tuple]) -> list[dict]:
+    """Build the power segments for one control window."""
+    if not window_rows:
+        return []
+
+    window_start = window_rows[0][0]
+    window_end = window_rows[-1][1]
+    window_target_soc = window_rows[-1][3]
+
+    slots = []
+    segment: list[tuple] = []
+
+    for entry in window_rows:
+        power = entry[2]
+        if segment and not _within_power_tolerance(power, sum(row[2] for row in segment) / len(segment)):
+            slots.append(_build_segment_slot(segment, window_start, window_end, window_target_soc))
+            segment = []
+
+        segment.append(entry)
+
+    if segment:
+        slots.append(_build_segment_slot(segment, window_start, window_end, window_target_soc))
+
+    return slots
+
+
+def _build_segment_slot(
+    segment: list[tuple],
+    window_start,
+    window_end,
+    window_target_soc: float,
+) -> dict:
+    return _build_control_slot(
+        segment[0][0],
+        segment[-1][1],
+        [row[2] for row in segment],
+        segment[-1][3],
+        window_start=window_start,
+        window_end=window_end,
+        window_target_soc=window_target_soc,
+    )
 
 
 def _flows_have_alternating_control(flows: pd.DataFrame | None) -> bool:
@@ -755,7 +827,15 @@ def _has_alternating_control_slots(control_slots: list[dict]) -> bool:
     return False
 
 
-def _build_control_slot(start, end, powers: list[float], target_soc: float) -> dict:
+def _build_control_slot(
+    start,
+    end,
+    powers: list[float],
+    target_soc: float,
+    window_start=None,
+    window_end=None,
+    window_target_soc: float | None = None,
+) -> dict:
     power = sum(powers) / len(powers)
     return {
         "start": start,
@@ -763,6 +843,11 @@ def _build_control_slot(start, end, powers: list[float], target_soc: float) -> d
         "state": "charging" if power > 0 else "discharging",
         "power": power,
         "target_soc": target_soc,
+        # Identity of the whole control window this segment belongs to. Falls
+        # back to the segment itself so a single-segment window is unchanged.
+        "window_start": start if window_start is None else window_start,
+        "window_end": end if window_end is None else window_end,
+        "window_target_soc": target_soc if window_target_soc is None else window_target_soc,
     }
 
 
@@ -774,7 +859,13 @@ def _find_current_control_slot(control_slots: list[dict], now: pd.Timestamp) -> 
 
 
 def _find_next_control_slot(control_slots: list[dict], now: pd.Timestamp) -> dict | None:
-    future_slots = [slot for slot in control_slots if slot["start"] > now]
+    """Return the first segment of the next control window.
+
+    Keyed on the window rather than the segment so that, while a window is
+    running, "next slot" means the next window instead of the next power step
+    inside the one already underway.
+    """
+    future_slots = [slot for slot in control_slots if _control_window_start(slot) > now]
     if not future_slots:
         return None
     return min(future_slots, key=lambda slot: slot["start"])
@@ -795,12 +886,21 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
     if slot is None:
         return None
 
+    window_start = _control_window_start(slot)
+    window_end = _control_window_end(slot)
+    window_target_soc = _control_window_target_soc(slot)
+
     return {
         "start": slot["start"].isoformat() if hasattr(slot["start"], "isoformat") else slot["start"],
         "end": slot["end"].isoformat() if hasattr(slot["end"], "isoformat") else slot["end"],
         "state": slot["state"],
         "power": _serialise_number(slot["power"]),
         "target_soc": _serialise_number(slot["target_soc"]),
+        # The window is what gets programmed into the inverter; the segment
+        # above is only the part of it running at this power.
+        "window_start": window_start.isoformat() if hasattr(window_start, "isoformat") else window_start,
+        "window_end": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
+        "window_target_soc": _serialise_number(window_target_soc),
     }
 
 
