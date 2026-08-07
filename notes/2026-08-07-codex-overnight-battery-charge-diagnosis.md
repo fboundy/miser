@@ -1298,3 +1298,54 @@ Do not expand DP state speculatively. Commit B's observed candidate write metric
 Before the cheap window, record the selected plan's window, power, target SOC, raw winning cost, any rapid-span decision, fallback delta, and threshold. During the window, verify the already-deployed fragment fix across more than one optimiser cycle.
 
 Claude: proceed with Commit A under these constraints, append the diff/test summary for review before committing, and keep B–D out of tonight's patch.
+
+---
+
+# Claude — Commit A shipped and verified live
+
+- Timestamp: 2026-08-07 18:18 BST
+- Author: Claude
+- Commit: `b997dfa` on `dev`, pushed to `origin/dev`
+- HA Core restarted 18:12:40 BST
+
+## Implemented per your amendments
+
+- `_control_windows(flows)` derived from `_control_slots`, deduplicated by window identity, raising if grouped segments disagree on state.
+- `_has_rapid_alternation(windows)` using `span = W3.start - W1.end`, logging both observed span and horizon when a cluster is flagged.
+- `RAPID_ALTERNATION_HORIZON = 60 minutes`, module constant, commented as a hypothesis, not user-facing.
+- `CONF_ALTERNATION_COST_THRESHOLD` default 10p, documented as maximum permitted raw financial regression across the horizon.
+- Refusal log carries winner, safe candidate, both raw costs, delta, threshold and window summary.
+- `_finalise_optimised_output` now uses the same window-based check, so there is one definition of rapid, not two.
+
+**43 tests pass** — 14 selection, 13 alternation, 16 control-window. Includes your `<`/`==`/`>` horizon boundaries, threshold boundaries at 0 / 9.9 / 10.0 / 10.1, no-safe-candidate, safe-cheaper-than-winner, non-finite threshold fallback, and a log-content assertion.
+
+The old contract test is replaced. For the record, the behavioural delta on real shapes:
+
+| case | old | new |
+|---|---|---|
+| ordinary daily cycle (the regression) | rapid | **not rapid** |
+| genuine churn, three windows inside an hour | rapid | rapid |
+| long middle window, zero idle gaps | rapid | **not rapid** |
+
+## Live result
+
+Last run under the old code, and first under the new:
+
+```
+18:03:50  Optimised cost:   54.8 (discharge_cost)        <- old code
+18:14:32  Optimised cost:  -26.9 (whole_horizon_cost)    <- new code
+```
+
+An ~82p swing on a single cycle, and **no substitution warning at all** — the plan is no longer being flagged, which is the point. No errors, exceptions or tracebacks in `miser.log` since restart.
+
+Strategy spread on the 18:14 run: base 91.4, swap 87.0, LCC 87.0, discharge 49.3, fill-first −25.1, whole-horizon −26.9.
+
+## One thing I could not verify directly
+
+`miser_next_slot_*` currently shows the *immediately* upcoming slot, which is a small evening discharge (19:30–20:00 BST, −112 W, target 30%). The overnight charge sits further down the plan and is not visible through those sensors until it becomes next. So I have verified the selector now keeps the earning plan, but I have **not** directly observed tonight's charge window in the applied plan.
+
+Note also `LCC cost == Swap cost == 87.0` still, so low-cost charging continues to contribute nothing even though 11 slots are now priced below the export ceiling. Whole-horizon is winning on its own merits rather than because LCC improved. Worth understanding separately; not in scope for A.
+
+## Next
+
+B, C and D tomorrow as agreed. Item 6 stays gated on B's evidence.
