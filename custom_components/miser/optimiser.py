@@ -871,16 +871,6 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         return
 
     original_control_slots = _control_slots(model.optimised_flows)
-    final_slots = _minimise_inverter_write_slots(model.optimised_flows)
-    if not final_slots:
-        return
-
-    final_cost, final_flows = await _calculate_cost_and_flows(model, final_slots)
-    if not _is_finite(final_cost):
-        _LOGGER.warning("Skipping inverter-write minimisation because finalised cost is not finite")
-        return
-
-    cost_delta = final_cost - model.optimised_cost
     threshold = await get_value(
         hass,
         CONF_WRITE_MINIMISATION_COST_THRESHOLD,
@@ -889,42 +879,109 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
     if threshold is None or not _is_finite(threshold):
         threshold = CONTROL_PASS_THREHOLD
 
-    if cost_delta > float(threshold):
-        _LOGGER.info(
-            "Skipping inverter-write minimisation: cost delta %.1fp exceeds %.1fp threshold",
-            cost_delta,
-            float(threshold),
-        )
-        return
+    best_candidate = None
+    for label, final_slots in _minimise_inverter_write_slot_candidates(model.optimised_flows):
+        if not final_slots:
+            continue
 
-    final_control_slots = _control_slots(final_flows)
-    if _has_rapid_alternation(_control_windows(final_flows)):
-        _LOGGER.info(
-            "Skipping inverter-write minimisation: finalised output would alternate charge/discharge rapidly"
-        )
-        return
+        final_cost, final_flows = await _calculate_cost_and_flows(model, final_slots)
+        if not _is_finite(final_cost):
+            _LOGGER.warning("Skipping %s inverter-write minimisation because finalised cost is not finite", label)
+            continue
 
-    if len(final_control_slots) > len(original_control_slots):
-        _LOGGER.info(
-            "Skipping inverter-write minimisation: control slots would increase from %s to %s",
-            len(original_control_slots),
+        cost_delta = final_cost - model.optimised_cost
+        final_control_slots = _control_slots(final_flows)
+        if cost_delta > float(threshold):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: cost delta %.1fp exceeds %.1fp threshold",
+                label,
+                cost_delta,
+                float(threshold),
+            )
+            continue
+
+        if _has_rapid_alternation(_control_windows(final_flows)):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: finalised output would alternate charge/discharge rapidly",
+                label,
+            )
+            continue
+
+        if len(final_control_slots) > len(original_control_slots):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: control slots would increase from %s to %s",
+                label,
+                len(original_control_slots),
+                len(final_control_slots),
+            )
+            continue
+
+        candidate = (
             len(final_control_slots),
+            cost_delta,
+            label,
+            final_slots,
+            final_cost,
+            final_flows,
+            final_control_slots,
         )
+        if best_candidate is None or candidate[:2] < best_candidate[:2]:
+            best_candidate = candidate
+
+    if best_candidate is None:
         return
+
+    (
+        _slot_count,
+        cost_delta,
+        label,
+        final_slots,
+        final_cost,
+        final_flows,
+        final_control_slots,
+    ) = best_candidate
 
     model.optimised_slots = final_slots
     model.optimised_cost = final_cost
     model.optimised_flows = final_flows
     model.best_cost = final_cost
     _LOGGER.info(
-        "Finalised optimiser output: control slots %s -> %s, cost delta %.1fp",
+        "Finalised optimiser output with %s minimisation: control slots %s -> %s, cost delta %.1fp",
+        label,
         len(original_control_slots),
         len(final_control_slots),
         cost_delta,
     )
 
 
-def _minimise_inverter_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+def _minimise_inverter_write_slot_candidates(flows: pd.DataFrame) -> list[tuple[str, list[tuple[pd.Timestamp, float]]]]:
+    return [
+        ("discharge-price-period", _minimise_discharge_price_period_write_slots(flows)),
+        ("price-period", _minimise_price_period_write_slots(flows)),
+        ("campaign", _minimise_campaign_write_slots(flows)),
+    ]
+
+
+def _minimise_discharge_price_period_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    final_forced = flows["forced"].copy()
+    final_forced.loc[final_forced < 0] = 0.0
+
+    for period in _similar_price_periods(flows, direction=-1, price_col="export"):
+        forced = period["forced"]
+        selected = forced[forced < 0]
+        if selected.empty:
+            continue
+
+        energy_wh = float((selected.abs() * period.loc[selected.index, "dt_hours"]).sum())
+        if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+            continue
+
+        _defer_discharge_within_period(final_forced, period, energy_wh, selected)
+
+    return _forced_slots_from_series(final_forced)
+
+
+def _minimise_price_period_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
     final_forced = pd.Series(index=flows.index, data=0.0)
 
     for direction, price_col in ((1, "import"), (-1, "export")):
@@ -943,9 +1000,33 @@ def _minimise_inverter_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timesta
             else:
                 _defer_discharge_within_period(final_forced, period, energy_wh, selected)
 
+    return _forced_slots_from_series(final_forced)
+
+
+def _minimise_campaign_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    final_forced = pd.Series(index=flows.index, data=0.0)
+
+    for period in _similar_price_periods(flows, direction=1, price_col="import"):
+        forced = period["forced"]
+        selected = forced[forced > 0]
+        if selected.empty:
+            continue
+
+        energy_wh = float((selected.abs() * period.loc[selected.index, "dt_hours"]).sum())
+        if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+            continue
+
+        _spread_charge_across_period(final_forced, period, energy_wh)
+
+    _defer_discharge_campaigns(final_forced, flows)
+
+    return _forced_slots_from_series(final_forced)
+
+
+def _forced_slots_from_series(forced: pd.Series) -> list[tuple[pd.Timestamp, float]]:
     return [
         (start, round(float(power), 0))
-        for start, power in final_forced.items()
+        for start, power in forced.items()
         if abs(float(power)) >= MODEL_MIN_SLOT_POWER
     ]
 
@@ -1006,31 +1087,127 @@ def _defer_discharge_within_period(
     if power_limit < MODEL_MIN_SLOT_POWER:
         return
 
-    target_duration_hours = energy_wh / power_limit
-    selected_rows = []
-    selected_duration_hours = 0.0
+    block_end = period.index[-1] + pd.Timedelta(hours=float(period.iloc[-1].get("dt_hours", 0)))
+    _defer_discharge_energy(final_forced, period, block_end, energy_wh, power_limit)
 
-    for start, row in reversed(list(period.iterrows())):
-        if selected_duration_hours >= target_duration_hours:
-            break
-        if final_forced.loc[start] != 0:
+
+def _defer_discharge_campaigns(final_forced: pd.Series, flows: pd.DataFrame) -> None:
+    campaign_rows = []
+
+    for start, row in flows.iterrows():
+        if final_forced.loc[start] > 0:
+            _schedule_deferred_discharge_campaign(final_forced, flows.loc[campaign_rows], start)
+            campaign_rows = []
             continue
 
-        dt_hours = float(row.get("dt_hours", 0))
-        if dt_hours <= 0:
-            continue
+        campaign_rows.append(start)
 
-        selected_rows.append(start)
-        selected_duration_hours += dt_hours
+    if campaign_rows:
+        last_start = campaign_rows[-1]
+        campaign_end = last_start + pd.Timedelta(hours=float(flows.loc[last_start, "dt_hours"]))
+        _schedule_deferred_discharge_campaign(final_forced, flows.loc[campaign_rows], campaign_end)
 
-    if selected_duration_hours <= 0:
+
+def _schedule_deferred_discharge_campaign(
+    final_forced: pd.Series,
+    campaign: pd.DataFrame,
+    campaign_end: pd.Timestamp,
+) -> None:
+    if campaign.empty:
         return
 
-    power = energy_wh / selected_duration_hours
+    forced = campaign["forced"]
+    selected = forced[forced < 0]
+    if selected.empty:
+        return
+
+    energy_wh = float((selected.abs() * campaign.loc[selected.index, "dt_hours"]).sum())
+    if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+        return
+
+    power_limit = float(selected.abs().max())
+    if power_limit < MODEL_MIN_SLOT_POWER:
+        return
+
+    max_export = float(campaign["export"].max())
+    min_export = float(campaign["export"].min())
+    if max_export > min_export + PRICE_PERIOD_TOLERANCE:
+        high_export_rows = campaign[campaign["export"] >= max_export - PRICE_PERIOD_TOLERANCE]
+        if not high_export_rows.empty:
+            high_selected = selected[selected.index.isin(high_export_rows.index)]
+            if not high_selected.empty:
+                high_energy_wh = float(
+                    (high_selected.abs() * campaign.loc[high_selected.index, "dt_hours"]).sum()
+                )
+                _spread_discharge_across_rows(
+                    final_forced,
+                    high_export_rows,
+                    high_energy_wh,
+                    power_limit,
+                )
+                remaining_energy_wh = energy_wh - high_energy_wh
+                post_high_rows = campaign[campaign.index > high_export_rows.index[-1]]
+                if remaining_energy_wh >= MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+                    if not post_high_rows.empty:
+                        _defer_discharge_energy(
+                            final_forced,
+                            post_high_rows,
+                            campaign_end,
+                            remaining_energy_wh,
+                            power_limit,
+                        )
+                    else:
+                        pre_high_rows = campaign[campaign.index < high_export_rows.index[0]]
+                        _defer_discharge_energy(
+                            final_forced,
+                            pre_high_rows,
+                            high_export_rows.index[0],
+                            remaining_energy_wh,
+                            power_limit,
+                        )
+                return
+
+    _defer_discharge_energy(final_forced, campaign, campaign_end, energy_wh, power_limit)
+
+
+def _defer_discharge_energy(
+    final_forced: pd.Series,
+    rows: pd.DataFrame,
+    block_end: pd.Timestamp,
+    energy_wh: float,
+    power_limit: float,
+) -> None:
+    if rows.empty:
+        return
+
+    block_start = block_end - pd.Timedelta(hours=energy_wh / power_limit)
+    row_ends = rows.index.to_series() + pd.to_timedelta(rows["dt_hours"], unit="h")
+    block_rows = rows[(rows.index < block_end) & (row_ends > block_start)]
+    if block_rows.empty:
+        return
+
+    duration_hours = float(block_rows["dt_hours"].sum())
+    if duration_hours <= 0:
+        return
+
+    _spread_discharge_across_rows(final_forced, block_rows, energy_wh, power_limit)
+
+
+def _spread_discharge_across_rows(
+    final_forced: pd.Series,
+    rows: pd.DataFrame,
+    energy_wh: float,
+    power_limit: float,
+) -> None:
+    duration_hours = float(rows["dt_hours"].sum())
+    if duration_hours <= 0:
+        return
+
+    power = energy_wh / duration_hours
     if power < MODEL_MIN_SLOT_POWER or power > power_limit + 0.1:
         return
 
-    for start in selected_rows:
+    for start in rows.index:
         final_forced.loc[start] = -power
 
 
