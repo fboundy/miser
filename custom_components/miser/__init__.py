@@ -1,5 +1,6 @@
 import logging
 import asyncio
+from contextlib import suppress
 from datetime import timedelta
 from functools import partial
 from logging.handlers import RotatingFileHandler
@@ -42,11 +43,9 @@ from .utils import (
 from .pv_model import InverterModel, BatteryModel, PVsystemModel
 from .optimiser import (
     AXLE_VPP_DOMAIN,
-    AXLE_VPP_DISCHARGE_CHECK_DELAY,
     AXLE_VPP_END_ENTITIES,
     AXLE_VPP_START_ENTITIES,
     axle_vpp_control_window,
-    enforce_axle_vpp_discharge,
     optimise,
 )
 
@@ -72,9 +71,6 @@ def setup_custom_logging():
         backupCount=3,
         mode="a",
     )
-
-    # Force rotation of the log file
-    file_handler.doRollover()
 
     formatter = logging.Formatter(
         "%(asctime)s - %(module)-10s - %(levelname)-8s - %(message)s",
@@ -115,8 +111,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _setup_axle_vpp_callbacks(hass)
             return True
         if existing_data.get("setup_in_progress"):
-            _LOGGER.debug("Ignoring duplicate Miser setup call while entry %s is still loading", entry.entry_id)
-            return True
+            _LOGGER.debug("Deferring duplicate Miser setup call while entry %s is still loading", entry.entry_id)
+            raise ConfigEntryNotReady("Miser setup is already in progress")
 
     uuid = await get_instance_id(hass)
     _LOGGER.debug(f"UUID: {uuid}")
@@ -132,43 +128,56 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for entity_type in ENTITY_TYPES:
         hass.data[DOMAIN][entity_type] = {}
 
-    # Forward entries to platform setup
-    _LOGGER.debug("Forwarding config entries to platforms: switch, number.")
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    platforms_forwarded = False
+    try:
+        # Forward entries to platform setup
+        _LOGGER.debug("Forwarding config entries to platforms: switch, number.")
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        platforms_forwarded = True
 
-    """
-    Check that all the required entities are available for the selected inverter controller
-    and intantiate the PV model.
+        """
+        Check that all the required entities are available for the selected inverter controller
+        and intantiate the PV model.
 
-    Save the PV model to hass.data[DOMAIN]
-    """
-    entities_available = await _get_entities(hass, entry)
+        Save the PV model to hass.data[DOMAIN]
+        """
+        entities_available = await _get_entities(hass, entry)
 
-    if not entities_available:
-        raise ConfigEntryNotReady("Could not retrieve necessary entities to set up inverter model")
+        if not entities_available:
+            raise ConfigEntryNotReady("Could not retrieve necessary entities to set up inverter model")
 
-    _log_all_entities(hass)
-    pv_model = await _load_pv_system_model(hass)
+        _log_all_entities(hass)
+        pv_model = await _load_pv_system_model(hass)
 
-    # Load the tariffs
-    # Check if we are using the OE integration:
-    octopus = await _get_octopus_info(hass, entry)
+        # Load the tariffs
+        # Check if we are using the OE integration:
+        octopus = await _get_octopus_info(hass, entry)
 
-    if not (pv_model and octopus):
-        raise ConfigEntryNotReady("Could not retrieve necessary PV model or tariff data")
+        if not (pv_model and octopus):
+            raise ConfigEntryNotReady("Could not retrieve necessary PV model or tariff data")
 
-    _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
+        _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
 
-    # Set up the schedule for the optimise
-    await _schedule_optimiser(hass)
+        # Set up the schedule for the optimise
+        await _schedule_optimiser(hass)
 
-    # Set up callbacks for when the config entities change
-    await _setup_config_callbacks(hass)
-    await _setup_axle_vpp_callbacks(hass)
+        # Set up callbacks for when the config entities change
+        await _setup_config_callbacks(hass)
+        await _setup_axle_vpp_callbacks(hass)
 
-    hass.data[DOMAIN]["setup_in_progress"] = False
-    hass.data[DOMAIN]["setup_complete"] = True
-    return True
+        hass.data[DOMAIN]["setup_in_progress"] = False
+        hass.data[DOMAIN]["setup_complete"] = True
+        return True
+    except Exception:
+        data = hass.data.get(DOMAIN, {})
+        if data.get("entry_id") == entry.entry_id:
+            data["setup_in_progress"] = False
+            data["setup_complete"] = False
+        if platforms_forwarded:
+            with suppress(Exception):
+                await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        _LOGGER.exception("Miser setup failed")
+        raise
 
 
 async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
@@ -498,7 +507,7 @@ async def _refresh_axle_vpp_callbacks(hass: HomeAssistant, optimise_on_window_ch
     was_installed = data.get("axle_vpp_installed")
     data["axle_vpp_installed"] = True
     if not was_installed:
-        _LOGGER.info("Axle VPP integration detected; Miser will cede inverter control during Axle events")
+        _LOGGER.info("Axle VPP integration detected; Miser will price Axle event export at the VPP rate")
 
     if not data.get("axle_vpp_callbacks"):
         callbacks = []
@@ -514,9 +523,9 @@ async def _refresh_axle_vpp_callbacks(hass: HomeAssistant, optimise_on_window_ch
         optimise_on_window_change
         and window is not None
         and window_key != previous_window_key
-        and dt_util.utcnow() >= window["start"].to_pydatetime()
+        and dt_util.utcnow() >= window["event_start"].to_pydatetime()
     ):
-        _LOGGER.info("Axle VPP window discovered inside the active buffer; rechecking Miser inverter control")
+        _LOGGER.info("Axle VPP window discovered inside the active event; re-running optimiser")
         await optimise(hass=hass)
 
 
@@ -569,10 +578,9 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> dict | None:
         return None
 
     callbacks = []
-    discharge_callbacks = []
     now = dt_util.utcnow()
     data["axle_vpp_window_key"] = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
-    for boundary in ["start", "end"]:
+    for boundary in ["event_start", "event_end"]:
         check_at = window[boundary].to_pydatetime()
         if check_at <= now:
             continue
@@ -585,33 +593,14 @@ def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> dict | None:
             )
         )
 
-    discharge_check_at = (window["event_start"] + AXLE_VPP_DISCHARGE_CHECK_DELAY).to_pydatetime()
-    discharge_window_key = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
-    if discharge_check_at > now:
-        discharge_callbacks.append(
-            async_track_point_in_utc_time(
-                hass,
-                _axle_vpp_discharge_callback(hass),
-                discharge_check_at,
-            )
-        )
-    elif window["event_end"].to_pydatetime() > now and data.get("axle_vpp_discharge_checked_window") != discharge_window_key:
-        data["axle_vpp_discharge_checked_window"] = discharge_window_key
-        hass.async_create_task(enforce_axle_vpp_discharge(hass))
-
     data["axle_vpp_boundary_callbacks"] = callbacks
-    data["axle_vpp_discharge_callbacks"] = discharge_callbacks
+    data["axle_vpp_discharge_callbacks"] = []
     if callbacks:
         _LOGGER.debug(
-            "Scheduled %d Axle VPP boundary callbacks for %s - %s",
+            "Scheduled %d Axle VPP optimiser callbacks for %s - %s",
             len(callbacks),
-            window["start"].isoformat(),
-            window["end"].isoformat(),
-        )
-    if discharge_callbacks:
-        _LOGGER.debug(
-            "Scheduled Axle VPP discharge compliance check for %s",
-            discharge_check_at.isoformat(),
+            window["event_start"].isoformat(),
+            window["event_end"].isoformat(),
         )
     return window
 
@@ -621,26 +610,9 @@ def _axle_vpp_boundary_callback(hass: HomeAssistant, boundary: str):
         if hass.data.get(DOMAIN, {}).get("unloading"):
             return
 
-        _LOGGER.info("Axle VPP %s buffer boundary reached; rechecking Miser inverter control", boundary)
+        _LOGGER.info("Axle VPP %s reached; re-running optimiser", boundary)
         _schedule_axle_vpp_boundary_callbacks(hass)
         await optimise(hass=hass)
-
-    return _callback
-
-
-def _axle_vpp_discharge_callback(hass: HomeAssistant):
-    async def _callback(_now):
-        data = hass.data.get(DOMAIN, {})
-        if data.get("unloading"):
-            return
-
-        window = axle_vpp_control_window(hass)
-        if window is not None:
-            data["axle_vpp_discharge_checked_window"] = (
-                f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
-            )
-        _LOGGER.info("Axle VPP event-start compliance check reached; verifying maximum discharge")
-        await enforce_axle_vpp_discharge(hass)
 
     return _callback
 

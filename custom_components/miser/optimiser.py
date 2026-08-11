@@ -35,8 +35,6 @@ from .const import (
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
-    CONF_INVERTER_POWER,
-    CONF_BATTERY_MINIMUM_SOC,
     CONF_WHOLE_HORIZON_BETA,
     CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
@@ -77,7 +75,6 @@ AXLE_VPP_END_ENTITIES = [
     "sensor.axle_vpp_axle_end_time",
     "sensor.axle_vpp_axle_end_time_friendly",
 ]
-AXLE_VPP_DISCHARGE_CHECK_DELAY = pd.Timedelta(minutes=1)
 AXLE_VPP_EXPORT_PRICE = 100
 PRICE_PERIOD_TOLERANCE = 0.05
 
@@ -368,10 +365,6 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     control_slots = _control_slots(model.optimised_flows)
     now = pd.Timestamp.now(tz="UTC")
     current_slot = _find_current_control_slot(control_slots, now)
-    axle_window = axle_vpp_control_window(hass)
-    if axle_window is not None and _timestamp_in_window(now, axle_window):
-        await _cede_inverter_control_to_axle(hass, inverter_controller, control_slots, axle_window, now)
-        return
 
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
@@ -400,13 +393,6 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     )
     apply_window = pd.Timedelta(minutes=optimiser_minutes)
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
-    if axle_window is not None:
-        original_count = len(slots_to_apply)
-        slots_to_apply = [
-            slot for slot in slots_to_apply if not _programmed_window_overlaps(slot, axle_window)
-        ]
-        if len(slots_to_apply) != original_count:
-            _LOGGER.debug("Skipping inverter writes for Miser slots overlapping Axle VPP event window")
 
     if schedule_checks:
         _schedule_control_compliance_checks(hass, control_slots)
@@ -466,146 +452,6 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
             _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
 
 
-async def _cede_inverter_control_to_axle(
-    hass: HomeAssistant,
-    inverter_controller,
-    control_slots: list[dict],
-    axle_window: dict,
-    now: pd.Timestamp,
-) -> None:
-    await _write_control_entities(
-        hass,
-        state="Axle VPP",
-        force_current=0,
-        force_power=0,
-        target_soc=None,
-        current_slot=None,
-        next_slot=_find_next_control_slot(control_slots, now),
-    )
-
-    if now >= axle_window["event_start"]:
-        _LOGGER.debug("Axle VPP event is active; skipping Miser inverter control writes")
-        return
-
-    data = hass.data.get(DOMAIN, {})
-    window_key = f"{axle_window['start'].isoformat()}-{axle_window['end'].isoformat()}"
-    if data.get("axle_vpp_released_window") == window_key:
-        return
-
-    try:
-        if not await inverter_controller.control_matches("idle", None, 0):
-            control_idle = getattr(inverter_controller, "control_idle", None)
-            if control_idle is not None:
-                _LOGGER.info(
-                    "Ceding inverter control to Axle VPP until %s",
-                    axle_window["end"].isoformat(),
-                )
-                await control_idle()
-    except (RuntimeError, HomeAssistantError) as err:
-        _LOGGER.warning("Unable to release inverter control before Axle VPP event: %s", err)
-
-    data["axle_vpp_released_window"] = window_key
-
-
-async def enforce_axle_vpp_discharge(hass: HomeAssistant) -> None:
-    """Force maximum discharge during an active Axle event if Axle has not done so."""
-    data = hass.data.get(DOMAIN, {})
-    if data.get("unloading"):
-        return
-
-    inverter_controller = data.get("inverter_controller")
-    if inverter_controller is None:
-        _LOGGER.warning("No inverter controller is available; unable to enforce Axle VPP discharge")
-        return
-
-    axle_window = axle_vpp_control_window(hass)
-    if axle_window is None:
-        _LOGGER.debug("Skipping Axle VPP discharge enforcement because no current event window is available")
-        return
-
-    now = pd.Timestamp.now(tz="UTC")
-    if not (axle_window["event_start"] <= now <= axle_window["event_end"]):
-        _LOGGER.debug(
-            "Skipping Axle VPP discharge enforcement outside event window %s - %s",
-            axle_window["event_start"].isoformat(),
-            axle_window["event_end"].isoformat(),
-        )
-        return
-
-    discharge_power = await _axle_vpp_discharge_power(hass)
-    target_soc = await _axle_vpp_target_soc(hass)
-    requested_current = await _power_to_current(inverter_controller, discharge_power)
-
-    await _write_control_entities(
-        hass,
-        state="Axle VPP Discharging",
-        force_current=requested_current,
-        force_power=-discharge_power,
-        target_soc=target_soc,
-        current_slot={
-            "start": axle_window["event_start"],
-            "end": axle_window["event_end"],
-            "state": "discharging",
-            "power": -discharge_power,
-            "target_soc": target_soc,
-        },
-        next_slot=None,
-    )
-
-    try:
-        if await inverter_controller.control_matches("discharging", target_soc, discharge_power):
-            _LOGGER.info("Axle VPP discharge already matches maximum discharge request")
-            return
-
-        _LOGGER.warning(
-            "Axle VPP event is active but inverter is not at maximum discharge; forcing %.0fW until %s",
-            discharge_power,
-            axle_window["event_end"].isoformat(),
-        )
-        await inverter_controller.control_discharge(
-            now.to_pydatetime(),
-            axle_window["event_end"].to_pydatetime(),
-            target_soc,
-            discharge_power,
-        )
-    except (RuntimeError, HomeAssistantError) as err:
-        _LOGGER.warning("Unable to enforce Axle VPP maximum discharge: %s", err)
-
-
-async def _axle_vpp_discharge_power(hass: HomeAssistant) -> float:
-    model = hass.data.get(DOMAIN, {}).get("model")
-    if model is not None:
-        power = getattr(getattr(model, "inverter", None), "inverter_power", None)
-        if power is not None:
-            return abs(float(power))
-
-    return abs(
-        float(
-            await get_value(
-                hass,
-                CONF_INVERTER_POWER,
-                default_value=DEFAULTS[CONF_INVERTER_POWER],
-            )
-            or DEFAULTS[CONF_INVERTER_POWER]
-        )
-    )
-
-
-async def _axle_vpp_target_soc(hass: HomeAssistant) -> float:
-    value = await get_value(
-        hass,
-        CONF_BATTERY_MINIMUM_SOC,
-        default_value=DEFAULTS[CONF_BATTERY_MINIMUM_SOC],
-    )
-    if value is None:
-        value = await get_value(
-            hass,
-            "battery_minimum_soc",
-            default_value=DEFAULTS[CONF_BATTERY_MINIMUM_SOC],
-        )
-    return float(value if value is not None else DEFAULTS[CONF_BATTERY_MINIMUM_SOC])
-
-
 def axle_vpp_control_window(hass: HomeAssistant) -> dict | None:
     if not hass.config_entries.async_entries(AXLE_VPP_DOMAIN):
         return None
@@ -656,10 +502,6 @@ def _parse_datetime_state(value) -> pd.Timestamp | None:
     return timestamp.tz_convert("UTC")
 
 
-def _timestamp_in_window(timestamp: pd.Timestamp, window: dict) -> bool:
-    return window["start"] <= timestamp <= window["end"]
-
-
 def _control_window_start(slot: dict):
     """Start of the control window a segment belongs to."""
     return slot.get("window_start", slot["start"])
@@ -673,16 +515,6 @@ def _control_window_end(slot: dict):
 def _control_window_target_soc(slot: dict) -> float:
     """Terminal SOC of the control window a segment belongs to."""
     return slot.get("window_target_soc", slot["target_soc"])
-
-
-def _programmed_window_overlaps(slot: dict, window: dict) -> bool:
-    """Does the interval that will actually be programmed overlap `window`?
-
-    Compares the *control window*, not the segment. The inverter is programmed
-    with the whole window, so an exclusion decided on segment bounds could let a
-    segment through and then programme straight across the excluded interval.
-    """
-    return _control_window_start(slot) < window["end"] and _control_window_end(slot) > window["start"]
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
