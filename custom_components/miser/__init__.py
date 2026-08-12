@@ -565,21 +565,29 @@ def _axle_vpp_state_change_callback(hass: HomeAssistant):
 
 def _schedule_axle_vpp_boundary_callbacks(hass: HomeAssistant) -> dict | None:
     data = hass.data.get(DOMAIN, {})
-    for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
-        unsubscribe()
-    for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
-        unsubscribe()
-
     window = axle_vpp_control_window(hass)
     if window is None:
+        for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
+            unsubscribe()
+        for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
+            unsubscribe()
         data["axle_vpp_boundary_callbacks"] = []
         data["axle_vpp_discharge_callbacks"] = []
         data["axle_vpp_window_key"] = None
         return None
 
+    window_key = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
+    if data.get("axle_vpp_window_key") == window_key and "axle_vpp_boundary_callbacks" in data:
+        return window
+
+    for unsubscribe in data.pop("axle_vpp_boundary_callbacks", []):
+        unsubscribe()
+    for unsubscribe in data.pop("axle_vpp_discharge_callbacks", []):
+        unsubscribe()
+
     callbacks = []
     now = dt_util.utcnow()
-    data["axle_vpp_window_key"] = f"{window['event_start'].isoformat()}-{window['event_end'].isoformat()}"
+    data["axle_vpp_window_key"] = window_key
     for boundary in ["event_start", "event_end"]:
         check_at = window[boundary].to_pydatetime()
         if check_at <= now:
