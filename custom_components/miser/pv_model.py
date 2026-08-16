@@ -188,8 +188,16 @@ class PVsystemModel:
         df["battery_temp"] = df["consumption"] - df["solar"]
 
         df["forced"] = await self.forced(*args, **kwargs)
+        solar_surplus_discharge = (df["forced"] < 0) & (df["solar"] > df["consumption"])
+        if solar_surplus_discharge.any():
+            _LOGGER.debug(
+                "Ignoring %d forced discharge slots while solar exceeds consumption",
+                int(solar_surplus_discharge.sum()),
+            )
+            df.loc[solar_surplus_discharge, "forced"] = 0
+
         chg_mask = df["forced"] != 0
-        df["battery_temp"][chg_mask] = -df["forced"][chg_mask]
+        df.loc[chg_mask, "battery_temp"] = -df.loc[chg_mask, "forced"]
         df["battery_temp"] = df["battery_temp"].clip(
             lower=-self.charge_power_limit,
             upper=self.discharge_power_limit,
@@ -604,6 +612,7 @@ class PVsystemModel:
             (flows["export"] > min_import_price)
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["forced"] <= 0)
+            & (flows["solar"] <= flows["consumption"])
         )
 
         a0 = available.sum()
@@ -709,6 +718,7 @@ class PVsystemModel:
             & (flows["forced"] <= 0)
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["soc_end"] > self.battery.max_dod * 100)
+            & (flows["solar"] <= flows["consumption"])
         ]
 
         if candidate_flows.empty:
@@ -894,6 +904,9 @@ class PVsystemModel:
             self.charge_power_limit,
             -self.discharge_power_limit,
         ):
+            if forced_power < 0 and requirement < 0:
+                continue
+
             actual_energy, grid = self._whole_horizon_transition(
                 energy=energy,
                 requirement=requirement,
@@ -911,6 +924,9 @@ class PVsystemModel:
                 forced_power = delta / self.inverter.charger_efficiency / dt_hours
                 max_power = self.charge_power_limit
             else:
+                if requirement < 0:
+                    continue
+
                 forced_power = delta * self.inverter.inverter_efficiency / dt_hours
                 max_power = self.discharge_power_limit
 
