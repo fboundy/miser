@@ -900,11 +900,33 @@ class PVsystemModel:
         )
         actions.append((natural_energy, None, natural_grid))
 
+        min_energy = self.battery.max_dod * self.battery.capacity
+        max_energy = self.battery.capacity
+
         for forced_power in (
             self.charge_power_limit,
             -self.discharge_power_limit,
         ):
             if forced_power < 0 and requirement < 0:
+                continue
+
+            # Clip to the energy the battery can actually take or give this slot.
+            # Without this a full battery is still offered a full-power charge:
+            # _whole_horizon_transition clamps the energy, battery_power comes out as
+            # zero and the command costs the same as idling, so the plan emits forced
+            # charging at 100% SOC.
+            if forced_power > 0:
+                forced_power = min(
+                    forced_power,
+                    (max_energy - energy) / self.inverter.charger_efficiency / dt_hours,
+                )
+            else:
+                forced_power = max(
+                    forced_power,
+                    (min_energy - energy) * self.inverter.inverter_efficiency / dt_hours,
+                )
+
+            if abs(forced_power) < MODEL_MIN_SLOT_POWER:
                 continue
 
             actual_energy, grid = self._whole_horizon_transition(
