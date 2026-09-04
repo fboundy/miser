@@ -126,7 +126,7 @@ class SolisInverter(InverterController):
                 "entity_id": self._required_entity_id(key),
                 "value": round(float(value), 2),
             },
-            blocking=True,
+            blocking=False,
         )
 
     async def _turn_on(self, key: str) -> None:
@@ -134,7 +134,7 @@ class SolisInverter(InverterController):
             "switch",
             "turn_on",
             {"entity_id": self._required_entity_id(key)},
-            blocking=True,
+            blocking=False,
         )
 
     async def _turn_off(self, key: str) -> None:
@@ -142,7 +142,7 @@ class SolisInverter(InverterController):
             "switch",
             "turn_off",
             {"entity_id": self._required_entity_id(key)},
-            blocking=True,
+            blocking=False,
         )
 
     async def _press(self, key: str) -> None:
@@ -150,7 +150,7 @@ class SolisInverter(InverterController):
             "button",
             "press",
             {"entity_id": self._required_entity_id(key)},
-            blocking=True,
+            blocking=False,
         )
 
     async def _set_time(self, key: str, value: datetime) -> None:
@@ -162,7 +162,7 @@ class SolisInverter(InverterController):
                 "entity_id": self._required_entity_id(key),
                 "time": value.strftime("%H:%M:%S"),
             },
-            blocking=True,
+            blocking=False,
         )
 
     async def _set_current(self, key: str, current: float) -> None:
@@ -382,7 +382,7 @@ class SolisSolaxModbusInverter(SolisInverter):
                 "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
                 "option": mode,
             },
-            blocking=True,
+            blocking=False,
         )
 
     async def get_mode(self) -> str:
@@ -521,7 +521,7 @@ class SolisCloudInverter(SolisInverter):
                 "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
                 "option": mode,
             },
-            blocking=True,
+            blocking=False,
         )
 
     async def get_mode(self) -> str:
@@ -701,7 +701,7 @@ class SolisConnectInverter(SolisInverter):
                 "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
                 "option": mode,
             },
-            blocking=True,
+            blocking=False,
         )
 
     async def get_mode(self) -> str:

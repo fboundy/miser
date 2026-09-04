@@ -73,6 +73,8 @@ Important sensors include:
 - `Miser Next Slot Target SOC`
 
 Cost sensors include `slots` and `flows` attributes for dashboards and analysis.
+The Read the Docs user guide includes an ApexCharts example for predicted SOC,
+forced charge/discharge power, and optimised cost.
 
 Important switches include:
 

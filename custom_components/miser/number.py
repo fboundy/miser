@@ -25,6 +25,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         OptimiserNumber(
             config_entry,
             unique_id=f"{DOMAIN}.{uuid}_{name.lower().replace(" ","_")}",
+            key=name,
             name=name,
             min_value=entity["min"],
             max_value=entity["max"],
@@ -44,7 +45,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entity_registry = er.async_get(hass=hass)
 
     for entity in entities_to_add:
-        hass.data[DOMAIN]["config_entities"][entity._attr_name] = entity_registry.async_get_entity_id(
+        hass.data[DOMAIN]["config_entities"][entity.key] = entity_registry.async_get_entity_id(
             "number", DOMAIN, entity.unique_id
         )
 
@@ -58,6 +59,7 @@ class OptimiserNumber(MiserEntity, NumberEntity):
         self,
         config_entry,
         unique_id,
+        key,
         name,
         min_value,
         max_value,
@@ -74,6 +76,7 @@ class OptimiserNumber(MiserEntity, NumberEntity):
             icon=icon,
             device_class=device_class,
         )
+        self.key = key
         self._attr_native_min_value = min_value
         self._attr_native_max_value = max_value
         self._attr_native_step = step
