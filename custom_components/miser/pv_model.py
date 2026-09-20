@@ -876,13 +876,13 @@ class PVsystemModel:
 
         best_key = min(
             costs,
-            key=lambda state_key: costs[state_key] + self._whole_horizon_terminal_penalty(energies[state_key]),
+            key=lambda state_key: costs[state_key] + self.terminal_soc_value(energies[state_key]),
         )
         best_terminal = energies[best_key]
         _LOGGER.info(
             "Whole-horizon cost estimate: %6.1fp raw, %6.1fp adjusted, terminal SOC: %5.1f%%",
             costs[best_key],
-            costs[best_key] + self._whole_horizon_terminal_penalty(best_terminal),
+            costs[best_key] + self.terminal_soc_value(best_terminal),
             best_terminal / self.battery.capacity * 100,
         )
         return paths[best_key]
@@ -1006,18 +1006,50 @@ class PVsystemModel:
         grid = round(requirement - battery_power, 0)
         return next_energy, grid
 
-    def _whole_horizon_terminal_penalty(self, terminal_energy: float) -> float:
+    def terminal_soc_value(self, terminal_energy: float) -> float:
+        """Signed cost adjustment for the battery's end-of-horizon energy.
+
+        Anchored to the run-start SoC. Ending below it is penalised by the grid
+        cost of buying the shortfall back at the cheapest forward-window prices
+        (its replacement cost). Ending above it is symmetrically credited with
+        the replacement cost of that surplus - the cheapest a rational operator
+        could rebuy it - but only when `value_surplus_soc` is enabled; with the
+        toggle off the behaviour is the original deficit-only penalty.
+
+        Positive = penalty (added to cost); negative = credit (reduces cost).
+        Both directions price |terminal - target| with the same cheapest-forward
+        fill (`_terminal_fill_cost`), so a Wh is valued identically whichever
+        side of the target it lands on.
+        """
         valuation_prices = getattr(self, "valuation_prices", None)
-        if valuation_prices is None or valuation_prices.empty:
+        if valuation_prices is None or valuation_prices.empty or not _is_finite(terminal_energy):
             return 0.0
 
         target_energy = self.initial_soc / 100 * self.battery.capacity
-        remaining_wh = max(target_energy - terminal_energy, 0)
-        if remaining_wh <= 0:
+        if not _is_finite(target_energy):
+            return 0.0
+
+        delta_wh = terminal_energy - target_energy
+        if abs(delta_wh) < 1:
+            return 0.0
+
+        if delta_wh < 0:
+            return self._terminal_fill_cost(-delta_wh)
+
+        if not getattr(self, "value_surplus_soc", False):
+            return 0.0
+        return -self._terminal_fill_cost(delta_wh)
+
+    def _terminal_fill_cost(self, energy_wh: float) -> float:
+        """Grid cost of importing `energy_wh` into the battery at the cheapest
+        forward-window prices - the replacement cost of that much energy."""
+        valuation_prices = getattr(self, "valuation_prices", None)
+        if valuation_prices is None or valuation_prices.empty or energy_wh <= 0:
             return 0.0
 
         charge_power = self.charge_power_limit
-        penalty = 0.0
+        remaining_wh = energy_wh
+        cost = 0.0
         prices = valuation_prices.copy()
         if "dt_hours" not in prices.columns:
             prices["dt_hours"] = self._price_dt_hours(prices)
@@ -1027,16 +1059,19 @@ class PVsystemModel:
                 break
 
             dt_hours = float(row["dt_hours"])
+            if not _is_finite(dt_hours) or not _is_finite(row["import"]):
+                continue
             battery_wh = min(remaining_wh, charge_power * dt_hours * self.inverter.charger_efficiency)
             grid_kwh = battery_wh / self.inverter.charger_efficiency / 1000
-            penalty += grid_kwh * float(row["import"])
+            cost += grid_kwh * float(row["import"])
             remaining_wh -= battery_wh
 
         if remaining_wh > 0:
             fallback_price = float(prices["import"].max())
-            penalty += remaining_wh / self.inverter.charger_efficiency / 1000 * fallback_price
+            if _is_finite(fallback_price):
+                cost += remaining_wh / self.inverter.charger_efficiency / 1000 * fallback_price
 
-        return penalty
+        return cost
 
     def _price_dt_hours(self, prices: pd.DataFrame) -> pd.Series:
         if len(prices.index) < 2:

@@ -38,6 +38,7 @@ from .const import (
     CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
     CONF_WHOLE_HORIZON_WRITE_COST,
+    CONF_VALUE_SURPLUS_SOC,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -161,6 +162,16 @@ async def optimise(hass: HomeAssistant, now=None):
         return
     else:
         model.set_start(pd.Timestamp.now(tz="UTC"))
+
+    # Read once on the loop and stash it: the terminal valuation is used inside
+    # the compute passes that run in the executor, which cannot touch hass.
+    model.value_surplus_soc = bool(
+        await get_value(
+            hass,
+            CONF_VALUE_SURPLUS_SOC,
+            default_value=DEFAULTS[CONF_VALUE_SURPLUS_SOC],
+        )
+    )
 
     model.base_slots = []
     model.base_cost, model.base_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.base_slots))
@@ -1391,69 +1402,21 @@ async def _optimise_discharge(
 async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:
     net_cost = await model.net_cost(slots=slots)
     flows = await model.flows(slots=slots)
-    terminal_penalty = _terminal_battery_penalty(model, flows)
-    cost = net_cost.sum() + terminal_penalty
+    terminal_energy = float(flows["chg_end"].iloc[-1]) if not flows.empty else float("nan")
+    terminal_value = model.terminal_soc_value(terminal_energy)
+    cost = net_cost.sum() + terminal_value
     if not _is_finite(cost):
         _LOGGER.warning("Calculated non-finite optimiser cost; rejecting candidate")
         return float("inf"), flows
-    if terminal_penalty:
+    if terminal_value:
+        # Positive = deficit penalty; negative = surplus credit.
         _LOGGER.debug(
-            "Terminal battery penalty: %6.1fp, terminal SOC: %5.1f%%",
-            terminal_penalty,
+            "Terminal SoC %s: %6.1fp, terminal SOC: %5.1f%%",
+            "penalty" if terminal_value > 0 else "credit",
+            terminal_value,
             flows["soc_end"].iloc[-1],
         )
     return cost, flows
-
-
-def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
-    valuation_prices = getattr(model, "valuation_prices", None)
-    if flows is None or flows.empty or valuation_prices is None or valuation_prices.empty:
-        return 0.0
-
-    terminal_energy = float(flows["chg_end"].iloc[-1])
-    target_energy = float(model.initial_soc) / 100 * model.battery.capacity
-    if not _is_finite(terminal_energy) or not _is_finite(target_energy):
-        return 0.0
-    deficit_wh = max(target_energy - terminal_energy, 0)
-    if deficit_wh <= 0:
-        return 0.0
-
-    charge_power = min(model.battery.max_charge_power, model.inverter.charger_power)
-    remaining_wh = deficit_wh
-    penalty = 0.0
-
-    prices = valuation_prices.copy()
-    if "dt_hours" not in prices.columns:
-        prices["dt_hours"] = _price_dt_hours(prices)
-
-    for _start, row in prices.sort_values("import").iterrows():
-        if remaining_wh <= 0:
-            break
-
-        dt_hours = float(row["dt_hours"])
-        if not _is_finite(dt_hours) or not _is_finite(row["import"]):
-            continue
-        battery_wh = min(remaining_wh, charge_power * dt_hours * model.inverter.charger_efficiency)
-        grid_kwh = battery_wh / model.inverter.charger_efficiency / 1000
-        penalty += grid_kwh * float(row["import"])
-        remaining_wh -= battery_wh
-
-    if remaining_wh > 0:
-        fallback_price = float(prices["import"].max())
-        if not _is_finite(fallback_price):
-            return penalty
-        grid_kwh = remaining_wh / model.inverter.charger_efficiency / 1000
-        penalty += grid_kwh * fallback_price
-
-    return penalty
-
-
-def _price_dt_hours(prices: pd.DataFrame) -> pd.Series:
-    if len(prices.index) < 2:
-        return pd.Series(index=prices.index, data=MODEL_PERIOD_MINUTES / 60)
-
-    dt_hours = -prices.index.to_series().diff(-1) / pd.Timedelta("60min")
-    return dt_hours.ffill().fillna(MODEL_PERIOD_MINUTES / 60)
 
 
 def _serialise_slots(flows: pd.DataFrame | None, merge: bool = False) -> list[dict]:

@@ -65,6 +65,7 @@ CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
+CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
 
 # Default values
 DEFAULT_CHARGER_POWER = 3000  # W
@@ -98,6 +99,10 @@ DEFAULTS = {
     # Maximum raw financial regression, in pence across the whole optimisation
     # horizon, that may be accepted to avoid a rapidly alternating plan.
     CONF_ALTERNATION_COST_THRESHOLD: 10,
+    # Credit end-of-horizon battery energy above the run-start SoC at its
+    # cheapest forward replacement cost (symmetric with the deficit penalty),
+    # so plans that leave the battery usefully charged are valued for it.
+    CONF_VALUE_SURPLUS_SOC: True,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -213,6 +218,7 @@ SWITCH_ENTITIES = {
         CONF_INCLUDE_EXPORT,
         CONF_OPTIMISE_DISCHARGING,
         CONF_WHOLE_HORIZON_BETA,
+        CONF_VALUE_SURPLUS_SOC,
     ]
 }
 
