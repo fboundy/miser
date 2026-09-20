@@ -3,7 +3,8 @@ import asyncio
 from contextlib import suppress
 from datetime import timedelta
 from functools import partial
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
+from queue import SimpleQueue
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -50,30 +51,43 @@ from .optimiser import (
 )
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
+_LOG_LISTENER: QueueListener | None = None
 VERSION = "0.0.1"
 AXLE_VPP_REFRESH_INTERVAL = timedelta(minutes=1)
 
 
 def setup_custom_logging():
     """
-    Configure custom logging to write to a file.
-    """
-    # Remove existing handlers to avoid duplicates
-    for handler in list(_LOGGER.handlers):
-        if isinstance(handler, RotatingFileHandler):
-            _LOGGER.removeHandler(handler)
+    Configure logging to miser.log without blocking the event loop.
 
-    # Set up a rotating file handler
+    The optimiser emits thousands of INFO lines per run. Writing them straight
+    to the log file, and propagating them to Home Assistant's synchronous log
+    handlers, all happened on the event loop - enough to stall the instance
+    mid-run and make the UI unreachable for tens of seconds at a time. Records
+    are now handed to a background thread through a queue (non-blocking on the
+    loop), and propagation is off so the detail stays in miser.log rather than
+    flooding the HA journal. Miser problems therefore surface in miser.log and,
+    for control failures, as a persistent notification - not in `ha core logs`.
+    """
+    global _LOG_LISTENER
+
+    # Remove any handlers left by a previous setup, and stop its listener.
+    for handler in list(_LOGGER.handlers):
+        if isinstance(handler, (RotatingFileHandler, QueueHandler)):
+            _LOGGER.removeHandler(handler)
+    if _LOG_LISTENER is not None:
+        _LOG_LISTENER.stop()
+        _LOG_LISTENER = None
+
     log_filename = f"/config/{DOMAIN}.log"
     file_handler = RotatingFileHandler(
         log_filename,
         # ~2 days of DEBUG output: an overnight incident must still be readable
-        # the next afternoon. 1 MB x 3 rotated away in under two hours.
+        # the next afternoon.
         maxBytes=5 * 2**20,
         backupCount=12,
         mode="a",
     )
-
     formatter = logging.Formatter(
         "%(asctime)s - %(module)-10s - %(levelname)-8s - %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -81,13 +95,30 @@ def setup_custom_logging():
     file_handler.setFormatter(formatter)
     file_handler.setLevel(logging.DEBUG)
 
-    # Add handler to the logger
-    _LOGGER.addHandler(file_handler)
-    _LOGGER.setLevel(logging.DEBUG)
-    _LOGGER.propagate = True
+    # The queue emit is a non-blocking in-memory put; the listener thread does
+    # the actual file writes and rotation off the event loop.
+    log_queue: SimpleQueue = SimpleQueue()
+    queue_handler = QueueHandler(log_queue)
+    queue_handler.setLevel(logging.DEBUG)
+    _LOG_LISTENER = QueueListener(log_queue, file_handler, respect_handler_level=True)
+    _LOG_LISTENER.start()
 
-    # Test the logging setup
+    _LOGGER.addHandler(queue_handler)
+    _LOGGER.setLevel(logging.DEBUG)
+    _LOGGER.propagate = False
+
     _LOGGER.debug("Custom logging initialized.")
+
+
+def teardown_custom_logging():
+    """Stop the background log listener and detach handlers on unload."""
+    global _LOG_LISTENER
+    for handler in list(_LOGGER.handlers):
+        if isinstance(handler, (RotatingFileHandler, QueueHandler)):
+            _LOGGER.removeHandler(handler)
+    if _LOG_LISTENER is not None:
+        _LOG_LISTENER.stop()
+        _LOG_LISTENER = None
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -262,6 +293,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unload_ok:
         hass.data.pop(DOMAIN, None)
+        teardown_custom_logging()
     else:
         data["unloading"] = False
 

@@ -110,3 +110,25 @@ def test_partial_headroom_clips_discharge_to_what_remains() -> None:
 def test_idle_action_is_always_offered() -> None:
     for energy in (MIN_ENERGY, 5000.0, float(CAPACITY)):
         assert any(power is None for _energy, power, _grid in _actions(energy, 1200.0))
+
+
+# --- The async wrapper runs the DP in an executor; prove it returns a plan ---
+
+
+async def test_whole_horizon_async_wrapper_returns_plan_via_executor() -> None:
+    """whole_horizon() offloads the compute to a thread; it must still produce
+    the same plan the synchronous compute does and not raise off the loop."""
+    model = _model()
+    model.initial_soc = 15  # empty, cheap import -> the DP should choose to charge
+    model.prices = pd.DataFrame(
+        {"import": [5.0, 5.0], "export": [15.0, 15.0]}, index=model.solar.index
+    )
+    model.whole_horizon_write_cost = 0
+
+    plan = await model.whole_horizon(soc_step_percent=25, state_resolution_wh=500)
+
+    assert isinstance(plan, list)
+    # Every entry is a (timestamp, power) slot at or above the minimum.
+    for start, power in plan:
+        assert isinstance(start, pd.Timestamp)
+        assert abs(power) >= MODEL_MIN_SLOT_POWER

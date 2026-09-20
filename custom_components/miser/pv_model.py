@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from math import isfinite
 
@@ -764,7 +765,29 @@ class PVsystemModel:
         return best_slots, best_cost, paired_slots_added
 
     async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
+        # The dynamic program below is CPU-bound pure-Python/pandas work over the
+        # whole 48 h horizon. Running it directly in the event loop stalled Home
+        # Assistant for seconds each cycle, so it runs in the default executor.
+        # Only self is read (no hass, no shared mutation), so this is thread-safe.
         flows = await self.flows(slots=[])
+        write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._whole_horizon_compute,
+            flows,
+            soc_step_percent,
+            state_resolution_wh,
+            write_cost,
+        )
+
+    def _whole_horizon_compute(
+        self,
+        flows: pd.DataFrame,
+        soc_step_percent: int,
+        state_resolution_wh: int,
+        write_cost: float,
+    ) -> list:
         required_cols = ["dt_hours", "consumption", "solar", "import", "export"]
         invalid = flows[required_cols].isna().any(axis=1)
         if invalid.any():
@@ -797,7 +820,6 @@ class PVsystemModel:
         _LOGGER.info("")
         _LOGGER.info("Whole Horizon Optimisation (Beta)")
         _LOGGER.info("---------------------------------")
-        write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
         if not _is_finite(write_cost):
             write_cost = 0
         write_cost = float(write_cost)
