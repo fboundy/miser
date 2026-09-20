@@ -54,3 +54,36 @@ Miser-side faults:
 
 Still to do: turn SolisConnect debug logging off (it floods the HA journal to ~4 h of
 retention) - it is enabled at runtime, not in `configuration.yaml`.
+
+## Live write test, 2026-09-20 ~10:35-14:05 BST
+
+Miser suspended (config entry disabled) for the power-flow part; slot registers
+written directly via HA services with a long-lived token, then restored.
+
+Charge slot 1 (switch off): every write stuck through 2+ polls - start, end,
+target SOC, current. Windows tried included 16:00-17:00, 00:30-05:30,
+00:30-12:00, 00:30-13:00, 08:00-17:00 and the full **00:30-17:00** that was
+rejected overnight. All held. Mid-window start rewrites while enabled also held.
+
+Charge, enabled, target 60% 57A: battery drew a steady **3150 W** (chg power
+matched, discharge 0), SOC rose 22 -> 24%. Correct.
+
+Discharge, enabled, target 15% 40A: battery delivered ~**2100 W** to grid
+(dis power matched, chg 0), grid_net went negative (export). Correct.
+
+**Finding - inverter clamps the discharge target SOC.** Register 43750
+(timed discharge cut-off SOC) refuses any value <= `overdischarge_soc` (15):
+writes of 15 and 14 silently reverted to the last accepted value (16); 16 and
+20 held. So Miser writing a discharge target of the battery minimum (15%) is
+clamped to 16% by the inverter. The new confirm step tolerates this because the
+gap is exactly 1% (= `CONTROL_CONFIRM_SOC_TOLERANCE`); a lower battery-minimum
+setting would trip a false "Control failed", so a discharge-target floor of
+`overdischarge_soc + 1` is worth adding later.
+
+**Not reproduced:** the overnight rejection. Mid-morning the inverter accepted
+every window and enable transition, including 00:30-17:00 and the exact
+"rewrite start=now while enabled" pattern that failed all night on the 19-20th.
+So the nightly failure is time-of-day / inverter-state dependent and not visible
+from HA writes in daylight. The confirm-and-retry-then-report path added in
+e7b951a is therefore the safety net: whatever caused it, Miser will now report
+"Control failed" and retry instead of showing "Charging" against an idle battery.
