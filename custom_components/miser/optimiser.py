@@ -102,6 +102,21 @@ def cl_to_weights(cl):
     return wt50, wt10, wt90
 
 
+async def _run_compute(hass: HomeAssistant, factory):
+    """Run a pure-compute optimiser coroutine off the event loop.
+
+    The model's optimisation passes are async only in name: they await each
+    other's pandas work over the whole 48 h horizon and never touch hass or do
+    real I/O. Run directly, they starve the event loop and Home Assistant's UI
+    becomes unreachable for up to a minute each cycle. Handed to the executor, a
+    private event loop in the worker thread drives the coroutine to completion
+    while the main loop stays free to serve HTTP. `factory` builds the coroutine
+    in the worker thread (a coroutine must be awaited on the loop that creates
+    it).
+    """
+    return await hass.async_add_executor_job(lambda: asyncio.run(factory()))
+
+
 async def optimise(hass: HomeAssistant, now=None):
     data = hass.data.get(DOMAIN)
     if not data or data.get("unloading"):
@@ -148,35 +163,41 @@ async def optimise(hass: HomeAssistant, now=None):
         model.set_start(pd.Timestamp.now(tz="UTC"))
 
     model.base_slots = []
-    model.base_cost, model.base_flows = await _calculate_cost_and_flows(model, model.base_slots)
+    model.base_cost, model.base_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.base_slots))
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
-    high_cost_swaps = await model.high_cost_swaps()
+    high_cost_swaps = await _run_compute(hass, lambda: model.high_cost_swaps())
     model.swap_slots = high_cost_swaps
-    model.swap_cost, model.swap_flows = await _calculate_cost_and_flows(model, model.swap_slots)
+    model.swap_cost, model.swap_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.swap_slots))
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
-    lcc_slots = await model.low_cost_charging(base_slots=model.swap_slots)
+    lcc_slots = await _run_compute(hass, lambda: model.low_cost_charging(base_slots=model.swap_slots))
     model.lcc_slots = lcc_slots
-    model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
+    model.lcc_cost, model.lcc_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.lcc_slots))
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
     lcc_raw_cost = model.best_cost
-    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _optimise_discharge(
-        model,
-        base_slots=model.lcc_slots,
-        base_cost=model.lcc_cost,
-        base_raw_cost=lcc_raw_cost,
-        fill_first=False,
+    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _run_compute(
+        hass,
+        lambda: _optimise_discharge(
+            model,
+            base_slots=model.lcc_slots,
+            base_cost=model.lcc_cost,
+            base_raw_cost=lcc_raw_cost,
+            fill_first=False,
+        ),
     )
     _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
 
-    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _optimise_discharge(
-        model,
-        base_slots=model.lcc_slots,
-        base_cost=model.lcc_cost,
-        base_raw_cost=lcc_raw_cost,
-        fill_first=True,
+    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _run_compute(
+        hass,
+        lambda: _optimise_discharge(
+            model,
+            base_slots=model.lcc_slots,
+            base_cost=model.lcc_cost,
+            base_raw_cost=lcc_raw_cost,
+            fill_first=True,
+        ),
     )
     _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
 
@@ -195,10 +216,10 @@ async def optimise(hass: HomeAssistant, now=None):
             CONF_WHOLE_HORIZON_WRITE_COST,
             default_value=DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
         )
-        model.whole_horizon_slots = await model.whole_horizon()
-        model.whole_horizon_cost, model.whole_horizon_flows = await _calculate_cost_and_flows(
-            model,
-            model.whole_horizon_slots,
+        model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
+        model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
+            hass,
+            lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
         )
         _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
         cost_keys.append("whole_horizon_cost")
@@ -986,7 +1007,7 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         if not final_slots:
             continue
 
-        final_cost, final_flows = await _calculate_cost_and_flows(model, final_slots)
+        final_cost, final_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, final_slots))
         if not _is_finite(final_cost):
             _LOGGER.warning("Skipping %s inverter-write minimisation because finalised cost is not finite", label)
             continue

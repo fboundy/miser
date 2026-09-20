@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from math import isfinite
 
@@ -765,16 +764,12 @@ class PVsystemModel:
         return best_slots, best_cost, paired_slots_added
 
     async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
-        # The dynamic program below is CPU-bound pure-Python/pandas work over the
-        # whole 48 h horizon. Running it directly in the event loop stalled Home
-        # Assistant for seconds each cycle, so it runs in the default executor.
-        # Only self is read (no hass, no shared mutation), so this is thread-safe.
+        # Pure CPU-bound work; the optimiser runs this via _run_compute so it is
+        # already off the event loop (see optimiser._run_compute). Only self is
+        # read - no hass, no shared mutation - so it is safe in a worker thread.
         flows = await self.flows(slots=[])
         write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            self._whole_horizon_compute,
+        return self._whole_horizon_compute(
             flows,
             soc_step_percent,
             state_resolution_wh,
