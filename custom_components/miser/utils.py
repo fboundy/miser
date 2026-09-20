@@ -99,12 +99,33 @@ def get_key_for_entity(hass: HomeAssistant, entity_id: str) -> str:
     return key
 
 
-def get_entity_for_key(hass: HomeAssistant, key: str) -> str:
+def get_entity_for_key(hass: HomeAssistant, key: str) -> str | None:
     for entities in [hass.data[DOMAIN][entity_type] for entity_type in ENTITY_TYPES]:
         entity_id = entities.get(key, None)
         if entity_id is not None:
             break
-    return entity_id
+    if entity_id is not None:
+        return entity_id
+
+    entry = _get_miser_config_entry(hass)
+    if entry is None:
+        return None
+
+    expected_unique_id = f"{DOMAIN}.{hass.data[DOMAIN].get('uuid')}_{key.lower().replace(' ', '_')}"
+    entity_registry = er.async_get(hass=hass)
+    for domain in ("number", "switch", "sensor"):
+        entity_id = entity_registry.async_get_entity_id(domain, DOMAIN, expected_unique_id)
+        if entity_id is not None:
+            if domain in ("number", "switch"):
+                hass.data[DOMAIN]["config_entities"][key] = entity_id
+            return entity_id
+
+    return None
+
+
+def _get_miser_config_entry(hass: HomeAssistant) -> ConfigEntry | None:
+    entries = hass.config_entries.async_entries(DOMAIN)
+    return entries[0] if entries else None
 
 
 def log_config_entry(entry: ConfigEntry) -> None:

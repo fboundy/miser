@@ -14,6 +14,7 @@ Octopus-style import/export tariffs.
 
    installation
    operation
+   apexcharts
    troubleshooting
 
 .. toctree::

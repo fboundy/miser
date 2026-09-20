@@ -188,8 +188,16 @@ class PVsystemModel:
         df["battery_temp"] = df["consumption"] - df["solar"]
 
         df["forced"] = await self.forced(*args, **kwargs)
+        solar_surplus_discharge = (df["forced"] < 0) & (df["solar"] > df["consumption"])
+        if solar_surplus_discharge.any():
+            _LOGGER.debug(
+                "Ignoring %d forced discharge slots while solar exceeds consumption",
+                int(solar_surplus_discharge.sum()),
+            )
+            df.loc[solar_surplus_discharge, "forced"] = 0
+
         chg_mask = df["forced"] != 0
-        df["battery_temp"][chg_mask] = -df["forced"][chg_mask]
+        df.loc[chg_mask, "battery_temp"] = -df.loc[chg_mask, "forced"]
         df["battery_temp"] = df["battery_temp"].clip(
             lower=-self.charge_power_limit,
             upper=self.discharge_power_limit,
@@ -604,6 +612,7 @@ class PVsystemModel:
             (flows["export"] > min_import_price)
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["forced"] <= 0)
+            & (flows["solar"] <= flows["consumption"])
         )
 
         a0 = available.sum()
@@ -709,6 +718,7 @@ class PVsystemModel:
             & (flows["forced"] <= 0)
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["soc_end"] > self.battery.max_dod * 100)
+            & (flows["solar"] <= flows["consumption"])
         ]
 
         if candidate_flows.empty:
@@ -754,7 +764,25 @@ class PVsystemModel:
         return best_slots, best_cost, paired_slots_added
 
     async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
+        # Pure CPU-bound work; the optimiser runs this via _run_compute so it is
+        # already off the event loop (see optimiser._run_compute). Only self is
+        # read - no hass, no shared mutation - so it is safe in a worker thread.
         flows = await self.flows(slots=[])
+        write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
+        return self._whole_horizon_compute(
+            flows,
+            soc_step_percent,
+            state_resolution_wh,
+            write_cost,
+        )
+
+    def _whole_horizon_compute(
+        self,
+        flows: pd.DataFrame,
+        soc_step_percent: int,
+        state_resolution_wh: int,
+        write_cost: float,
+    ) -> list:
         required_cols = ["dt_hours", "consumption", "solar", "import", "export"]
         invalid = flows[required_cols].isna().any(axis=1)
         if invalid.any():
@@ -779,19 +807,24 @@ class PVsystemModel:
         )
         initial_energy = round(initial_energy, 1)
 
-        initial_key = self._whole_horizon_state_key(initial_energy, state_resolution_wh)
-        costs: dict[float, float] = {initial_key: 0.0}
-        energies: dict[float, float] = {initial_key: initial_energy}
-        paths: dict[float, list[tuple[pd.Timestamp, float]]] = {initial_key: []}
+        initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), "idle")
+        costs: dict[tuple[float, str], float] = {initial_key: 0.0}
+        energies: dict[tuple[float, str], float] = {initial_key: initial_energy}
+        paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {initial_key: []}
 
         _LOGGER.info("")
         _LOGGER.info("Whole Horizon Optimisation (Beta)")
         _LOGGER.info("---------------------------------")
+        if not _is_finite(write_cost):
+            write_cost = 0
+        write_cost = float(write_cost)
+        if write_cost:
+            _LOGGER.info("Whole-horizon inverter write cost: %.1fp per control change", write_cost)
 
         for start, row in flows.iterrows():
-            next_costs: dict[float, float] = {}
-            next_energies: dict[float, float] = {}
-            next_paths: dict[float, list[tuple[pd.Timestamp, float]]] = {}
+            next_costs: dict[tuple[float, str], float] = {}
+            next_energies: dict[tuple[float, str], float] = {}
+            next_paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {}
             dt_hours = float(row["dt_hours"])
             requirement = float(row["consumption"] - row["solar"])
             if not all(_is_finite(v) for v in [dt_hours, requirement, row["import"], row["export"]]):
@@ -799,6 +832,7 @@ class PVsystemModel:
                 continue
 
             for state_key, cost in costs.items():
+                previous_mode = state_key[1]
                 energy = energies[state_key]
                 for next_energy, forced_power, grid in self._whole_horizon_actions(
                     energy=energy,
@@ -810,10 +844,18 @@ class PVsystemModel:
                         max(grid, 0) * dt_hours * float(row["import"])
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
-                    candidate_cost = cost + slot_cost
+                    mode = self._whole_horizon_control_mode(forced_power)
+                    candidate_cost = cost + slot_cost + self._whole_horizon_write_penalty(
+                        previous_mode=previous_mode,
+                        mode=mode,
+                        write_cost=write_cost,
+                    )
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
                         continue
-                    next_key = self._whole_horizon_state_key(next_energy, state_resolution_wh)
+                    next_key = (
+                        self._whole_horizon_state_key(next_energy, state_resolution_wh),
+                        mode,
+                    )
                     if candidate_cost >= next_costs.get(next_key, float("inf")):
                         continue
 
@@ -834,19 +876,29 @@ class PVsystemModel:
 
         best_key = min(
             costs,
-            key=lambda state_key: costs[state_key] + self._whole_horizon_terminal_penalty(energies[state_key]),
+            key=lambda state_key: costs[state_key] + self.terminal_soc_value(energies[state_key]),
         )
         best_terminal = energies[best_key]
         _LOGGER.info(
             "Whole-horizon cost estimate: %6.1fp raw, %6.1fp adjusted, terminal SOC: %5.1f%%",
             costs[best_key],
-            costs[best_key] + self._whole_horizon_terminal_penalty(best_terminal),
+            costs[best_key] + self.terminal_soc_value(best_terminal),
             best_terminal / self.battery.capacity * 100,
         )
         return paths[best_key]
 
     def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
         return round(energy / state_resolution_wh) * state_resolution_wh
+
+    def _whole_horizon_control_mode(self, forced_power: float | None) -> str:
+        if forced_power is None or abs(forced_power) < MODEL_MIN_SLOT_POWER:
+            return "idle"
+        return "charging" if forced_power > 0 else "discharging"
+
+    def _whole_horizon_write_penalty(self, previous_mode: str, mode: str, write_cost: float) -> float:
+        if write_cost <= 0 or previous_mode == mode:
+            return 0.0
+        return write_cost
 
     def _whole_horizon_actions(
         self,
@@ -865,10 +917,35 @@ class PVsystemModel:
         )
         actions.append((natural_energy, None, natural_grid))
 
+        min_energy = self.battery.max_dod * self.battery.capacity
+        max_energy = self.battery.capacity
+
         for forced_power in (
             self.charge_power_limit,
             -self.discharge_power_limit,
         ):
+            if forced_power < 0 and requirement < 0:
+                continue
+
+            # Clip to the energy the battery can actually take or give this slot.
+            # Without this a full battery is still offered a full-power charge:
+            # _whole_horizon_transition clamps the energy, battery_power comes out as
+            # zero and the command costs the same as idling, so the plan emits forced
+            # charging at 100% SOC.
+            if forced_power > 0:
+                forced_power = min(
+                    forced_power,
+                    (max_energy - energy) / self.inverter.charger_efficiency / dt_hours,
+                )
+            else:
+                forced_power = max(
+                    forced_power,
+                    (min_energy - energy) * self.inverter.inverter_efficiency / dt_hours,
+                )
+
+            if abs(forced_power) < MODEL_MIN_SLOT_POWER:
+                continue
+
             actual_energy, grid = self._whole_horizon_transition(
                 energy=energy,
                 requirement=requirement,
@@ -886,6 +963,9 @@ class PVsystemModel:
                 forced_power = delta / self.inverter.charger_efficiency / dt_hours
                 max_power = self.charge_power_limit
             else:
+                if requirement < 0:
+                    continue
+
                 forced_power = delta * self.inverter.inverter_efficiency / dt_hours
                 max_power = self.discharge_power_limit
 
@@ -926,18 +1006,50 @@ class PVsystemModel:
         grid = round(requirement - battery_power, 0)
         return next_energy, grid
 
-    def _whole_horizon_terminal_penalty(self, terminal_energy: float) -> float:
+    def terminal_soc_value(self, terminal_energy: float) -> float:
+        """Signed cost adjustment for the battery's end-of-horizon energy.
+
+        Anchored to the run-start SoC. Ending below it is penalised by the grid
+        cost of buying the shortfall back at the cheapest forward-window prices
+        (its replacement cost). Ending above it is symmetrically credited with
+        the replacement cost of that surplus - the cheapest a rational operator
+        could rebuy it - but only when `value_surplus_soc` is enabled; with the
+        toggle off the behaviour is the original deficit-only penalty.
+
+        Positive = penalty (added to cost); negative = credit (reduces cost).
+        Both directions price |terminal - target| with the same cheapest-forward
+        fill (`_terminal_fill_cost`), so a Wh is valued identically whichever
+        side of the target it lands on.
+        """
         valuation_prices = getattr(self, "valuation_prices", None)
-        if valuation_prices is None or valuation_prices.empty:
+        if valuation_prices is None or valuation_prices.empty or not _is_finite(terminal_energy):
             return 0.0
 
         target_energy = self.initial_soc / 100 * self.battery.capacity
-        remaining_wh = max(target_energy - terminal_energy, 0)
-        if remaining_wh <= 0:
+        if not _is_finite(target_energy):
+            return 0.0
+
+        delta_wh = terminal_energy - target_energy
+        if abs(delta_wh) < 1:
+            return 0.0
+
+        if delta_wh < 0:
+            return self._terminal_fill_cost(-delta_wh)
+
+        if not getattr(self, "value_surplus_soc", False):
+            return 0.0
+        return -self._terminal_fill_cost(delta_wh)
+
+    def _terminal_fill_cost(self, energy_wh: float) -> float:
+        """Grid cost of importing `energy_wh` into the battery at the cheapest
+        forward-window prices - the replacement cost of that much energy."""
+        valuation_prices = getattr(self, "valuation_prices", None)
+        if valuation_prices is None or valuation_prices.empty or energy_wh <= 0:
             return 0.0
 
         charge_power = self.charge_power_limit
-        penalty = 0.0
+        remaining_wh = energy_wh
+        cost = 0.0
         prices = valuation_prices.copy()
         if "dt_hours" not in prices.columns:
             prices["dt_hours"] = self._price_dt_hours(prices)
@@ -947,16 +1059,19 @@ class PVsystemModel:
                 break
 
             dt_hours = float(row["dt_hours"])
+            if not _is_finite(dt_hours) or not _is_finite(row["import"]):
+                continue
             battery_wh = min(remaining_wh, charge_power * dt_hours * self.inverter.charger_efficiency)
             grid_kwh = battery_wh / self.inverter.charger_efficiency / 1000
-            penalty += grid_kwh * float(row["import"])
+            cost += grid_kwh * float(row["import"])
             remaining_wh -= battery_wh
 
         if remaining_wh > 0:
             fallback_price = float(prices["import"].max())
-            penalty += remaining_wh / self.inverter.charger_efficiency / 1000 * fallback_price
+            if _is_finite(fallback_price):
+                cost += remaining_wh / self.inverter.charger_efficiency / 1000 * fallback_price
 
-        return penalty
+        return cost
 
     def _price_dt_hours(self, prices: pd.DataFrame) -> pd.Series:
         if len(prices.index) < 2:

@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
@@ -23,9 +24,13 @@ PARALLEL_UPDATES = 0
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up sensor entities from a config entry."""
     uuid = None
-    while uuid is None:
+    for _ in range(30):
         uuid = hass.data.get(DOMAIN, {}).get("uuid", None)
+        if uuid is not None:
+            break
         await asyncio.sleep(1)
+    if uuid is None:
+        raise ConfigEntryNotReady("Miser setup data was not initialised")
 
     entities_to_add = [
         OptimiserSensor(
@@ -79,6 +84,7 @@ class OptimiserSensor(MiserEntity, SensorEntity):
         self._attr_native_value = None
         self._attr_native_unit_of_measurement = unit_of_measurement
         self._attr_state_class = state_class
+        self._attr_extra_state_attributes = self._attributes
 
     async def async_set_native_value(
         self,
@@ -95,6 +101,7 @@ class OptimiserSensor(MiserEntity, SensorEntity):
             self._attributes[COST_FLOWS] = flows
         if attributes is not None:
             self._attributes.update(attributes)
+        self._attr_extra_state_attributes = self._attributes
         self.async_write_ha_state()
 
     async def async_added_to_hass(self):
@@ -104,6 +111,8 @@ class OptimiserSensor(MiserEntity, SensorEntity):
         last_state = await self.async_get_last_state()
 
         if last_state and last_state.state and last_state.state.lower() not in UNAVAILABLE_UNKNOWN:
+            self._attributes.update(last_state.attributes)
+            self._attr_extra_state_attributes = self._attributes
             try:
                 self._attr_native_value = float(last_state.state)
             except ValueError:

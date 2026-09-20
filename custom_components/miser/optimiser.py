@@ -5,6 +5,7 @@ from numpy import arange
 from datetime import datetime
 from math import isfinite
 from homeassistant.core import HomeAssistant
+from homeassistant.components import persistent_notification
 from homeassistant.components.recorder import history
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -12,6 +13,7 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    CONF_ALTERNATION_COST_THRESHOLD,
     DOMAIN,
     IMPORT_EXPORT,
     DATETIME_FORMAT_LONG,
@@ -35,6 +37,8 @@ from .const import (
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
+    CONF_WHOLE_HORIZON_WRITE_COST,
+    CONF_VALUE_SURPLUS_SOC,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -56,7 +60,22 @@ from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
+# Attempts at writing one control before it is reported as failed. Each attempt
+# is read back from the inverter by the controller before the next is made.
+CONTROL_CONFIRM_ATTEMPTS = 3
+CONTROL_FAILED_STATE = "Control failed"
+CONTROL_FAILED_NOTIFICATION_ID = "miser_control_failed"
+# Forced flows below this are not worth an inverter write: 38 W once became a
+# half-hour timed-charge slot that the inverter then fell back to all night.
+CONTROL_MIN_FORCE_POWER = 100  # W
 AXLE_VPP_DOMAIN = "axle_vpp"
+
+# Working hypothesis, not a proven setting: how close the two transitions of an
+# A -> B -> A control reversal must be before it counts as inverter churn rather
+# than an ordinary daily cycle. Measured end-of-first-A to start-of-second-A, so
+# it spans the middle window plus both idle gaps. Deliberately not user-facing
+# until live schedules justify a value.
+RAPID_ALTERNATION_HORIZON = pd.Timedelta(minutes=60)
 AXLE_VPP_BUFFER = pd.Timedelta(minutes=2)
 AXLE_VPP_START_ENTITIES = [
     "sensor.axle_vpp_axle_start_time",
@@ -66,6 +85,7 @@ AXLE_VPP_END_ENTITIES = [
     "sensor.axle_vpp_axle_end_time",
     "sensor.axle_vpp_axle_end_time_friendly",
 ]
+AXLE_VPP_EXPORT_PRICE = 100
 PRICE_PERIOD_TOLERANCE = 0.05
 
 
@@ -81,6 +101,21 @@ def cl_to_weights(cl):
     wt10 = min(max(50 - cl, 0) / 40, 1)
     wt50 = 1 - wt90 - wt10
     return wt50, wt10, wt90
+
+
+async def _run_compute(hass: HomeAssistant, factory):
+    """Run a pure-compute optimiser coroutine off the event loop.
+
+    The model's optimisation passes are async only in name: they await each
+    other's pandas work over the whole 48 h horizon and never touch hass or do
+    real I/O. Run directly, they starve the event loop and Home Assistant's UI
+    becomes unreachable for up to a minute each cycle. Handed to the executor, a
+    private event loop in the worker thread drives the coroutine to completion
+    while the main loop stays free to serve HTTP. `factory` builds the coroutine
+    in the worker thread (a coroutine must be awaited on the loop that creates
+    it).
+    """
+    return await hass.async_add_executor_job(lambda: asyncio.run(factory()))
 
 
 async def optimise(hass: HomeAssistant, now=None):
@@ -128,36 +163,52 @@ async def optimise(hass: HomeAssistant, now=None):
     else:
         model.set_start(pd.Timestamp.now(tz="UTC"))
 
+    # Read once on the loop and stash it: the terminal valuation is used inside
+    # the compute passes that run in the executor, which cannot touch hass.
+    model.value_surplus_soc = bool(
+        await get_value(
+            hass,
+            CONF_VALUE_SURPLUS_SOC,
+            default_value=DEFAULTS[CONF_VALUE_SURPLUS_SOC],
+        )
+    )
+
     model.base_slots = []
-    model.base_cost, model.base_flows = await _calculate_cost_and_flows(model, model.base_slots)
+    model.base_cost, model.base_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.base_slots))
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
-    high_cost_swaps = await model.high_cost_swaps()
+    high_cost_swaps = await _run_compute(hass, lambda: model.high_cost_swaps())
     model.swap_slots = high_cost_swaps
-    model.swap_cost, model.swap_flows = await _calculate_cost_and_flows(model, model.swap_slots)
+    model.swap_cost, model.swap_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.swap_slots))
     _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
 
-    lcc_slots = await model.low_cost_charging(base_slots=model.swap_slots)
+    lcc_slots = await _run_compute(hass, lambda: model.low_cost_charging(base_slots=model.swap_slots))
     model.lcc_slots = lcc_slots
-    model.lcc_cost, model.lcc_flows = await _calculate_cost_and_flows(model, model.lcc_slots)
+    model.lcc_cost, model.lcc_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.lcc_slots))
     _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
 
     lcc_raw_cost = model.best_cost
-    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _optimise_discharge(
-        model,
-        base_slots=model.lcc_slots,
-        base_cost=model.lcc_cost,
-        base_raw_cost=lcc_raw_cost,
-        fill_first=False,
+    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _run_compute(
+        hass,
+        lambda: _optimise_discharge(
+            model,
+            base_slots=model.lcc_slots,
+            base_cost=model.lcc_cost,
+            base_raw_cost=lcc_raw_cost,
+            fill_first=False,
+        ),
     )
     _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
 
-    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _optimise_discharge(
-        model,
-        base_slots=model.lcc_slots,
-        base_cost=model.lcc_cost,
-        base_raw_cost=lcc_raw_cost,
-        fill_first=True,
+    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _run_compute(
+        hass,
+        lambda: _optimise_discharge(
+            model,
+            base_slots=model.lcc_slots,
+            base_cost=model.lcc_cost,
+            base_raw_cost=lcc_raw_cost,
+            fill_first=True,
+        ),
     )
     _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
 
@@ -171,10 +222,15 @@ async def optimise(hass: HomeAssistant, now=None):
     model.whole_horizon_flows = None
     whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
     if whole_horizon_beta:
-        model.whole_horizon_slots = await model.whole_horizon()
-        model.whole_horizon_cost, model.whole_horizon_flows = await _calculate_cost_and_flows(
-            model,
-            model.whole_horizon_slots,
+        model.whole_horizon_write_cost = await get_value(
+            hass,
+            CONF_WHOLE_HORIZON_WRITE_COST,
+            default_value=DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
+        )
+        model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
+        model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
+            hass,
+            lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
         )
         _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
         cost_keys.append("whole_horizon_cost")
@@ -185,7 +241,8 @@ async def optimise(hass: HomeAssistant, now=None):
         await _write_status(hass, "Idle")
         return
 
-    optimised_key = min(finite_cost_keys, key=lambda key: getattr(model, key))
+    optimised_key = await _select_optimised_key(hass, model, finite_cost_keys)
+
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
     model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
@@ -205,6 +262,96 @@ async def optimise(hass: HomeAssistant, now=None):
     await _apply_inverter_control(hass, model)
 
 
+async def _select_optimised_key(hass: HomeAssistant, model, finite_cost_keys: list[str]) -> str:
+    """Choose the plan to apply, bounding how much a rapid-alternation swap may cost.
+
+    The cheapest plan wins unless it alternates rapidly. If it does, the
+    cheapest non-rapid alternative is substituted only when doing so costs no
+    more than the configured threshold in raw pence across the horizon.
+    Otherwise the original is kept: bounded inverter churn is preferable to an
+    unbounded financial regression, and the previous unbounded substitution
+    once replaced a -61p plan with a +15p one, taking the overnight charge with
+    it.
+
+    Deltas here are raw money only. Write penalties are reported separately and
+    must not be folded into this comparison.
+    """
+    winner = min(finite_cost_keys, key=lambda key: getattr(model, key))
+    if not _flows_have_rapid_alternation(_flows_for_key(model, winner)):
+        return winner
+
+    safe_keys = [
+        key
+        for key in finite_cost_keys
+        if not _flows_have_rapid_alternation(_flows_for_key(model, key))
+    ]
+    rapid_summary = _rapid_alternation_summary(_flows_for_key(model, winner))
+
+    if not safe_keys:
+        _LOGGER.warning(
+            "All optimiser outputs alternate rapidly; keeping %s (%.1fp). %s",
+            winner,
+            getattr(model, winner),
+            rapid_summary,
+        )
+        return winner
+
+    best_safe = min(safe_keys, key=lambda key: getattr(model, key))
+    winner_cost = float(getattr(model, winner))
+    safe_cost = float(getattr(model, best_safe))
+    delta = safe_cost - winner_cost
+
+    threshold = await get_value(
+        hass,
+        CONF_ALTERNATION_COST_THRESHOLD,
+        default_value=DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
+    )
+    if threshold is None or not _is_finite(threshold):
+        threshold = DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD]
+    threshold = float(threshold)
+
+    if delta <= threshold:
+        _LOGGER.warning(
+            "Replacing rapidly alternating %s (raw %.1fp) with %s (raw %.1fp); "
+            "delta %.1fp within %.1fp threshold. %s",
+            winner,
+            winner_cost,
+            best_safe,
+            safe_cost,
+            delta,
+            threshold,
+            rapid_summary,
+        )
+        return best_safe
+
+    _LOGGER.warning(
+        "Keeping rapidly alternating %s (raw %.1fp): cheapest non-alternating "
+        "option %s (raw %.1fp) would cost %.1fp more, exceeding the %.1fp "
+        "threshold. %s",
+        winner,
+        winner_cost,
+        best_safe,
+        safe_cost,
+        delta,
+        threshold,
+        rapid_summary,
+    )
+    return winner
+
+
+def _flows_for_key(model, cost_key: str) -> pd.DataFrame | None:
+    return getattr(model, cost_key.replace("_cost", "_flows"), None)
+
+
+def _rapid_alternation_summary(flows: pd.DataFrame | None) -> str:
+    windows = _control_windows(flows)
+    if not windows:
+        return "No control windows."
+    return "Windows: " + ", ".join(
+        f"{window['state']} {window['start']}-{window['end']}" for window in windows
+    )
+
+
 async def _write_status(hass: HomeAssistant, state: str) -> None:
     sensor_entities = hass.data.get(DOMAIN, {}).get(COST_ENTITY_OBJECTS, {})
     entity = sensor_entities.get(CONTROL_STATE)
@@ -218,6 +365,9 @@ def _is_unloading(hass: HomeAssistant) -> bool:
 
 async def _write_cost_entities(hass: HomeAssistant, model) -> None:
     cost_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
+    if not cost_entities:
+        _LOGGER.warning("No Miser sensor entity objects are available; optimiser attributes were not written")
+        return
 
     for key in [
         "base_cost",
@@ -231,14 +381,31 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
         entity = cost_entities.get(key)
         if entity is not None:
             flows = getattr(model, key.replace("_cost", "_flows"), None)
+            slots = _serialise_slots(flows, merge=key == "optimised_cost")
+            serialised_flows = _serialise_flows(flows)
             await entity.async_set_native_value(
                 getattr(model, key, None),
-                slots=_serialise_slots(flows, merge=key == "optimised_cost"),
-                flows=_serialise_flows(flows),
+                slots=slots,
+                flows=serialised_flows,
+            )
+            _LOGGER.debug(
+                "Updated %s attributes: %d slots, %d flows",
+                key,
+                len(slots),
+                len(serialised_flows),
             )
 
 
 async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: bool = True) -> None:
+    # Optimiser runs and compliance callbacks can overlap now that a write is
+    # read back before returning; serialise them so two writers never race on
+    # the inverter's single timed-charge slot.
+    lock = hass.data[DOMAIN].setdefault("inverter_control_lock", asyncio.Lock())
+    async with lock:
+        await _apply_inverter_control_unlocked(hass, model, schedule_checks)
+
+
+async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_checks: bool) -> None:
     inverter_controller = hass.data[DOMAIN].get("inverter_controller")
     if inverter_controller is None:
         _LOGGER.warning("No inverter controller is available; unable to apply optimised controls")
@@ -248,14 +415,12 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     control_slots = _control_slots(model.optimised_flows)
     now = pd.Timestamp.now(tz="UTC")
     current_slot = _find_current_control_slot(control_slots, now)
-    axle_window = axle_vpp_control_window(hass)
-    if axle_window is not None and _timestamp_in_window(now, axle_window):
-        await _cede_inverter_control_to_axle(hass, inverter_controller, control_slots, axle_window, now)
-        return
 
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
-    desired_target_soc = current_slot["target_soc"] if current_slot is not None else None
+    # Report the window's terminal target, not the current fragment's, so the
+    # reported target matches what is programmed into the inverter.
+    desired_target_soc = _control_window_target_soc(current_slot) if current_slot is not None else None
     desired_current = await _power_to_current(inverter_controller, desired_power)
 
     await _write_control_entities(
@@ -278,13 +443,6 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
     )
     apply_window = pd.Timedelta(minutes=optimiser_minutes)
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
-    if axle_window is not None:
-        original_count = len(slots_to_apply)
-        slots_to_apply = [
-            slot for slot in slots_to_apply if not _slot_overlaps_window(slot, axle_window)
-        ]
-        if len(slots_to_apply) != original_count:
-            _LOGGER.debug("Skipping inverter writes for Miser slots overlapping Axle VPP event window")
 
     if schedule_checks:
         _schedule_control_compliance_checks(hass, control_slots)
@@ -308,74 +466,98 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
             _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
         return
 
+    all_confirmed = True
     for slot in slots_to_apply:
-        try:
-            _LOGGER.debug(
-                "Applying inverter control: %s %s-%s %.1fW %.2fA target %.1f%%",
-                slot["state"],
-                slot["start"],
-                slot["end"],
-                slot["power"],
-                await _power_to_current(inverter_controller, abs(slot["power"])),
-                slot["target_soc"],
-            )
-            if slot["state"] == "charging":
-                await inverter_controller.control_charge(
-                    slot["start"].to_pydatetime(),
-                    slot["end"].to_pydatetime(),
-                    slot["target_soc"],
-                    slot["power"],
-                )
-            elif slot["state"] == "discharging":
-                await inverter_controller.control_discharge(
-                    slot["start"].to_pydatetime(),
-                    slot["end"].to_pydatetime(),
-                    slot["target_soc"],
-                    abs(slot["power"]),
-                )
-        except (RuntimeError, HomeAssistantError) as err:
-            _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
+        if not await _programme_control_slot(hass, inverter_controller, slot):
+            all_confirmed = False
+
+    if all_confirmed:
+        _clear_control_failure(hass)
+    else:
+        await _write_status(hass, CONTROL_FAILED_STATE)
 
 
-async def _cede_inverter_control_to_axle(
-    hass: HomeAssistant,
-    inverter_controller,
-    control_slots: list[dict],
-    axle_window: dict,
-    now: pd.Timestamp,
-) -> None:
-    await _write_control_entities(
-        hass,
-        state="Axle VPP",
-        force_current=0,
-        force_power=0,
-        target_soc=None,
-        current_slot=None,
-        next_slot=_find_next_control_slot(control_slots, now),
+async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot: dict) -> bool:
+    """Write one control slot to the inverter and confirm it took.
+
+    Programmes the whole control window and its terminal target, but with the
+    power of the segment that is actually running. The write is read back by
+    the controller and retried; an unconfirmed control is reported loudly
+    rather than left showing as `Charging` while the battery sits idle, which
+    is what happened when the inverter silently kept its previous slot.
+    """
+    window_start = _control_window_start(slot)
+    window_end = _control_window_end(slot)
+    window_target_soc = _control_window_target_soc(slot)
+    power = abs(slot["power"])
+    description = (
+        f"{slot['state']} window {window_start}-{window_end} (segment {slot['start']}-{slot['end']}) "
+        f"{slot['power']:.1f}W target {window_target_soc:.1f}%"
     )
 
-    if now >= axle_window["event_start"]:
-        _LOGGER.debug("Axle VPP event is active; skipping Miser inverter control writes")
-        return
+    method_name = {"charging": "control_charge", "discharging": "control_discharge"}.get(slot["state"])
+    control = getattr(inverter_controller, method_name, None) if method_name else None
+    if control is None:
+        _LOGGER.warning("Inverter controller cannot apply %s", description)
+        return False
+    confirm = getattr(inverter_controller, "confirm_control", None)
 
-    data = hass.data.get(DOMAIN, {})
-    window_key = f"{axle_window['start'].isoformat()}-{axle_window['end'].isoformat()}"
-    if data.get("axle_vpp_released_window") == window_key:
-        return
+    mismatches: list[str] = []
+    for attempt in range(1, CONTROL_CONFIRM_ATTEMPTS + 1):
+        if _is_unloading(hass):
+            return True
 
+        try:
+            _LOGGER.debug("Applying inverter control (attempt %d/%d): %s", attempt, CONTROL_CONFIRM_ATTEMPTS, description)
+            await control(window_start.to_pydatetime(), window_end.to_pydatetime(), window_target_soc, power)
+            if confirm is None:
+                return True
+            mismatches = await confirm(
+                slot["state"],
+                window_start.to_pydatetime(),
+                window_end.to_pydatetime(),
+                window_target_soc,
+                power,
+            )
+        except (RuntimeError, HomeAssistantError) as err:
+            mismatches = [str(err)]
+
+        if not mismatches:
+            if attempt > 1:
+                _LOGGER.info("Inverter control confirmed on attempt %d: %s", attempt, description)
+            return True
+
+        _LOGGER.warning(
+            "Inverter did not take control (attempt %d/%d): %s. Mismatches: %s",
+            attempt,
+            CONTROL_CONFIRM_ATTEMPTS,
+            description,
+            "; ".join(mismatches),
+        )
+
+    message = f"Inverter did not take {description} after {CONTROL_CONFIRM_ATTEMPTS} attempts: {'; '.join(mismatches)}"
+    _LOGGER.error(message)
+    _notify_control_failure(hass, message)
+    return False
+
+
+def _notify_control_failure(hass: HomeAssistant, message: str) -> None:
     try:
-        if not await inverter_controller.control_matches("idle", None, 0):
-            control_idle = getattr(inverter_controller, "control_idle", None)
-            if control_idle is not None:
-                _LOGGER.info(
-                    "Ceding inverter control to Axle VPP until %s",
-                    axle_window["end"].isoformat(),
-                )
-                await control_idle()
-    except (RuntimeError, HomeAssistantError) as err:
-        _LOGGER.warning("Unable to release inverter control before Axle VPP event: %s", err)
+        persistent_notification.async_create(
+            hass,
+            message,
+            title="Miser inverter control failed",
+            notification_id=CONTROL_FAILED_NOTIFICATION_ID,
+        )
+    except Exception as err:  # noqa: BLE001 - notification is best-effort
+        _LOGGER.debug("Unable to raise control failure notification: %s", err)
 
-    data["axle_vpp_released_window"] = window_key
+
+def _clear_control_failure(hass: HomeAssistant) -> None:
+    try:
+        persistent_notification.async_dismiss(hass, CONTROL_FAILED_NOTIFICATION_ID)
+    except Exception as err:  # noqa: BLE001 - notification is best-effort
+        _LOGGER.debug("Unable to dismiss control failure notification: %s", err)
 
 
 def axle_vpp_control_window(hass: HomeAssistant) -> dict | None:
@@ -428,12 +610,19 @@ def _parse_datetime_state(value) -> pd.Timestamp | None:
     return timestamp.tz_convert("UTC")
 
 
-def _timestamp_in_window(timestamp: pd.Timestamp, window: dict) -> bool:
-    return window["start"] <= timestamp <= window["end"]
+def _control_window_start(slot: dict):
+    """Start of the control window a segment belongs to."""
+    return slot.get("window_start", slot["start"])
 
 
-def _slot_overlaps_window(slot: dict, window: dict) -> bool:
-    return slot["start"] < window["end"] and slot["end"] > window["start"]
+def _control_window_end(slot: dict):
+    """End of the control window a segment belongs to."""
+    return slot.get("window_end", slot["end"])
+
+
+def _control_window_target_soc(slot: dict) -> float:
+    """Terminal SOC of the control window a segment belongs to."""
+    return slot.get("window_target_soc", slot["target_soc"])
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
@@ -528,10 +717,11 @@ async def _write_control_entities(
         CONTROL_FORCE_CURRENT: force_current,
         CONTROL_FORCE_POWER: force_power,
         CONTROL_TARGET_SOC: target_soc,
-        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "start", local_time=True),
-        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "end", local_time=True),
+        # Report the next control window, matching what will be programmed.
+        CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "window_start", local_time=True),
+        CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "window_end", local_time=True),
         CONTROL_NEXT_SLOT_POWER: _slot_value(next_slot, "power"),
-        CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "target_soc"),
+        CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "window_target_soc"),
     }
 
     for key, value in updates.items():
@@ -541,49 +731,194 @@ async def _write_control_entities(
 
 
 def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
+    """Split forced flows into power segments, each tagged with its control window.
+
+    A *control window* is a maximal run of contiguous, same-direction forced
+    flows. A *power segment* subdivides a window wherever the forced power moves
+    outside `_within_power_tolerance`, so the inverter can still be given a
+    current that suits the part of the window actually running.
+
+    Segments keep their own start/end so time-based lookups stay precise, but
+    they also carry the window's start, end, and terminal SOC. The inverter must
+    be programmed from those window values: writing a segment's own end and
+    `soc_end` truncates an in-progress window to the current fragment and sets a
+    target barely above present charge, which stops the very charge it is meant
+    to be running.
+    """
     if flows is None:
         return []
 
-    forced_flows = flows[flows["forced"] != 0]
+    forced_flows = flows[flows["forced"].abs() >= CONTROL_MIN_FORCE_POWER]
     if forced_flows.empty:
         return []
 
     slots = []
-    current_start = None
-    current_end = None
-    current_powers = []
-    current_target_soc = None
+    window_rows: list[tuple] = []
 
     for start, row in forced_flows.iterrows():
         power = float(row.get("forced"))
         end = start + pd.Timedelta(hours=float(row.get("dt_hours")))
+        soc_end = float(row.get("soc_end"))
+        price = _control_price(row, power)
 
-        if (
-            current_start is None
-            or start != current_end
-            or not _same_force_direction(power, current_powers[-1])
-            or not _within_power_tolerance(power, sum(current_powers) / len(current_powers))
+        if window_rows and (
+            start != window_rows[-1][1]
+            or not _same_force_direction(power, window_rows[-1][2])
+            or not _same_price_period(price, window_rows[0][4])
         ):
-            if current_start is not None:
-                slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+            slots.extend(_window_control_slots(window_rows))
+            window_rows = []
 
-            current_start = start
-            current_end = end
-            current_powers = [power]
-            current_target_soc = float(row.get("soc_end"))
-            continue
+        window_rows.append((start, end, power, soc_end, price))
 
-        current_end = end
-        current_powers.append(power)
-        current_target_soc = float(row.get("soc_end"))
-
-    if current_start is not None:
-        slots.append(_build_control_slot(current_start, current_end, current_powers, current_target_soc))
+    slots.extend(_window_control_slots(window_rows))
 
     return slots
 
 
-def _build_control_slot(start, end, powers: list[float], target_soc: float) -> dict:
+def _control_price(row, power: float) -> float | None:
+    """The tariff a forced flow is priced against: import for charge, export for discharge."""
+    value = row.get("import" if power > 0 else "export")
+    if value is None or not _is_finite(value):
+        return None
+    return float(value)
+
+
+def _same_price_period(price: float | None, window_price: float | None) -> bool:
+    """A control window never spans a price change.
+
+    The window is what gets programmed into the inverter, and the inverter will
+    keep running it if Miser stops. A window that ran on past the end of the
+    cheap rate once handed the inverter a 00:30-17:00 grid charge, which it
+    rejected outright. Flows without prices are not split.
+    """
+    if price is None or window_price is None:
+        return True
+    return abs(price - window_price) <= PRICE_PERIOD_TOLERANCE
+
+
+def _window_control_slots(window_rows: list[tuple]) -> list[dict]:
+    """Build the power segments for one control window."""
+    if not window_rows:
+        return []
+
+    window_start = window_rows[0][0]
+    window_end = window_rows[-1][1]
+    window_target_soc = window_rows[-1][3]
+
+    slots = []
+    segment: list[tuple] = []
+
+    for entry in window_rows:
+        power = entry[2]
+        if segment and not _within_power_tolerance(power, sum(row[2] for row in segment) / len(segment)):
+            slots.append(_build_segment_slot(segment, window_start, window_end, window_target_soc))
+            segment = []
+
+        segment.append(entry)
+
+    if segment:
+        slots.append(_build_segment_slot(segment, window_start, window_end, window_target_soc))
+
+    return slots
+
+
+def _build_segment_slot(
+    segment: list[tuple],
+    window_start,
+    window_end,
+    window_target_soc: float,
+) -> dict:
+    return _build_control_slot(
+        segment[0][0],
+        segment[-1][1],
+        [row[2] for row in segment],
+        segment[-1][3],
+        window_start=window_start,
+        window_end=window_end,
+        window_target_soc=window_target_soc,
+    )
+
+
+def _control_windows(flows: pd.DataFrame | None) -> list[dict]:
+    """Collapse control segments into their parent direction windows.
+
+    Derived from `_control_slots` rather than re-deriving in parallel, so the
+    two representations cannot drift. Power-tolerance splits are invisible
+    here: a window changes only when the force direction changes or the flows
+    stop being contiguous.
+    """
+    windows: list[dict] = []
+
+    for slot in _control_slots(flows):
+        start = _control_window_start(slot)
+        end = _control_window_end(slot)
+
+        if windows and windows[-1]["start"] == start and windows[-1]["end"] == end:
+            if windows[-1]["state"] != slot["state"]:
+                # Segments of one window must agree on direction; if they ever
+                # disagree the segmentation upstream is wrong, not the caller.
+                raise ValueError(
+                    f"Control window {start}-{end} contains conflicting states "
+                    f"{windows[-1]['state']} and {slot['state']}"
+                )
+            continue
+
+        windows.append({"start": start, "end": end, "state": slot["state"]})
+
+    return windows
+
+
+def _flows_have_rapid_alternation(flows: pd.DataFrame | None) -> bool:
+    return _has_rapid_alternation(_control_windows(flows))
+
+
+def _has_rapid_alternation(windows: list[dict]) -> bool:
+    """Detect rapid charge/discharge/charge reversal.
+
+    "Rapid" is the elapsed time across *both* transitions of an A -> B -> A
+    triple: from the end of the first A window to the start of the second. That
+    span covers the middle window plus the idle gaps either side, so a brief
+    blip counts while an ordinary daily cycle - discharge evening, charge
+    overnight, discharge next evening - does not, however adjacent its windows
+    happen to be.
+
+    Counting bare transitions instead, as this previously did, rejected the
+    normal daily cycle as churn and cost the overnight charge with it.
+    """
+    if len(windows) < 3:
+        return False
+
+    ordered = sorted(windows, key=lambda window: window["start"])
+
+    for first, middle, last in zip(ordered, ordered[1:], ordered[2:]):
+        if first["state"] != last["state"] or middle["state"] == first["state"]:
+            continue
+
+        span = last["start"] - first["end"]
+        if span <= RAPID_ALTERNATION_HORIZON:
+            _LOGGER.debug(
+                "Rapid alternation: %s -> %s -> %s, span %s <= horizon %s",
+                first["state"],
+                middle["state"],
+                last["state"],
+                span,
+                RAPID_ALTERNATION_HORIZON,
+            )
+            return True
+
+    return False
+
+
+def _build_control_slot(
+    start,
+    end,
+    powers: list[float],
+    target_soc: float,
+    window_start=None,
+    window_end=None,
+    window_target_soc: float | None = None,
+) -> dict:
     power = sum(powers) / len(powers)
     return {
         "start": start,
@@ -591,6 +926,11 @@ def _build_control_slot(start, end, powers: list[float], target_soc: float) -> d
         "state": "charging" if power > 0 else "discharging",
         "power": power,
         "target_soc": target_soc,
+        # Identity of the whole control window this segment belongs to. Falls
+        # back to the segment itself so a single-segment window is unchanged.
+        "window_start": start if window_start is None else window_start,
+        "window_end": end if window_end is None else window_end,
+        "window_target_soc": target_soc if window_target_soc is None else window_target_soc,
     }
 
 
@@ -602,7 +942,13 @@ def _find_current_control_slot(control_slots: list[dict], now: pd.Timestamp) -> 
 
 
 def _find_next_control_slot(control_slots: list[dict], now: pd.Timestamp) -> dict | None:
-    future_slots = [slot for slot in control_slots if slot["start"] > now]
+    """Return the first segment of the next control window.
+
+    Keyed on the window rather than the segment so that, while a window is
+    running, "next slot" means the next window instead of the next power step
+    inside the one already underway.
+    """
+    future_slots = [slot for slot in control_slots if _control_window_start(slot) > now]
     if not future_slots:
         return None
     return min(future_slots, key=lambda slot: slot["start"])
@@ -623,12 +969,21 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
     if slot is None:
         return None
 
+    window_start = _control_window_start(slot)
+    window_end = _control_window_end(slot)
+    window_target_soc = _control_window_target_soc(slot)
+
     return {
         "start": slot["start"].isoformat() if hasattr(slot["start"], "isoformat") else slot["start"],
         "end": slot["end"].isoformat() if hasattr(slot["end"], "isoformat") else slot["end"],
         "state": slot["state"],
         "power": _serialise_number(slot["power"]),
         "target_soc": _serialise_number(slot["target_soc"]),
+        # The window is what gets programmed into the inverter; the segment
+        # above is only the part of it running at this power.
+        "window_start": window_start.isoformat() if hasattr(window_start, "isoformat") else window_start,
+        "window_end": window_end.isoformat() if hasattr(window_end, "isoformat") else window_end,
+        "window_target_soc": _serialise_number(window_target_soc),
     }
 
 
@@ -650,16 +1005,6 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         return
 
     original_control_slots = _control_slots(model.optimised_flows)
-    final_slots = _minimise_inverter_write_slots(model.optimised_flows)
-    if not final_slots:
-        return
-
-    final_cost, final_flows = await _calculate_cost_and_flows(model, final_slots)
-    if not _is_finite(final_cost):
-        _LOGGER.warning("Skipping inverter-write minimisation because finalised cost is not finite")
-        return
-
-    cost_delta = final_cost - model.optimised_cost
     threshold = await get_value(
         hass,
         CONF_WRITE_MINIMISATION_COST_THRESHOLD,
@@ -668,36 +1013,109 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
     if threshold is None or not _is_finite(threshold):
         threshold = CONTROL_PASS_THREHOLD
 
-    if cost_delta > float(threshold):
-        _LOGGER.info(
-            "Skipping inverter-write minimisation: cost delta %.1fp exceeds %.1fp threshold",
+    best_candidate = None
+    for label, final_slots in _minimise_inverter_write_slot_candidates(model.optimised_flows):
+        if not final_slots:
+            continue
+
+        final_cost, final_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, final_slots))
+        if not _is_finite(final_cost):
+            _LOGGER.warning("Skipping %s inverter-write minimisation because finalised cost is not finite", label)
+            continue
+
+        cost_delta = final_cost - model.optimised_cost
+        final_control_slots = _control_slots(final_flows)
+        if cost_delta > float(threshold):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: cost delta %.1fp exceeds %.1fp threshold",
+                label,
+                cost_delta,
+                float(threshold),
+            )
+            continue
+
+        if _has_rapid_alternation(_control_windows(final_flows)):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: finalised output would alternate charge/discharge rapidly",
+                label,
+            )
+            continue
+
+        if len(final_control_slots) > len(original_control_slots):
+            _LOGGER.info(
+                "Skipping %s inverter-write minimisation: control slots would increase from %s to %s",
+                label,
+                len(original_control_slots),
+                len(final_control_slots),
+            )
+            continue
+
+        candidate = (
+            len(final_control_slots),
             cost_delta,
-            float(threshold),
+            label,
+            final_slots,
+            final_cost,
+            final_flows,
+            final_control_slots,
         )
+        if best_candidate is None or candidate[:2] < best_candidate[:2]:
+            best_candidate = candidate
+
+    if best_candidate is None:
         return
 
-    final_control_slots = _control_slots(final_flows)
-    if len(final_control_slots) > len(original_control_slots):
-        _LOGGER.info(
-            "Skipping inverter-write minimisation: control slots would increase from %s to %s",
-            len(original_control_slots),
-            len(final_control_slots),
-        )
-        return
+    (
+        _slot_count,
+        cost_delta,
+        label,
+        final_slots,
+        final_cost,
+        final_flows,
+        final_control_slots,
+    ) = best_candidate
 
     model.optimised_slots = final_slots
     model.optimised_cost = final_cost
     model.optimised_flows = final_flows
     model.best_cost = final_cost
     _LOGGER.info(
-        "Finalised optimiser output: control slots %s -> %s, cost delta %.1fp",
+        "Finalised optimiser output with %s minimisation: control slots %s -> %s, cost delta %.1fp",
+        label,
         len(original_control_slots),
         len(final_control_slots),
         cost_delta,
     )
 
 
-def _minimise_inverter_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+def _minimise_inverter_write_slot_candidates(flows: pd.DataFrame) -> list[tuple[str, list[tuple[pd.Timestamp, float]]]]:
+    return [
+        ("discharge-price-period", _minimise_discharge_price_period_write_slots(flows)),
+        ("price-period", _minimise_price_period_write_slots(flows)),
+        ("campaign", _minimise_campaign_write_slots(flows)),
+    ]
+
+
+def _minimise_discharge_price_period_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    final_forced = flows["forced"].copy()
+    final_forced.loc[final_forced < 0] = 0.0
+
+    for period in _similar_price_periods(flows, direction=-1, price_col="export"):
+        forced = period["forced"]
+        selected = forced[forced < 0]
+        if selected.empty:
+            continue
+
+        energy_wh = float((selected.abs() * period.loc[selected.index, "dt_hours"]).sum())
+        if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+            continue
+
+        _defer_discharge_within_period(final_forced, period, energy_wh, selected)
+
+    return _forced_slots_from_series(final_forced)
+
+
+def _minimise_price_period_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
     final_forced = pd.Series(index=flows.index, data=0.0)
 
     for direction, price_col in ((1, "import"), (-1, "export")):
@@ -716,9 +1134,33 @@ def _minimise_inverter_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timesta
             else:
                 _defer_discharge_within_period(final_forced, period, energy_wh, selected)
 
+    return _forced_slots_from_series(final_forced)
+
+
+def _minimise_campaign_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
+    final_forced = pd.Series(index=flows.index, data=0.0)
+
+    for period in _similar_price_periods(flows, direction=1, price_col="import"):
+        forced = period["forced"]
+        selected = forced[forced > 0]
+        if selected.empty:
+            continue
+
+        energy_wh = float((selected.abs() * period.loc[selected.index, "dt_hours"]).sum())
+        if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+            continue
+
+        _spread_charge_across_period(final_forced, period, energy_wh)
+
+    _defer_discharge_campaigns(final_forced, flows)
+
+    return _forced_slots_from_series(final_forced)
+
+
+def _forced_slots_from_series(forced: pd.Series) -> list[tuple[pd.Timestamp, float]]:
     return [
         (start, round(float(power), 0))
-        for start, power in final_forced.items()
+        for start, power in forced.items()
         if abs(float(power)) >= MODEL_MIN_SLOT_POWER
     ]
 
@@ -779,31 +1221,127 @@ def _defer_discharge_within_period(
     if power_limit < MODEL_MIN_SLOT_POWER:
         return
 
-    target_duration_hours = energy_wh / power_limit
-    selected_rows = []
-    selected_duration_hours = 0.0
+    block_end = period.index[-1] + pd.Timedelta(hours=float(period.iloc[-1].get("dt_hours", 0)))
+    _defer_discharge_energy(final_forced, period, block_end, energy_wh, power_limit)
 
-    for start, row in reversed(list(period.iterrows())):
-        if selected_duration_hours >= target_duration_hours:
-            break
-        if final_forced.loc[start] != 0:
+
+def _defer_discharge_campaigns(final_forced: pd.Series, flows: pd.DataFrame) -> None:
+    campaign_rows = []
+
+    for start, row in flows.iterrows():
+        if final_forced.loc[start] > 0:
+            _schedule_deferred_discharge_campaign(final_forced, flows.loc[campaign_rows], start)
+            campaign_rows = []
             continue
 
-        dt_hours = float(row.get("dt_hours", 0))
-        if dt_hours <= 0:
-            continue
+        campaign_rows.append(start)
 
-        selected_rows.append(start)
-        selected_duration_hours += dt_hours
+    if campaign_rows:
+        last_start = campaign_rows[-1]
+        campaign_end = last_start + pd.Timedelta(hours=float(flows.loc[last_start, "dt_hours"]))
+        _schedule_deferred_discharge_campaign(final_forced, flows.loc[campaign_rows], campaign_end)
 
-    if selected_duration_hours <= 0:
+
+def _schedule_deferred_discharge_campaign(
+    final_forced: pd.Series,
+    campaign: pd.DataFrame,
+    campaign_end: pd.Timestamp,
+) -> None:
+    if campaign.empty:
         return
 
-    power = energy_wh / selected_duration_hours
+    forced = campaign["forced"]
+    selected = forced[forced < 0]
+    if selected.empty:
+        return
+
+    energy_wh = float((selected.abs() * campaign.loc[selected.index, "dt_hours"]).sum())
+    if energy_wh < MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+        return
+
+    power_limit = float(selected.abs().max())
+    if power_limit < MODEL_MIN_SLOT_POWER:
+        return
+
+    max_export = float(campaign["export"].max())
+    min_export = float(campaign["export"].min())
+    if max_export > min_export + PRICE_PERIOD_TOLERANCE:
+        high_export_rows = campaign[campaign["export"] >= max_export - PRICE_PERIOD_TOLERANCE]
+        if not high_export_rows.empty:
+            high_selected = selected[selected.index.isin(high_export_rows.index)]
+            if not high_selected.empty:
+                high_energy_wh = float(
+                    (high_selected.abs() * campaign.loc[high_selected.index, "dt_hours"]).sum()
+                )
+                _spread_discharge_across_rows(
+                    final_forced,
+                    high_export_rows,
+                    high_energy_wh,
+                    power_limit,
+                )
+                remaining_energy_wh = energy_wh - high_energy_wh
+                post_high_rows = campaign[campaign.index > high_export_rows.index[-1]]
+                if remaining_energy_wh >= MODEL_MIN_SLOT_POWER * MODEL_PERIOD_MINUTES / 60:
+                    if not post_high_rows.empty:
+                        _defer_discharge_energy(
+                            final_forced,
+                            post_high_rows,
+                            campaign_end,
+                            remaining_energy_wh,
+                            power_limit,
+                        )
+                    else:
+                        pre_high_rows = campaign[campaign.index < high_export_rows.index[0]]
+                        _defer_discharge_energy(
+                            final_forced,
+                            pre_high_rows,
+                            high_export_rows.index[0],
+                            remaining_energy_wh,
+                            power_limit,
+                        )
+                return
+
+    _defer_discharge_energy(final_forced, campaign, campaign_end, energy_wh, power_limit)
+
+
+def _defer_discharge_energy(
+    final_forced: pd.Series,
+    rows: pd.DataFrame,
+    block_end: pd.Timestamp,
+    energy_wh: float,
+    power_limit: float,
+) -> None:
+    if rows.empty:
+        return
+
+    block_start = block_end - pd.Timedelta(hours=energy_wh / power_limit)
+    row_ends = rows.index.to_series() + pd.to_timedelta(rows["dt_hours"], unit="h")
+    block_rows = rows[(rows.index < block_end) & (row_ends > block_start)]
+    if block_rows.empty:
+        return
+
+    duration_hours = float(block_rows["dt_hours"].sum())
+    if duration_hours <= 0:
+        return
+
+    _spread_discharge_across_rows(final_forced, block_rows, energy_wh, power_limit)
+
+
+def _spread_discharge_across_rows(
+    final_forced: pd.Series,
+    rows: pd.DataFrame,
+    energy_wh: float,
+    power_limit: float,
+) -> None:
+    duration_hours = float(rows["dt_hours"].sum())
+    if duration_hours <= 0:
+        return
+
+    power = energy_wh / duration_hours
     if power < MODEL_MIN_SLOT_POWER or power > power_limit + 0.1:
         return
 
-    for start in selected_rows:
+    for start in rows.index:
         final_forced.loc[start] = -power
 
 
@@ -864,69 +1402,21 @@ async def _optimise_discharge(
 async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:
     net_cost = await model.net_cost(slots=slots)
     flows = await model.flows(slots=slots)
-    terminal_penalty = _terminal_battery_penalty(model, flows)
-    cost = net_cost.sum() + terminal_penalty
+    terminal_energy = float(flows["chg_end"].iloc[-1]) if not flows.empty else float("nan")
+    terminal_value = model.terminal_soc_value(terminal_energy)
+    cost = net_cost.sum() + terminal_value
     if not _is_finite(cost):
         _LOGGER.warning("Calculated non-finite optimiser cost; rejecting candidate")
         return float("inf"), flows
-    if terminal_penalty:
+    if terminal_value:
+        # Positive = deficit penalty; negative = surplus credit.
         _LOGGER.debug(
-            "Terminal battery penalty: %6.1fp, terminal SOC: %5.1f%%",
-            terminal_penalty,
+            "Terminal SoC %s: %6.1fp, terminal SOC: %5.1f%%",
+            "penalty" if terminal_value > 0 else "credit",
+            terminal_value,
             flows["soc_end"].iloc[-1],
         )
     return cost, flows
-
-
-def _terminal_battery_penalty(model, flows: pd.DataFrame) -> float:
-    valuation_prices = getattr(model, "valuation_prices", None)
-    if flows is None or flows.empty or valuation_prices is None or valuation_prices.empty:
-        return 0.0
-
-    terminal_energy = float(flows["chg_end"].iloc[-1])
-    target_energy = float(model.initial_soc) / 100 * model.battery.capacity
-    if not _is_finite(terminal_energy) or not _is_finite(target_energy):
-        return 0.0
-    deficit_wh = max(target_energy - terminal_energy, 0)
-    if deficit_wh <= 0:
-        return 0.0
-
-    charge_power = min(model.battery.max_charge_power, model.inverter.charger_power)
-    remaining_wh = deficit_wh
-    penalty = 0.0
-
-    prices = valuation_prices.copy()
-    if "dt_hours" not in prices.columns:
-        prices["dt_hours"] = _price_dt_hours(prices)
-
-    for _start, row in prices.sort_values("import").iterrows():
-        if remaining_wh <= 0:
-            break
-
-        dt_hours = float(row["dt_hours"])
-        if not _is_finite(dt_hours) or not _is_finite(row["import"]):
-            continue
-        battery_wh = min(remaining_wh, charge_power * dt_hours * model.inverter.charger_efficiency)
-        grid_kwh = battery_wh / model.inverter.charger_efficiency / 1000
-        penalty += grid_kwh * float(row["import"])
-        remaining_wh -= battery_wh
-
-    if remaining_wh > 0:
-        fallback_price = float(prices["import"].max())
-        if not _is_finite(fallback_price):
-            return penalty
-        grid_kwh = remaining_wh / model.inverter.charger_efficiency / 1000
-        penalty += grid_kwh * fallback_price
-
-    return penalty
-
-
-def _price_dt_hours(prices: pd.DataFrame) -> pd.Series:
-    if len(prices.index) < 2:
-        return pd.Series(index=prices.index, data=MODEL_PERIOD_MINUTES / 60)
-
-    dt_hours = -prices.index.to_series().diff(-1) / pd.Timedelta("60min")
-    return dt_hours.ffill().fillna(MODEL_PERIOD_MINUTES / 60)
 
 
 def _serialise_slots(flows: pd.DataFrame | None, merge: bool = False) -> list[dict]:
@@ -1224,8 +1714,32 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     prices = pd.concat(price.values(), axis=1)
     if "export" not in prices.columns:
         prices["export"] = 0
+    _apply_axle_vpp_export_price(hass, prices, freq)
     hass.data[DOMAIN]["model"].prices = prices.loc[start : end - freq]
     hass.data[DOMAIN]["model"].valuation_prices = prices.loc[end : valuation_end - freq]
+
+
+def _apply_axle_vpp_export_price(hass: HomeAssistant, prices: pd.DataFrame, freq: pd.Timedelta) -> None:
+    """Value export during an Axle VPP session at the fixed Axle session price."""
+    axle_window = axle_vpp_control_window(hass)
+    if axle_window is None:
+        return
+
+    session_start = axle_window["event_start"]
+    session_end = axle_window["event_end"]
+    slot_ends = prices.index + freq
+    mask = (prices.index < session_end) & (slot_ends > session_start)
+    if not mask.any():
+        return
+
+    prices.loc[mask, "export"] = AXLE_VPP_EXPORT_PRICE
+    _LOGGER.info(
+        "Applied Axle VPP export price %.1fp/kWh to %d optimiser price slots from %s to %s",
+        AXLE_VPP_EXPORT_PRICE,
+        int(mask.sum()),
+        session_start.isoformat(),
+        session_end.isoformat(),
+    )
 
 
 async def _get_hass_power_from_daily_kwh(

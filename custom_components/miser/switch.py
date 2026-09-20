@@ -2,6 +2,7 @@ import asyncio
 import logging
 
 from homeassistant.components.switch import SwitchEntity
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
@@ -15,15 +16,20 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     Set up switch entities from a config entry.
     """
     uuid = None
-    while uuid is None:
+    for _ in range(30):
         uuid = hass.data.get(DOMAIN, {}).get("uuid", None)
+        if uuid is not None:
+            break
         await asyncio.sleep(1)
+    if uuid is None:
+        raise ConfigEntryNotReady("Miser setup data was not initialised")
 
     entities_to_add = [
         # Create and add the new entity
         OptimiserSwitch(
             config_entry,
             unique_id=f"{DOMAIN}.{uuid}_{name.lower().replace(" ","_")}",
+            key=name,
             name=name,
             default_state=entity["default"],
         )
@@ -39,7 +45,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     # Checking the entity registry should handle duplicates better
     for entity in entities_to_add:
-        hass.data[DOMAIN]["config_entities"][entity._attr_name] = entity_registry.async_get_entity_id(
+        hass.data[DOMAIN]["config_entities"][entity.key] = entity_registry.async_get_entity_id(
             "switch", DOMAIN, entity.unique_id
         )
 
@@ -53,6 +59,7 @@ class OptimiserSwitch(MiserEntity, SwitchEntity):
         self,
         config_entry,
         unique_id: str,
+        key: str,
         name: str,
         default_state,
     ):
@@ -61,6 +68,7 @@ class OptimiserSwitch(MiserEntity, SwitchEntity):
             unique_id,
             name,
         )
+        self.key = key
         self._attr_is_on = default_state
 
     async def async_turn_on(self, **kwargs):

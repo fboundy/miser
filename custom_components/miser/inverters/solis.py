@@ -1,4 +1,5 @@
 from abc import abstractmethod
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, ClassVar
@@ -52,12 +53,23 @@ SOLIS_CONNECT_CLOCK_HOURS = "clock_hours"
 SOLIS_CONNECT_CLOCK_MINUTES = "clock_minutes"
 SOLIS_CONNECT_CLOCK_SECONDS = "clock_seconds"
 
+# How long to wait after writing before reading the inverter back. The Solis
+# integrations update their control entities optimistically on write, so a
+# read taken sooner than the next register poll only echoes what we sent.
+# SolisConnect polls the timed-charge block every 30 s.
+CONTROL_CONFIRM_DELAY_SECONDS = 45
+CONTROL_CONFIRM_CURRENT_TOLERANCE = 0.2  # A
+CONTROL_CONFIRM_SOC_TOLERANCE = 1  # %
+
 
 class SolisInverter(InverterController):
     """Base class for Solis inverter controller integrations."""
 
     brand: ClassVar[str] = "solis"
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {}
+    # Inverter mode that a timed charge/discharge requires, or None when the
+    # controller does not set one.
+    control_mode: ClassVar[str | None] = None
 
     def __init__(self, hass, integration_data: dict | None = None) -> None:
         self.hass = hass
@@ -118,6 +130,100 @@ class SolisInverter(InverterController):
     async def get_mode(self) -> str:
         raise NotImplementedError
 
+    async def confirm_control(
+        self,
+        state: str,
+        start: datetime,
+        end: datetime,
+        target_soc: float,
+        power: float,
+    ) -> list[str]:
+        await asyncio.sleep(CONTROL_CONFIRM_DELAY_SECONDS)
+        return await self._control_mismatches(state, start, end, target_soc, power)
+
+    async def _control_mismatches(
+        self,
+        state: str,
+        start: datetime,
+        end: datetime,
+        target_soc: float,
+        power: float,
+    ) -> list[str]:
+        """Compare the requested control with what the integration now reports."""
+        if state == "charging":
+            enable_key = CONTROL_TIMED_CHARGE_ON
+            start_keys = (CONTROL_TIMED_CHARGE_START_HOURS, CONTROL_TIMED_CHARGE_START_MINUTES)
+            end_keys = (CONTROL_TIMED_CHARGE_END_HOURS, CONTROL_TIMED_CHARGE_END_MINUTES)
+            current_key = CONTROL_TIMED_CHARGE_CURRENT
+            soc_key = CONTROL_TIMED_CHARGE_SOC
+        elif state == "discharging":
+            enable_key = CONTROL_TIMED_DISCHARGE_ON
+            start_keys = (CONTROL_TIMED_DISCHARGE_START_HOURS, CONTROL_TIMED_DISCHARGE_START_MINUTES)
+            end_keys = (CONTROL_TIMED_DISCHARGE_END_HOURS, CONTROL_TIMED_DISCHARGE_END_MINUTES)
+            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
+            soc_key = CONTROL_TIMED_DISCHARGE_SOC
+        else:
+            return [f"unsupported control state {state!r}"]
+
+        mismatches = []
+
+        if self.control_mode is not None:
+            mode = await self.get_mode()
+            if mode != self.control_mode:
+                mismatches.append(f"mode is {mode!r}, expected {self.control_mode!r}")
+
+        if self._entity_id(enable_key) is not None and not self._switch_on(enable_key):
+            mismatches.append(f"{state} enable switch is off")
+
+        for label, keys, requested in (("start", start_keys, start), ("end", end_keys, end)):
+            if self._entity_id(keys[0]) is None:
+                continue
+            requested_local = dt_util.as_local(requested)
+            actual = self._programmed_time(*keys)
+            if actual != (requested_local.hour, requested_local.minute):
+                actual_text = "unavailable" if actual is None else f"{actual[0]:02d}:{actual[1]:02d}"
+                mismatches.append(f"{label} is {actual_text}, expected {requested_local.strftime('%H:%M')}")
+
+        actual_soc = self._numeric_state(soc_key)
+        expected_soc = self._target_soc(target_soc)
+        if actual_soc is None or abs(actual_soc - expected_soc) > CONTROL_CONFIRM_SOC_TOLERANCE:
+            mismatches.append(f"target SOC is {actual_soc}, expected {expected_soc}")
+
+        requested_current = await self._power_to_current(power)
+        actual_current = self._numeric_state(current_key)
+        if actual_current is None or abs(actual_current - requested_current) > CONTROL_CONFIRM_CURRENT_TOLERANCE:
+            mismatches.append(f"current is {actual_current}A, expected {requested_current:.1f}A")
+
+        return mismatches
+
+    def _programmed_time(self, hours_key: str, minutes_key: str) -> tuple[int, int] | None:
+        """Read back a programmed time as (hour, minute).
+
+        Integrations expose either a single `time.*` entity under the hours key
+        or separate hour and minute `number.*` entities.
+        """
+        entity_id = self._entity_id(hours_key)
+        state = self._state(entity_id)
+        if not self._is_available(state):
+            return None
+
+        if entity_id.startswith("time."):
+            parsed = dt_util.parse_time(state.state)
+            if parsed is None:
+                return None
+            return parsed.hour, parsed.minute
+
+        minutes = self._numeric_state(minutes_key) if self._entity_id(minutes_key) is not None else 0
+        try:
+            hours = float(state.state)
+        except (TypeError, ValueError):
+            return None
+        if minutes is None:
+            return None
+        return int(hours), int(minutes)
+
+    # Writes are blocking so an integration that fails to reach the inverter
+    # raises here instead of silently dropping the command.
     async def _set_number(self, key: str, value: float) -> None:
         await self.hass.services.async_call(
             "number",
@@ -221,6 +327,13 @@ class SolisInverter(InverterController):
 
     def _is_available(self, state) -> bool:
         return state is not None and state.state.lower() not in UNAVAILABLE_UNKNOWN
+
+    def _switch_on(self, key: str) -> bool:
+        entity_id = self._entity_id(key)
+        if entity_id is None:
+            return False
+        state = self._state(entity_id)
+        return state is not None and state.state.lower() == "on"
 
 
 class SolisSolaxModbusInverter(SolisInverter):
@@ -428,18 +541,12 @@ class SolisSolaxModbusInverter(SolisInverter):
                 continue
         return None
 
-    def _switch_on(self, key: str) -> bool:
-        entity_id = self._entity_id(key)
-        if entity_id is None:
-            return False
-        state = self._state(entity_id)
-        return state is not None and state.state.lower() == "on"
-
 
 class SolisCloudInverter(SolisInverter):
     """Solis inverter controlled through the Solis integration."""
 
     integration: ClassVar[str] = "solis"
+    control_mode: ClassVar[str | None] = SOLIS_CLOUD_TIMED_MODE
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {
         "model_entities": {
             MODEL_BATTERY_SOC: "sensor.{device_name}_solis_remaining_battery_capacity",
@@ -543,6 +650,7 @@ class SolisConnectInverter(SolisInverter):
     """Solis inverter controlled through the SolisConnect integration."""
 
     integration: ClassVar[str] = "solisconnect"
+    control_mode: ClassVar[str | None] = SOLIS_CONNECT_IDLE_MODE
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {
         "model_entities": {
             MODEL_BATTERY_SOC: "sensor.{device_name}_battery_soc",
@@ -717,13 +825,6 @@ class SolisConnectInverter(SolisInverter):
     async def _set_self_use_mode(self) -> None:
         if await self.get_mode() != SOLIS_CONNECT_IDLE_MODE:
             await self.set_mode(SOLIS_CONNECT_IDLE_MODE)
-
-    def _switch_on(self, key: str) -> bool:
-        entity_id = self._entity_id(key)
-        if entity_id is None:
-            return False
-        state = self._state(entity_id)
-        return state is not None and state.state.lower() == "on"
 
 
 SOLIS_INVERTER_CLASSES = {
