@@ -67,8 +67,10 @@ def setup_custom_logging():
     log_filename = f"/config/{DOMAIN}.log"
     file_handler = RotatingFileHandler(
         log_filename,
-        maxBytes=2**20,
-        backupCount=3,
+        # ~2 days of DEBUG output: an overnight incident must still be readable
+        # the next afternoon. 1 MB x 3 rotated away in under two hours.
+        maxBytes=5 * 2**20,
+        backupCount=12,
         mode="a",
     )
 
@@ -168,16 +170,28 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN]["setup_in_progress"] = False
         hass.data[DOMAIN]["setup_complete"] = True
         return True
+    except ConfigEntryNotReady as err:
+        # Home Assistant retries these with back-off; say why each time so a
+        # retry loop is visible in the log rather than a silent 27-hour outage.
+        _LOGGER.warning("Miser setup not ready, Home Assistant will retry: %s", err)
+        if platforms_forwarded:
+            with suppress(Exception):
+                await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+        raise
     except Exception:
-        data = hass.data.get(DOMAIN, {})
-        if data.get("entry_id") == entry.entry_id:
-            data["setup_in_progress"] = False
-            data["setup_complete"] = False
         if platforms_forwarded:
             with suppress(Exception):
                 await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
         _LOGGER.exception("Miser setup failed")
         raise
+    finally:
+        # Also runs on cancellation, which `except Exception` does not catch.
+        # A setup_in_progress flag left True makes every retry raise
+        # ConfigEntryNotReady("already in progress") until HA is restarted.
+        data = hass.data.get(DOMAIN, {})
+        if data.get("entry_id") == entry.entry_id and not data.get("setup_complete"):
+            data["setup_in_progress"] = False
+            data["setup_complete"] = False
 
 
 async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):

@@ -10,13 +10,15 @@ and a target SOC about one percent above present charge.
 import pandas as pd
 import pytest
 
-from custom_components.miser.const import COST_ENTITY_OBJECTS, DOMAIN
+from custom_components.miser.const import CONTROL_STATE, COST_ENTITY_OBJECTS, DOMAIN
 from custom_components.miser.optimiser import (
+    CONTROL_CONFIRM_ATTEMPTS,
+    CONTROL_FAILED_STATE,
+    CONTROL_MIN_FORCE_POWER,
     _apply_inverter_control,
     _control_slots,
     _find_current_control_slot,
     _find_next_control_slot,
-    _programmed_window_overlaps,
     _slots_to_apply,
 )
 
@@ -192,40 +194,92 @@ def test_single_segment_window_is_unchanged() -> None:
     assert slot["target_soc"] == slot["window_target_soc"] == 29.0
 
 
-# --- Axle VPP exclusion must use the interval that is actually programmed ---
+# --- A window never spans a price change, and trickles are not controls ---
 
 
-def test_axle_overlap_uses_programmed_window_not_segment() -> None:
-    """An event clear of the running segment can still overlap the window.
+def _priced_flows(rows: list[tuple[str, float, float, float]]) -> pd.DataFrame:
+    """Build flows from (start, forced_power, soc_end, import_price) rows."""
+    frame = _flows([(start, power, soc) for start, power, soc, _ in rows])
+    frame["import"] = [price for *_, price in rows]
+    frame["export"] = 15.0
+    return frame
 
-    The inverter is programmed with the whole window, so excluding on segment
-    bounds would let the early segment through and then programme straight
-    across the Axle event.
+
+def test_window_is_capped_at_the_end_of_its_price_period() -> None:
+    """The 2026-09-19 incident: cheap-rate charge merged with daytime charging.
+
+    Contiguous forced charge ran from 00:30 to 17:00 across the end of the
+    cheap rate, so the inverter was handed a 16.5 h grid charge (which it
+    rejected). The window must stop where the price changes.
     """
+    flows = _priced_flows(
+        [
+            ("2026-09-19 23:30", 3000.0, 30.0, 8.5),
+            ("2026-09-20 00:00", 3000.0, 45.0, 8.5),
+            ("2026-09-20 00:30", 3000.0, 60.0, 8.5),
+            ("2026-09-20 01:00", 3000.0, 75.0, 8.5),
+            # Cheap rate ends; daytime charging continues at a different price.
+            ("2026-09-20 01:30", 300.0, 77.0, 27.1),
+            ("2026-09-20 02:00", 300.0, 79.0, 27.1),
+        ]
+    )
+    slots = _control_slots(flows)
+
+    assert [slot["window_end"] for slot in slots] == [
+        pd.Timestamp("2026-09-20 01:30", tz="UTC"),
+        pd.Timestamp("2026-09-20 02:30", tz="UTC"),
+    ]
+    assert slots[0]["window_target_soc"] == 75.0
+    assert slots[0]["window_start"] == pd.Timestamp("2026-09-19 23:30", tz="UTC")
+
+
+def test_small_price_wobble_does_not_split_a_window() -> None:
+    flows = _priced_flows(
+        [
+            ("2026-09-19 23:30", 3000.0, 30.0, 8.50),
+            ("2026-09-20 00:00", 3000.0, 45.0, 8.53),
+            ("2026-09-20 00:30", 3000.0, 60.0, 8.48),
+        ]
+    )
+    slots = _control_slots(flows)
+
+    assert len(slots) == 1
+    assert slots[0]["window_end"] == pd.Timestamp("2026-09-20 01:00", tz="UTC")
+
+
+def test_flows_without_prices_are_not_split() -> None:
     slots = _control_slots(_overnight_charge())
-    early_segment = slots[0]
-
-    # Event sits inside the taper segment only (04:00 -> 04:30).
-    axle_window = {
-        "start": pd.Timestamp("2026-08-07 04:05", tz="UTC"),
-        "end": pd.Timestamp("2026-08-07 04:25", tz="UTC"),
-    }
-
-    # Segment bounds alone see no overlap - the old, unsafe comparison.
-    assert early_segment["end"] <= axle_window["start"]
-
-    # The programmed window does overlap, so the segment must be excluded.
-    assert _programmed_window_overlaps(early_segment, axle_window)
+    assert {slot["window_end"] for slot in slots} == {pd.Timestamp("2026-08-07 04:30", tz="UTC")}
 
 
-def test_programmed_window_overlap_is_false_when_window_is_clear() -> None:
-    slots = _control_slots(_overnight_charge())
-    axle_window = {
-        "start": pd.Timestamp("2026-08-07 06:00", tz="UTC"),
-        "end": pd.Timestamp("2026-08-07 07:00", tz="UTC"),
-    }
+def test_forced_power_below_control_minimum_is_ignored() -> None:
+    """A 38 W forced charge is not a control worth writing to the inverter."""
+    flows = _flows(
+        [
+            ("2026-09-19 17:30", 38.0, 43.0),
+            ("2026-09-19 23:30", 3000.0, 60.0),
+        ]
+    )
+    slots = _control_slots(flows)
 
-    assert not any(_programmed_window_overlaps(slot, axle_window) for slot in slots)
+    assert len(slots) == 1
+    assert slots[0]["start"] == pd.Timestamp("2026-09-19 23:30", tz="UTC")
+    assert CONTROL_MIN_FORCE_POWER > 38.0
+
+
+def test_sub_minimum_flow_breaks_contiguity() -> None:
+    flows = _flows(
+        [
+            ("2026-08-06 23:30", 3000.0, 22.0),
+            ("2026-08-07 00:00", 20.0, 22.5),
+            ("2026-08-07 00:30", 3000.0, 30.0),
+        ]
+    )
+    slots = _control_slots(flows)
+
+    assert len(slots) == 2
+    assert slots[0]["window_end"] == pd.Timestamp("2026-08-07 00:00", tz="UTC")
+    assert slots[1]["window_start"] == pd.Timestamp("2026-08-07 00:30", tz="UTC")
 
 
 # --- Discharge windows get the same treatment ---
@@ -412,3 +466,69 @@ async def test_apply_does_not_shorten_window_on_repeated_runs() -> None:
     assert len(controller.charge_calls) == 3
     assert ends == {flows.index[-1] + pd.Timedelta(minutes=30)}
     assert targets == {83.0}
+
+
+# --- Write confirmation: an unconfirmed control must be retried and reported ---
+
+
+class _RejectingController(_RecordingController):
+    """Records writes but reports the inverter never took them."""
+
+    def __init__(self, fail_attempts: int) -> None:
+        super().__init__()
+        self.fail_attempts = fail_attempts
+        self.confirm_calls = 0
+
+    async def confirm_control(self, state, start, end, target_soc, power) -> list[str]:
+        self.confirm_calls += 1
+        if self.confirm_calls <= self.fail_attempts:
+            return ["start is 18:30, expected 01:09"]
+        return []
+
+
+class _StateEntity:
+    def __init__(self) -> None:
+        self.values: list = []
+
+    async def async_set_native_value(self, value, **kwargs) -> None:
+        self.values.append(value)
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_control_is_retried_then_reported_failed() -> None:
+    controller = _RejectingController(fail_attempts=CONTROL_CONFIRM_ATTEMPTS)
+    hass = _FakeHass(controller)
+    state_entity = _StateEntity()
+    hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {CONTROL_STATE: state_entity}
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert len(controller.charge_calls) == CONTROL_CONFIRM_ATTEMPTS
+    assert state_entity.values[-1] == CONTROL_FAILED_STATE
+
+
+@pytest.mark.asyncio
+async def test_control_confirmed_on_retry_is_not_a_failure() -> None:
+    controller = _RejectingController(fail_attempts=1)
+    hass = _FakeHass(controller)
+    state_entity = _StateEntity()
+    hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {CONTROL_STATE: state_entity}
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert len(controller.charge_calls) == 2
+    assert CONTROL_FAILED_STATE not in state_entity.values
+    assert state_entity.values[-1] == "Charging"
+
+
+@pytest.mark.asyncio
+async def test_controller_without_confirmation_writes_once() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert len(controller.charge_calls) == 1

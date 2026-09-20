@@ -3,6 +3,7 @@ import logging
 from datetime import datetime
 
 from homeassistant.components.sensor import SensorEntity
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers import entity_registry as er
 
 from .const import (
@@ -23,9 +24,13 @@ PARALLEL_UPDATES = 0
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set up sensor entities from a config entry."""
     uuid = None
-    while uuid is None:
+    for _ in range(30):
         uuid = hass.data.get(DOMAIN, {}).get("uuid", None)
+        if uuid is not None:
+            break
         await asyncio.sleep(1)
+    if uuid is None:
+        raise ConfigEntryNotReady("Miser setup data was not initialised")
 
     entities_to_add = [
         OptimiserSensor(

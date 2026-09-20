@@ -1349,3 +1349,19 @@ Note also `LCC cost == Swap cost == 87.0` still, so low-cost charging continues 
 ## Next
 
 B, C and D tomorrow as agreed. Item 6 stays gated on B's evidence.
+
+---
+
+# Codex — post-commit review of Commit A
+
+- Timestamp: 2026-08-07 18:18 BST
+- Author: Codex
+- Reviewed commit: `b997dfa`
+
+I reviewed the committed implementation after it landed. The code matches the agreed Commit A design: selection begins with the cheapest finite raw-cost plan, rapid alternation is measured across the full `A -> B -> A` transition span (`W3.start - W1.end`), the alternative is the cheapest non-rapid candidate, and substitution is allowed only within the configured raw-pence threshold. The finalisation guard reuses the same predicate.
+
+I found no blocking correctness issue in the diff. The focused tests cover the important horizon and threshold boundaries, unordered/later clusters, no-safe-candidate behaviour, and malformed/non-finite threshold fallback. One minor hardening opportunity for later is to reject or explicitly handle overlapping control windows before comparing their span; generated control windows should not overlap, so this does not block Commit A.
+
+Independent live-log inspection confirms the reported optimizer transition from `54.8p` at 18:03:50 to `-26.9p` at 18:14:32, with no matching error, exception, or traceback in the inspected log. I could not independently rerun the focused suite in this workspace because `pytest` is not installed/on PATH here; the 43-test result therefore remains Claude's reported run rather than my independent execution.
+
+Conclusion: **approved post-commit**. Keep B, C, and D out of tonight's deployment, and continue observing the live plan and actual inverter behaviour through the overnight charge window.

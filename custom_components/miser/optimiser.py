@@ -5,6 +5,7 @@ from numpy import arange
 from datetime import datetime
 from math import isfinite
 from homeassistant.core import HomeAssistant
+from homeassistant.components import persistent_notification
 from homeassistant.components.recorder import history
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -58,6 +59,14 @@ from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
+# Attempts at writing one control before it is reported as failed. Each attempt
+# is read back from the inverter by the controller before the next is made.
+CONTROL_CONFIRM_ATTEMPTS = 3
+CONTROL_FAILED_STATE = "Control failed"
+CONTROL_FAILED_NOTIFICATION_ID = "miser_control_failed"
+# Forced flows below this are not worth an inverter write: 38 W once became a
+# half-hour timed-charge slot that the inverter then fell back to all night.
+CONTROL_MIN_FORCE_POWER = 100  # W
 AXLE_VPP_DOMAIN = "axle_vpp"
 
 # Working hypothesis, not a proven setting: how close the two transitions of an
@@ -356,6 +365,15 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
 
 
 async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: bool = True) -> None:
+    # Optimiser runs and compliance callbacks can overlap now that a write is
+    # read back before returning; serialise them so two writers never race on
+    # the inverter's single timed-charge slot.
+    lock = hass.data[DOMAIN].setdefault("inverter_control_lock", asyncio.Lock())
+    async with lock:
+        await _apply_inverter_control_unlocked(hass, model, schedule_checks)
+
+
+async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_checks: bool) -> None:
     inverter_controller = hass.data[DOMAIN].get("inverter_controller")
     if inverter_controller is None:
         _LOGGER.warning("No inverter controller is available; unable to apply optimised controls")
@@ -416,40 +434,98 @@ async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: b
             _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
         return
 
+    all_confirmed = True
     for slot in slots_to_apply:
-        # Programme the inverter with the whole control window and its terminal
-        # target, but with the power of the segment that is actually running.
-        window_start = _control_window_start(slot)
-        window_end = _control_window_end(slot)
-        window_target_soc = _control_window_target_soc(slot)
+        if not await _programme_control_slot(hass, inverter_controller, slot):
+            all_confirmed = False
+
+    if all_confirmed:
+        _clear_control_failure(hass)
+    else:
+        await _write_status(hass, CONTROL_FAILED_STATE)
+
+
+async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot: dict) -> bool:
+    """Write one control slot to the inverter and confirm it took.
+
+    Programmes the whole control window and its terminal target, but with the
+    power of the segment that is actually running. The write is read back by
+    the controller and retried; an unconfirmed control is reported loudly
+    rather than left showing as `Charging` while the battery sits idle, which
+    is what happened when the inverter silently kept its previous slot.
+    """
+    window_start = _control_window_start(slot)
+    window_end = _control_window_end(slot)
+    window_target_soc = _control_window_target_soc(slot)
+    power = abs(slot["power"])
+    description = (
+        f"{slot['state']} window {window_start}-{window_end} (segment {slot['start']}-{slot['end']}) "
+        f"{slot['power']:.1f}W target {window_target_soc:.1f}%"
+    )
+
+    method_name = {"charging": "control_charge", "discharging": "control_discharge"}.get(slot["state"])
+    control = getattr(inverter_controller, method_name, None) if method_name else None
+    if control is None:
+        _LOGGER.warning("Inverter controller cannot apply %s", description)
+        return False
+    confirm = getattr(inverter_controller, "confirm_control", None)
+
+    mismatches: list[str] = []
+    for attempt in range(1, CONTROL_CONFIRM_ATTEMPTS + 1):
+        if _is_unloading(hass):
+            return True
+
         try:
-            _LOGGER.debug(
-                "Applying inverter control: %s window %s-%s (segment %s-%s) %.1fW %.2fA target %.1f%%",
+            _LOGGER.debug("Applying inverter control (attempt %d/%d): %s", attempt, CONTROL_CONFIRM_ATTEMPTS, description)
+            await control(window_start.to_pydatetime(), window_end.to_pydatetime(), window_target_soc, power)
+            if confirm is None:
+                return True
+            mismatches = await confirm(
                 slot["state"],
-                window_start,
-                window_end,
-                slot["start"],
-                slot["end"],
-                slot["power"],
-                await _power_to_current(inverter_controller, abs(slot["power"])),
+                window_start.to_pydatetime(),
+                window_end.to_pydatetime(),
                 window_target_soc,
+                power,
             )
-            if slot["state"] == "charging":
-                await inverter_controller.control_charge(
-                    window_start.to_pydatetime(),
-                    window_end.to_pydatetime(),
-                    window_target_soc,
-                    slot["power"],
-                )
-            elif slot["state"] == "discharging":
-                await inverter_controller.control_discharge(
-                    window_start.to_pydatetime(),
-                    window_end.to_pydatetime(),
-                    window_target_soc,
-                    abs(slot["power"]),
-                )
         except (RuntimeError, HomeAssistantError) as err:
-            _LOGGER.warning("Unable to verify or apply inverter control: %s", err)
+            mismatches = [str(err)]
+
+        if not mismatches:
+            if attempt > 1:
+                _LOGGER.info("Inverter control confirmed on attempt %d: %s", attempt, description)
+            return True
+
+        _LOGGER.warning(
+            "Inverter did not take control (attempt %d/%d): %s. Mismatches: %s",
+            attempt,
+            CONTROL_CONFIRM_ATTEMPTS,
+            description,
+            "; ".join(mismatches),
+        )
+
+    message = f"Inverter did not take {description} after {CONTROL_CONFIRM_ATTEMPTS} attempts: {'; '.join(mismatches)}"
+    _LOGGER.error(message)
+    _notify_control_failure(hass, message)
+    return False
+
+
+def _notify_control_failure(hass: HomeAssistant, message: str) -> None:
+    try:
+        persistent_notification.async_create(
+            hass,
+            message,
+            title="Miser inverter control failed",
+            notification_id=CONTROL_FAILED_NOTIFICATION_ID,
+        )
+    except Exception as err:  # noqa: BLE001 - notification is best-effort
+        _LOGGER.debug("Unable to raise control failure notification: %s", err)
+
+
+def _clear_control_failure(hass: HomeAssistant) -> None:
+    try:
+        persistent_notification.async_dismiss(hass, CONTROL_FAILED_NOTIFICATION_ID)
+    except Exception as err:  # noqa: BLE001 - notification is best-effort
+        _LOGGER.debug("Unable to dismiss control failure notification: %s", err)
 
 
 def axle_vpp_control_window(hass: HomeAssistant) -> dict | None:
@@ -640,7 +716,7 @@ def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
     if flows is None:
         return []
 
-    forced_flows = flows[flows["forced"] != 0]
+    forced_flows = flows[flows["forced"].abs() >= CONTROL_MIN_FORCE_POWER]
     if forced_flows.empty:
         return []
 
@@ -651,16 +727,42 @@ def _control_slots(flows: pd.DataFrame | None) -> list[dict]:
         power = float(row.get("forced"))
         end = start + pd.Timedelta(hours=float(row.get("dt_hours")))
         soc_end = float(row.get("soc_end"))
+        price = _control_price(row, power)
 
-        if window_rows and (start != window_rows[-1][1] or not _same_force_direction(power, window_rows[-1][2])):
+        if window_rows and (
+            start != window_rows[-1][1]
+            or not _same_force_direction(power, window_rows[-1][2])
+            or not _same_price_period(price, window_rows[0][4])
+        ):
             slots.extend(_window_control_slots(window_rows))
             window_rows = []
 
-        window_rows.append((start, end, power, soc_end))
+        window_rows.append((start, end, power, soc_end, price))
 
     slots.extend(_window_control_slots(window_rows))
 
     return slots
+
+
+def _control_price(row, power: float) -> float | None:
+    """The tariff a forced flow is priced against: import for charge, export for discharge."""
+    value = row.get("import" if power > 0 else "export")
+    if value is None or not _is_finite(value):
+        return None
+    return float(value)
+
+
+def _same_price_period(price: float | None, window_price: float | None) -> bool:
+    """A control window never spans a price change.
+
+    The window is what gets programmed into the inverter, and the inverter will
+    keep running it if Miser stops. A window that ran on past the end of the
+    cheap rate once handed the inverter a 00:30-17:00 grid charge, which it
+    rejected outright. Flows without prices are not split.
+    """
+    if price is None or window_price is None:
+        return True
+    return abs(price - window_price) <= PRICE_PERIOD_TOLERANCE
 
 
 def _window_control_slots(window_rows: list[tuple]) -> list[dict]:
