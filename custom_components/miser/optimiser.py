@@ -412,8 +412,22 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         await _write_status(hass, "Idle")
         return
 
-    control_slots = _control_slots(model.optimised_flows)
     now = pd.Timestamp.now(tz="UTC")
+    optimiser_minutes = float(
+        await get_value(
+            hass,
+            CONF_OPTIMISER_FREQUENCY,
+            default_value=DEFAULTS[CONF_OPTIMISER_FREQUENCY],
+        )
+        or DEFAULTS[CONF_OPTIMISER_FREQUENCY]
+    )
+    apply_window = pd.Timedelta(minutes=optimiser_minutes)
+
+    control_slots = _control_slots(model.optimised_flows)
+    # Drop leading partial-slot fragments too short to be worth an inverter mode
+    # change; without this a few-minute reversal at a slot boundary flaps the
+    # battery every cycle (see _drop_short_control_windows).
+    control_slots = _drop_short_control_windows(control_slots, apply_window)
     current_slot = _find_current_control_slot(control_slots, now)
 
     desired_state = current_slot["state"] if current_slot is not None else "idle"
@@ -433,15 +447,6 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         next_slot=_find_next_control_slot(control_slots, now),
     )
 
-    optimiser_minutes = float(
-        await get_value(
-            hass,
-            CONF_OPTIMISER_FREQUENCY,
-            default_value=DEFAULTS[CONF_OPTIMISER_FREQUENCY],
-        )
-        or DEFAULTS[CONF_OPTIMISER_FREQUENCY]
-    )
-    apply_window = pd.Timedelta(minutes=optimiser_minutes)
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
 
     if schedule_checks:
@@ -623,6 +628,38 @@ def _control_window_end(slot: dict):
 def _control_window_target_soc(slot: dict) -> float:
     """Terminal SOC of the control window a segment belongs to."""
     return slot.get("window_target_soc", slot["target_soc"])
+
+
+def _drop_short_control_windows(control_slots: list[dict], min_duration: pd.Timedelta) -> list[dict]:
+    """Drop control windows shorter than `min_duration`.
+
+    optimise() models the current interval as a partial slot from *now* to the
+    next half-hour boundary. When an optimiser run lands a few minutes before a
+    boundary and the plan reverses direction there, that leading fragment
+    becomes its own short, opposite-direction control window - e.g. a 3-minute
+    discharge wedged in front of the overnight charge. Applying it flips the
+    inverter for a couple of minutes and the next run flips it straight back:
+    pointless cycling that shows up as sign-flip flapping every slot boundary.
+
+    A genuine forced window spans whole model periods, so any window shorter
+    than the optimiser's own re-decision interval is one of these boundary
+    fragments and is not worth a physical mode change. Dropping it here (in the
+    physical control path only) leaves the reported plan and costs untouched;
+    the inverter simply holds its current window through the fragment.
+    """
+    kept = [
+        slot
+        for slot in control_slots
+        if (_control_window_end(slot) - _control_window_start(slot)) >= min_duration
+    ]
+    dropped = len(control_slots) - len(kept)
+    if dropped:
+        _LOGGER.debug(
+            "Ignoring %d control-window segment(s) shorter than %s (boundary fragment)",
+            dropped,
+            min_duration,
+        )
+    return kept
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:

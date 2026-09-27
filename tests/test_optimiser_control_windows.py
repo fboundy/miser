@@ -532,3 +532,67 @@ async def test_controller_without_confirmation_writes_once() -> None:
     await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
 
     assert len(controller.charge_calls) == 1
+
+
+# --- Boundary-fragment suppression: the 2026-09-24..27 sign-flip flapping ---
+
+from custom_components.miser.optimiser import _drop_short_control_windows
+
+
+def test_short_leading_discharge_fragment_is_dropped() -> None:
+    """A 3-minute discharge wedged in front of the overnight charge (the flap).
+
+    The optimiser run lands ~3 min before the boundary, so the partial first
+    slot [now -> boundary] is a discharge, followed by the real charge window.
+    That fragment must not be applied - it flips the inverter for minutes.
+    """
+    flows = _flows(
+        [
+            ("2026-09-25 23:57", -3000.0, 38.2),  # 3-min leading fragment (dt_hours below)
+            ("2026-09-26 00:00", 3000.0, 45.0),
+            ("2026-09-26 00:30", 3000.0, 60.0),
+            ("2026-09-26 01:00", 3000.0, 75.0),
+        ],
+        dt_hours=0.5,
+    )
+    # Make the first row the short partial slot.
+    flows.loc[flows.index[0], "dt_hours"] = 0.05  # 3 minutes
+
+    slots = _control_slots(flows)
+    # Two windows: the 3-min discharge and the 1.5 h charge.
+    assert [s["state"] for s in slots] == ["discharging", "charging"]
+
+    kept = _drop_short_control_windows(slots, pd.Timedelta(minutes=10))
+    # The discharge fragment is gone; the charge window survives.
+    assert [s["state"] for s in kept] == ["charging"]
+    assert kept[0]["window_start"] == pd.Timestamp("2026-09-26 00:00", tz="UTC")
+
+
+def test_full_length_windows_are_kept() -> None:
+    """A real 30-minute forced window is never treated as a fragment."""
+    flows = _flows(
+        [
+            ("2026-09-26 17:00", -2800.0, 60.0),
+            ("2026-09-26 17:30", -2800.0, 45.0),
+        ]
+    )
+    slots = _control_slots(flows)
+    kept = _drop_short_control_windows(slots, pd.Timedelta(minutes=10))
+    assert kept == slots  # nothing dropped
+
+
+def test_charge_survives_when_fragment_dropped_at_boundary() -> None:
+    """After dropping the fragment, the charge window is still applied."""
+    flows = _flows(
+        [
+            ("2026-09-25 23:57", -3000.0, 38.2),
+            ("2026-09-26 00:00", 3000.0, 45.0),
+            ("2026-09-26 00:30", 3000.0, 60.0),
+        ],
+        dt_hours=0.5,
+    )
+    flows.loc[flows.index[0], "dt_hours"] = 0.05
+    kept = _drop_short_control_windows(_control_slots(flows), pd.Timedelta(minutes=10))
+    now = pd.Timestamp("2026-09-25 23:58", tz="UTC")
+    to_apply = _slots_to_apply(kept, now, pd.Timedelta(minutes=10))
+    assert [s["state"] for s in to_apply] == ["charging"]
