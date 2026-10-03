@@ -647,3 +647,44 @@ async def test_apply_commands_battery_side_power_for_discharge() -> None:
     _start, _end, target_soc, power = controller.discharge_calls[0]
     assert target_soc == 15.0
     assert round(power, 6) == round(2800.0 / 0.97, 6)
+
+
+# --- Reported force/next-slot power is battery-side ---
+
+from custom_components.miser.const import CONTROL_FORCE_POWER, CONTROL_NEXT_SLOT_POWER
+
+
+class _ValueEntity:
+    def __init__(self) -> None:
+        self.value = "unset"
+
+    async def async_set_native_value(self, value, **kwargs) -> None:
+        self.value = value
+
+
+@pytest.mark.asyncio
+async def test_force_power_reports_battery_side_charge() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    force, nxt = _ValueEntity(), _ValueEntity()
+    hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {CONTROL_FORCE_POWER: force, CONTROL_NEXT_SLOT_POWER: nxt}
+    flows = _window_around_now(3296.7, 3296.7, [22.0, 29.0, 36.0, 43.0, 50.0, 57.0])
+
+    await _apply_inverter_control(hass, _ModelWithInverter(flows), schedule_checks=False)
+
+    # 3296.7 W grid-side x 0.91 = 3000 W into the battery, reported positive.
+    assert round(force.value, 0) == 3000
+
+
+@pytest.mark.asyncio
+async def test_force_power_reports_battery_side_discharge_negative() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    force = _ValueEntity()
+    hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {CONTROL_FORCE_POWER: force}
+    flows = _window_around_now(-2910.0, -2910.0, [72.0, 64.0, 56.0, 48.0, 40.0, 32.0])
+
+    await _apply_inverter_control(hass, _ModelWithInverter(flows), schedule_checks=False)
+
+    # 2910 W AC out / 0.97 = 3000 W out of the battery, reported negative.
+    assert round(force.value, 0) == -3000

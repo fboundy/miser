@@ -440,14 +440,16 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         _battery_side_power(model, desired_state, desired_power) if desired_state != "idle" else 0,
     )
 
+    next_slot = _find_next_control_slot(control_slots, now)
     await _write_control_entities(
         hass,
         state=_display_state(desired_state),
         force_current=desired_current if desired_state != "idle" else 0,
-        force_power=desired_power if desired_state != "idle" else 0,
+        force_power=_reported_battery_power(model, current_slot) if desired_state != "idle" else 0,
         target_soc=desired_target_soc if desired_state != "idle" else None,
         current_slot=current_slot,
-        next_slot=_find_next_control_slot(control_slots, now),
+        next_slot=next_slot,
+        next_slot_power=_reported_battery_power(model, next_slot),
     )
 
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
@@ -506,6 +508,20 @@ def _battery_side_power(model, state: str, power: float) -> float:
         return abs(power) * efficiency
     efficiency = getattr(inverter, "inverter_efficiency", 1) or 1
     return abs(power) / efficiency
+
+
+def _reported_battery_power(model, slot: dict | None) -> float | None:
+    """Signed battery-side power for reporting (positive = charge).
+
+    The force/next-slot power sensors report what goes into or out of the
+    battery, so they line up with the inverter's battery charge/discharge
+    power sensors rather than the plan's grid-side figure.
+    """
+    if slot is None:
+        return None
+    power = slot["power"]
+    battery_power = _battery_side_power(model, slot["state"], power)
+    return battery_power if power >= 0 else -battery_power
 
 
 async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot: dict, model=None) -> bool:
@@ -768,6 +784,7 @@ async def _write_control_entities(
     target_soc: float | None,
     current_slot: dict | None,
     next_slot: dict | None,
+    next_slot_power: float | None = None,
 ) -> None:
     sensor_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
     attributes = {
@@ -783,7 +800,7 @@ async def _write_control_entities(
         # Report the next control window, matching what will be programmed.
         CONTROL_NEXT_SLOT_START: _slot_value(next_slot, "window_start", local_time=True),
         CONTROL_NEXT_SLOT_END: _slot_value(next_slot, "window_end", local_time=True),
-        CONTROL_NEXT_SLOT_POWER: _slot_value(next_slot, "power"),
+        CONTROL_NEXT_SLOT_POWER: next_slot_power if next_slot_power is not None else _slot_value(next_slot, "power"),
         CONTROL_NEXT_SLOT_TARGET_SOC: _slot_value(next_slot, "window_target_soc"),
     }
 
