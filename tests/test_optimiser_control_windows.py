@@ -596,3 +596,54 @@ def test_charge_survives_when_fragment_dropped_at_boundary() -> None:
     now = pd.Timestamp("2026-09-25 23:58", tz="UTC")
     to_apply = _slots_to_apply(kept, now, pd.Timedelta(minutes=10))
     assert [s["state"] for s in to_apply] == ["charging"]
+
+
+# --- Grid-side plan power is converted to battery-side power before commanding ---
+
+from custom_components.miser.optimiser import _battery_side_power
+from custom_components.miser.pv_model import InverterModel
+
+
+class _ModelWithInverter(_FakeModel):
+    def __init__(self, flows: pd.DataFrame) -> None:
+        super().__init__(flows)
+        self.inverter = InverterModel(inverter_efficiency=97, charger_efficiency=91)
+
+
+def test_battery_side_power_applies_charger_and_inverter_losses() -> None:
+    model = _ModelWithInverter(_overnight_charge())
+    # Charging: 3000 W from the grid puts 3000 * 0.91 into the battery.
+    assert round(_battery_side_power(model, "charging", 3000.0), 6) == round(3000.0 * 0.91, 6)
+    # Discharging: 2800 W AC out draws 2800 / 0.97 from the battery.
+    assert round(_battery_side_power(model, "discharging", -2800.0), 6) == round(2800.0 / 0.97, 6)
+
+
+def test_battery_side_power_falls_back_to_plan_power_without_inverter_model() -> None:
+    assert _battery_side_power(object(), "charging", 3000.0) == 3000.0
+
+
+@pytest.mark.asyncio
+async def test_apply_commands_battery_side_power_for_charge() -> None:
+    """The inverter is given DC battery power, not the grid-side plan figure."""
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _ModelWithInverter(flows), schedule_checks=False)
+
+    _start, _end, target_soc, power = controller.charge_calls[0]
+    assert target_soc == 83.0
+    assert round(power, 6) == round(3000.0 * 0.91, 6)
+
+
+@pytest.mark.asyncio
+async def test_apply_commands_battery_side_power_for_discharge() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    flows = _window_around_now(-2800.0, -900.0, [72.0, 64.0, 56.0, 48.0, 40.0, 15.0])
+
+    await _apply_inverter_control(hass, _ModelWithInverter(flows), schedule_checks=False)
+
+    _start, _end, target_soc, power = controller.discharge_calls[0]
+    assert target_soc == 15.0
+    assert round(power, 6) == round(2800.0 / 0.97, 6)

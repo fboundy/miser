@@ -435,7 +435,10 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     # Report the window's terminal target, not the current fragment's, so the
     # reported target matches what is programmed into the inverter.
     desired_target_soc = _control_window_target_soc(current_slot) if current_slot is not None else None
-    desired_current = await _power_to_current(inverter_controller, desired_power)
+    desired_current = await _power_to_current(
+        inverter_controller,
+        _battery_side_power(model, desired_state, desired_power) if desired_state != "idle" else 0,
+    )
 
     await _write_control_entities(
         hass,
@@ -473,7 +476,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
 
     all_confirmed = True
     for slot in slots_to_apply:
-        if not await _programme_control_slot(hass, inverter_controller, slot):
+        if not await _programme_control_slot(hass, inverter_controller, slot, model):
             all_confirmed = False
 
     if all_confirmed:
@@ -482,7 +485,30 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         await _write_status(hass, CONTROL_FAILED_STATE)
 
 
-async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot: dict) -> bool:
+def _battery_side_power(model, state: str, power: float) -> float:
+    """Convert a plan's grid-side forced power to the battery-side power to command.
+
+    The model's forced power is AC (grid-side): a 3 kW forced charge plans
+    3 kW from the grid and 3 kW x charger efficiency into the battery, and a
+    3 kW forced discharge plans 3 kW AC out, drawing 3 kW / inverter efficiency
+    from the battery. The inverter, though, is programmed with a DC battery
+    current, so the AC figure must be converted before dividing by battery
+    voltage. Passing the AC figure straight through over-drove charging by the
+    charger loss (~10%): the battery outran the plan, each re-optimisation then
+    found less energy left to deliver, and the commanded power ratcheted down
+    through the night.
+    """
+    inverter = getattr(model, "inverter", None)
+    if inverter is None:
+        return abs(power)
+    if state == "charging":
+        efficiency = getattr(inverter, "charger_efficiency", 1) or 1
+        return abs(power) * efficiency
+    efficiency = getattr(inverter, "inverter_efficiency", 1) or 1
+    return abs(power) / efficiency
+
+
+async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot: dict, model=None) -> bool:
     """Write one control slot to the inverter and confirm it took.
 
     Programmes the whole control window and its terminal target, but with the
@@ -494,10 +520,10 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     window_start = _control_window_start(slot)
     window_end = _control_window_end(slot)
     window_target_soc = _control_window_target_soc(slot)
-    power = abs(slot["power"])
+    power = _battery_side_power(model, slot["state"], slot["power"])
     description = (
         f"{slot['state']} window {window_start}-{window_end} (segment {slot['start']}-{slot['end']}) "
-        f"{slot['power']:.1f}W target {window_target_soc:.1f}%"
+        f"{slot['power']:.1f}W grid / {power:.1f}W battery target {window_target_soc:.1f}%"
     )
 
     method_name = {"charging": "control_charge", "discharging": "control_discharge"}.get(slot["state"])
