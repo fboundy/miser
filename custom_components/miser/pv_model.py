@@ -40,7 +40,7 @@ class InverterModel:
         charger_efficiency: A float describing the AC-DC efficiency of the inverter.
         inverter_loss: An int describing the internal power consumption of the inverter at zero load.
         inverter_power: An int describing the DC-AC power of the inverter.
-        charger_power: An int describing the AC-CC power of the inverter.
+        charger_power: An int describing the maximum battery-side (DC) charge power.
     """
 
     def __init__(
@@ -135,13 +135,33 @@ class PVsystemModel:
     def inverter(self):
         return self._inverter
 
+    # The charge/discharge limits are battery-side (DC) constraints, but forced
+    # power throughout the model is grid-side (AC). These return the grid-side
+    # forced power that drives the battery exactly to its limit, so the plan can
+    # use the battery's full rate: e.g. a 3000 W battery charge limit at 91%
+    # charger efficiency allows ~3297 W from the grid.
+
     @property
-    def charge_power_limit(self) -> float:
+    def battery_charge_limit(self) -> float:
+        """Maximum power into the battery (DC)."""
         return min(self.battery.max_charge_power, self.inverter.charger_power)
 
     @property
+    def battery_discharge_limit(self) -> float:
+        """Maximum power out of the battery (DC)."""
+        return self.battery.max_discharge_power
+
+    @property
+    def charge_power_limit(self) -> float:
+        """Grid-side forced charge power that puts battery_charge_limit into the battery."""
+        efficiency = self.inverter.charger_efficiency or 1
+        return self.battery_charge_limit / efficiency
+
+    @property
     def discharge_power_limit(self) -> float:
-        return min(self.battery.max_discharge_power, self.inverter.inverter_power)
+        """Grid-side forced discharge power at the battery limit, capped by the inverter's AC rating."""
+        efficiency = self.inverter.inverter_efficiency or 1
+        return min(self.battery_discharge_limit * efficiency, self.inverter.inverter_power)
 
     def set_start(self, start: pd.Timestamp) -> bool:
         self._index = [start.floor("1min")] + list(self.consumption.index[1:])
