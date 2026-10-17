@@ -190,6 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             raise ConfigEntryNotReady("Could not retrieve necessary PV model or tariff data")
 
         _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
+        hass.data[DOMAIN]["tariff_refresher"] = partial(_refresh_octopus_tariffs, hass, entry)
 
         # Set up the schedule for the optimise
         await _schedule_optimiser(hass)
@@ -242,8 +243,6 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
         octopus_info = {}
         _LOGGER.debug(f"No octopus data found. Tariff source: {entry.options.get('tariff_source', '')}")
 
-    hass.data[DOMAIN]["octopus_info"] = octopus_info
-    hass.data[DOMAIN]["tariffs"] = {}
     tariff_codes = {
         direction: tariff_code
         for direction, tariff_code in octopus_info.get("tariff_code", {}).items()
@@ -252,10 +251,32 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
     if not tariff_codes.get("import"):
         raise ConfigEntryNotReady("No import tariff code available")
 
+    # Build the new set before swapping it in, so a failure part-way through a
+    # refresh leaves the working tariffs in place. Reuse unchanged tariffs.
+    existing = hass.data[DOMAIN].get("tariffs") or {}
+    tariffs = {}
     for direction, tariff_code in tariff_codes.items():
-        hass.data[DOMAIN]["tariffs"][direction] = await Tariff.create(tariff_code, export=(direction == "export"))
+        current = existing.get(direction)
+        if current is not None and current.tariff_code == tariff_code:
+            tariffs[direction] = current
+            continue
+        if current is not None:
+            _LOGGER.info("Octopus %s tariff changed: %s -> %s", direction, current.tariff_code, tariff_code)
+        tariffs[direction] = await Tariff.create(tariff_code, export=(direction == "export"))
 
+    hass.data[DOMAIN]["octopus_info"] = octopus_info
+    hass.data[DOMAIN]["tariffs"] = tariffs
+    hass.data[DOMAIN]["tariffs_checked_at"] = dt_util.utcnow()
     return True
+
+
+async def _refresh_octopus_tariffs(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Re-read tariff codes so a tariff switch is picked up without a reload."""
+    try:
+        await _get_octopus_info(hass, entry)
+    except Exception as err:  # noqa: BLE001 - keep the working tariffs on any failure
+        hass.data[DOMAIN]["tariffs_checked_at"] = dt_util.utcnow()
+        _LOGGER.warning("Unable to refresh Octopus tariff codes; keeping current tariffs: %s", err)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

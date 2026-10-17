@@ -117,6 +117,47 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
         _LOGGER.debug("  No config entries found")
 
 
+def current_tariff_code(agreements: list[dict], now: pd.Timestamp) -> str | None:
+    """Return the tariff code of the agreement in force at `now`.
+
+    Octopus lists agreements in no guaranteed order and includes zero-length
+    ones (valid_from == valid_to) and future-dated ones for booked switches.
+    Taking the latest start date could pick a switch that has not happened yet,
+    or - when several agreements share a start - an arbitrary zero-length one.
+    Prefer the agreement whose [valid_from, valid_to) contains now; if there is
+    a gap, fall back to the most recently started one.
+    """
+
+    def _ts(value):
+        if value is None:
+            return None
+        try:
+            stamp = pd.Timestamp(value)
+        except (TypeError, ValueError):
+            return None
+        return stamp.tz_convert("UTC") if stamp.tzinfo else stamp.tz_localize("UTC")
+
+    usable = []
+    for agreement in agreements:
+        code = agreement.get("tariff_code")
+        start = _ts(agreement.get("valid_from"))
+        end = _ts(agreement.get("valid_to"))
+        if not code or start is None:
+            continue
+        if end is not None and end <= start:
+            continue  # zero-length placeholder
+        usable.append((start, end, code))
+
+    in_force = [a for a in usable if a[0] <= now and (a[1] is None or now < a[1])]
+    if in_force:
+        return max(in_force, key=lambda a: a[0])[2]
+
+    started = [a for a in usable if a[0] <= now]
+    if started:
+        return max(started, key=lambda a: a[0])[2]
+    return None
+
+
 async def get_octopus_info_from_account(hass: HomeAssistant, account_id: str, api_key: str) -> dict:
     _LOGGER.debug("Loading Octopus account data")
     if any([account_id is None, api_key is None]):
@@ -137,14 +178,14 @@ async def get_octopus_info_from_account(hass: HomeAssistant, account_id: str, ap
 
     entity_keys = ["mpan", "serial_number", "tariff_code"]
     octopus_info = octopus_info | {key: {direction: {} for direction in IMPORT_EXPORT} for key in entity_keys}
+    now = pd.Timestamp.now(tz="UTC")
     for mpan_data in mpans:
-        df = pd.DataFrame(mpan_data["agreements"])
-        df = df.set_index("valid_from")
-        df.index = pd.to_datetime(df.index)
-        df = df.sort_index()
-        tariff_code = df["tariff_code"].iloc[-1]
+        tariff_code = current_tariff_code(mpan_data.get("agreements", []), now)
+        if tariff_code is None:
+            _LOGGER.warning("No usable tariff agreement for meter point; skipping")
+            continue
 
-        _LOGGER.debug(f"Retrieved most recent tariff code {tariff_code}")
+        _LOGGER.debug(f"Retrieved current tariff code {tariff_code}")
         if mpan_data["is_export"]:
             direction = "export"
         else:

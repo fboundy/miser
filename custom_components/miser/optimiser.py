@@ -144,6 +144,7 @@ async def optimise(hass: HomeAssistant, now=None):
 
     await _get_consumption(hass=hass, start=start, end=end, freq=freq)
     await _get_solcast(hass=hass, start=start, end=end, freq=freq)
+    await _refresh_tariffs_if_due(hass)
     await _get_prices(hass=hass, start=start, end=end, freq=freq)
     merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
     _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
@@ -1777,6 +1778,21 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
     else:
         _LOGGER.warning("Solcast integration is not configured; using zero solar forecast")
     hass.data[DOMAIN]["model"].solar = solcast["weighted"].rename("solar")
+
+
+TARIFF_REFRESH_INTERVAL = pd.Timedelta(hours=6)
+
+
+async def _refresh_tariffs_if_due(hass: HomeAssistant) -> None:
+    """Re-check Octopus tariff codes periodically so a switch takes effect without a reload."""
+    data = hass.data.get(DOMAIN, {})
+    refresher = data.get("tariff_refresher")
+    if refresher is None:
+        return
+    checked_at = data.get("tariffs_checked_at")
+    if checked_at is not None and pd.Timestamp(dt_util.utcnow()) - pd.Timestamp(checked_at) < TARIFF_REFRESH_INTERVAL:
+        return
+    await refresher()
 
 
 async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
