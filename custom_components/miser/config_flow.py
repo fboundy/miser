@@ -5,6 +5,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.loader import async_get_custom_components, async_get_integration
 
 from .const import (
     CONF_BATTERY_CAPACITY,
@@ -46,7 +47,9 @@ async def _is_installed(hass: HomeAssistant, integration: str) -> bool:
         _LOGGER.debug(f"{integration}: {result}")
         return result
     except Exception:
-        # Return False if there's any issue checking integrations
+        # Don't let a failure to check masquerade as "not installed" silently:
+        # a lost import once made this abort every setup with that message.
+        _LOGGER.exception("Unable to check whether %s is installed", integration)
         return False
 
 
