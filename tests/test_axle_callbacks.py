@@ -61,14 +61,16 @@ async def test_refresh_registers_axle_callbacks_after_late_install(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_refresh_rechecks_control_when_window_is_discovered_inside_buffer(monkeypatch):
-    """Test a periodic refresh reacts when an Axle event is already inside its buffer."""
+async def test_refresh_reruns_optimiser_when_window_is_discovered_inside_the_event(monkeypatch):
+    """A periodic refresh re-runs the optimiser when it finds an event already underway.
+
+    Since 51ec70e the trigger is the event start itself, not the start of the
+    pre-event buffer.
+    """
     now = dt_util.utcnow()
-    start = now + timedelta(minutes=1)
-    end = now + timedelta(minutes=11)
     states = {
-        AXLE_VPP_START_ENTITIES[0]: start.isoformat(),
-        AXLE_VPP_END_ENTITIES[0]: end.isoformat(),
+        AXLE_VPP_START_ENTITIES[0]: (now - timedelta(minutes=1)).isoformat(),
+        AXLE_VPP_END_ENTITIES[0]: (now + timedelta(minutes=9)).isoformat(),
     }
     hass = _hass(installed=True, states=states)
     optimise = AsyncMock()
@@ -81,3 +83,23 @@ async def test_refresh_rechecks_control_when_window_is_discovered_inside_buffer(
 
     assert hass.data[DOMAIN]["axle_vpp_window_key"]
     optimise.assert_awaited_once_with(hass=hass)
+
+
+async def test_refresh_waits_for_event_start_when_only_inside_buffer(monkeypatch):
+    """Inside the pre-event buffer but before the event, the event_start callback handles it."""
+    now = dt_util.utcnow()
+    states = {
+        AXLE_VPP_START_ENTITIES[0]: (now + timedelta(minutes=1)).isoformat(),
+        AXLE_VPP_END_ENTITIES[0]: (now + timedelta(minutes=11)).isoformat(),
+    }
+    hass = _hass(installed=True, states=states)
+    optimise = AsyncMock()
+
+    monkeypatch.setattr(miser_init, "optimise", optimise)
+    monkeypatch.setattr(miser_init, "async_track_state_change", lambda *args: (lambda: None))
+    monkeypatch.setattr(miser_init, "async_track_point_in_utc_time", lambda *args: (lambda: None))
+
+    await miser_init._refresh_axle_vpp_callbacks(hass, optimise_on_window_change=True)
+
+    assert hass.data[DOMAIN]["axle_vpp_window_key"]
+    optimise.assert_not_awaited()

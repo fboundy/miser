@@ -401,7 +401,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """
         Return the options flow handler.
         """
-        return OptionsFlowHandler(config_entry)
+        return OptionsFlowHandler()
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
@@ -409,15 +409,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     Handle options flow for the integration.
     """
 
-    def __init__(self, config_entry):
-        self.config_entry = config_entry
+    # No __init__: OptionsFlow provides config_entry as a read-only property.
 
     async def async_step_init(self, user_input=None):
         """
         Manage the options for the integration.
         """
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            # Merge rather than replace: setup reads integration, tariff_source
+            # and the system parameters from options.
+            return self.async_create_entry(title="", data={**self.config_entry.options, **user_input})
 
-        schema = vol.Schema({vol.Optional(CONF_NAME, default=self.config_entry.data.get(CONF_NAME, "")): str})
+        current_name = self.config_entry.options.get(CONF_NAME, self.config_entry.data.get(CONF_NAME, ""))
+        schema = vol.Schema({vol.Optional(CONF_NAME, default=current_name): str})
         return self.async_show_form(step_id="init", data_schema=schema)

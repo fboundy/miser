@@ -97,3 +97,47 @@ async def test_controller_without_required_entities_shows_error(hass):
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "select_controller"
     assert result["errors"] == {"base": "missing_controller_entities"}
+
+
+async def test_user_step_proceeds_when_solcast_installed(hass):
+    """Regression: the real _is_installed check must find Solcast.
+
+    The other tests patch _is_installed. A lost loader import once made it
+    raise NameError, silently return False, and abort every setup.
+    """
+    with patch(
+        "custom_components.miser.config_flow.async_get_custom_components",
+        AsyncMock(return_value={"solcast_solar": object()}),
+    ):
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": config_entries.SOURCE_USER},
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+
+async def test_options_flow_merges_into_existing_options(hass):
+    """Saving options keeps integration, tariff source and system parameters."""
+    original = {
+        "integration": "solisconnect",
+        "tariff_source": "Specify Octopus Account ID and API Key",
+        "battery_capacity": 20000,
+    }
+    entry = MockConfigEntry(
+        version=1,
+        domain=DOMAIN,
+        title="Miser PV System Optimiser",
+        data={"inverter_brand": "solis"},
+        options=dict(original),
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+
+    result = await hass.config_entries.options.async_configure(result["flow_id"], user_input={"name": "House"})
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options == {**original, "name": "House"}

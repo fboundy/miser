@@ -39,6 +39,7 @@ from .const import (
     CONF_WHOLE_HORIZON_BETA,
     CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_VALUE_SURPLUS_SOC,
+    CONF_READ_ONLY,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -454,6 +455,14 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     )
 
     slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
+
+    # Read Only: plan and report as normal, but never write to the inverter.
+    if await get_value(hass, CONF_READ_ONLY, default_value=DEFAULTS[CONF_READ_ONLY]):
+        _LOGGER.debug(
+            "Read Only is on; not writing to the inverter (would apply: %s)",
+            ", ".join(f"{slot['state']} {slot['start']}-{slot['end']}" for slot in slots_to_apply) or "idle",
+        )
+        return
 
     if schedule_checks:
         _schedule_control_compliance_checks(hass, control_slots)

@@ -358,8 +358,20 @@ class _RecordingController:
         return False
 
 
+class _State:
+    def __init__(self, state: str) -> None:
+        self.state = state
+
+
 class _FakeStates:
+    """Only the Read Only switch has a state; it is off unless a test sets it."""
+
+    def __init__(self) -> None:
+        self.read_only = "off"
+
     def get(self, entity_id):  # noqa: D102 - trivial stub
+        if entity_id == "switch.miser_read_only":
+            return _State(self.read_only)
         return None
 
 
@@ -376,7 +388,7 @@ class _FakeHass:
                 COST_ENTITY_OBJECTS: {},
                 "model_entities": {},
                 "control_entities": {},
-                "config_entities": {},
+                "config_entities": {"read_only": "switch.miser_read_only"},
             }
         }
         self.states = _FakeStates()
@@ -688,3 +700,48 @@ async def test_force_power_reports_battery_side_discharge_negative() -> None:
 
     # 2910 W AC out / 0.97 = 3000 W out of the battery, reported negative.
     assert round(force.value, 0) == -3000
+
+
+# --- Read Only switch: plan and report, but never write to the inverter ---
+
+
+@pytest.mark.asyncio
+async def test_read_only_blocks_all_inverter_writes() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    hass.states.read_only = "on"
+    force = _ValueEntity()
+    hass.data[DOMAIN][COST_ENTITY_OBJECTS] = {CONTROL_FORCE_POWER: force}
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert controller.charge_calls == []
+    assert controller.discharge_calls == []
+    assert controller.idle_calls == 0
+    # Still reports the plan.
+    assert force.value == 3000.0
+
+
+@pytest.mark.asyncio
+async def test_read_only_blocks_idle_writes_too() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    hass.states.read_only = "on"
+    flows = _window_around_now(0.0, 0.0, [50.0] * 6)  # nothing forced -> would set idle
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert controller.idle_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_missing_read_only_switch_defaults_to_no_writes() -> None:
+    controller = _RecordingController()
+    hass = _FakeHass(controller)
+    hass.data[DOMAIN]["config_entities"] = {}
+    flows = _window_around_now(3000.0, 1200.0, [22.0, 29.0, 36.0, 43.0, 50.0, 83.0])
+
+    await _apply_inverter_control(hass, _FakeModel(flows), schedule_checks=False)
+
+    assert controller.charge_calls == []
