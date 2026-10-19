@@ -5,6 +5,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_NAME
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import selector
 from homeassistant.loader import async_get_custom_components, async_get_integration
 
 from .const import (
@@ -18,11 +19,37 @@ from .const import (
     DEFAULTS,
     DOMAIN,
     NAME,
+    TARIFF_SOURCE_ACCOUNT,
+    TARIFF_SOURCE_CODES,
+    TARIFF_SOURCE_ENTITIES,
+    TARIFF_SOURCE_OCTOPUS_ENERGY,
 )
+from .entity_tariff import PRICE_UNIT_AUTO, PRICE_UNIT_GBP, PRICE_UNIT_PENCE, EntityTariff
 from .inverters import INVERTER_DEFS, get_inverter_controller_class
 from .utils import get_integration_entities, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _entities_give_prices(hass: HomeAssistant, entity_ids: list[str], price_unit: str) -> bool:
+    """True if the entities currently provide at least one usable price."""
+    if not entity_ids:
+        return False
+    rates, flat = EntityTariff(hass, entity_ids, price_unit=price_unit).read_rates()
+    return bool(rates) or flat is not None
+
+
+def _default_price_entities(hass: HomeAssistant) -> tuple[list[str], list[str]]:
+    """Suggest the Octopus Energy integration's day-rate entities, if present."""
+    import_entities, export_entities = [], []
+    for state in hass.states.async_all("event"):
+        entity_id = state.entity_id
+        if not entity_id.startswith("event.octopus_energy_electricity_"):
+            continue
+        if not entity_id.endswith(("_current_day_rates", "_next_day_rates")):
+            continue
+        (export_entities if "_export_" in entity_id else import_entities).append(entity_id)
+    return sorted(import_entities), sorted(export_entities)
 
 
 async def _get_integration_name(hass: HomeAssistant, domain: str) -> str:
@@ -226,10 +253,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             self._options["tariff_source"] = user_input.get("tariff_source")
-            if self._options["tariff_source"] == "Specify Octopus Account ID and API Key":
+            if self._options["tariff_source"] == TARIFF_SOURCE_ACCOUNT:
                 return await self.async_step_octopus_account()
-            elif self._options["tariff_source"] == "Specify Octopus import and export tariff codes directly":
+            elif self._options["tariff_source"] == TARIFF_SOURCE_CODES:
                 return await self.async_step_tariff_codes()
+            elif self._options["tariff_source"] == TARIFF_SOURCE_ENTITIES:
+                return await self.async_step_tariff_entities()
             elif self._options["tariff_source"]:
                 return await self.async_step_system_parameters()
             else:
@@ -237,15 +266,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         # Options for selecting the tariff source
         options = [
-            "Get tariff codes from Octopus Energy integration",
-            "Specify Octopus Account ID and API Key",
-            "Specify Octopus import and export tariff codes directly",
-            "Enter custom import and export tariffs via configuration.yaml",
+            TARIFF_SOURCE_OCTOPUS_ENERGY,
+            TARIFF_SOURCE_ACCOUNT,
+            TARIFF_SOURCE_CODES,
+            TARIFF_SOURCE_ENTITIES,
         ]
 
         if not self._use_octopus_energy:
             # Remove the option if Octopus Energy is not installed
-            options.remove("Get tariff codes from Octopus Energy integration")
+            options.remove(TARIFF_SOURCE_OCTOPUS_ENERGY)
 
         # Display a form for selecting the tariff source
         schema = vol.Schema({vol.Required("tariff_source"): vol.In(options)})
@@ -288,6 +317,50 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Display a form for entering tariff codes
         schema = vol.Schema({vol.Required("import_code"): str, vol.Optional("export_code"): str})
         return self.async_show_form(step_id="tariff_codes", data_schema=schema, errors=errors)
+
+    async def async_step_tariff_entities(self, user_input=None):
+        """
+        Step 4c: Choose Home Assistant entities that provide import and export prices.
+        """
+        errors = {}
+
+        if user_input is not None:
+            import_entities = list(user_input.get("import_entities") or [])
+            export_entities = list(user_input.get("export_entities") or [])
+            price_unit = user_input.get("price_unit", PRICE_UNIT_AUTO)
+
+            if not _entities_give_prices(self.hass, import_entities, price_unit):
+                errors["import_entities"] = "no_prices"
+            if export_entities and not _entities_give_prices(self.hass, export_entities, price_unit):
+                errors["export_entities"] = "no_prices"
+
+            if not errors:
+                self._options["import_entities"] = import_entities
+                self._options["export_entities"] = export_entities
+                self._options["price_unit"] = price_unit
+                return await self.async_step_system_parameters()
+
+        default_import, default_export = _default_price_entities(self.hass)
+        price_entity = selector.EntitySelector(
+            selector.EntitySelectorConfig(domain=["sensor", "event", "input_number"], multiple=True)
+        )
+        schema = vol.Schema(
+            {
+                vol.Required("import_entities", default=default_import): price_entity,
+                vol.Optional("export_entities", default=default_export): price_entity,
+                vol.Required("price_unit", default=PRICE_UNIT_AUTO): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value=PRICE_UNIT_AUTO, label="Detect automatically"),
+                            selector.SelectOptionDict(value=PRICE_UNIT_GBP, label="Pounds per kWh (e.g. 0.2667)"),
+                            selector.SelectOptionDict(value=PRICE_UNIT_PENCE, label="Pence per kWh (e.g. 26.67)"),
+                        ],
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="tariff_entities", data_schema=schema, errors=errors)
 
     async def async_step_system_parameters(self, user_input=None):
         """

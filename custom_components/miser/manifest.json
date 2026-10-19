@@ -1,7 +1,7 @@
 {
   "domain": "miser",
   "name": "Miser PV System Optimiser",
-  "after_dependencies": ["recorder"],
+  "after_dependencies": ["octopus_energy", "recorder"],
   "codeowners": ["@fboundy"],
   "config_flow": true,
   "dependencies": ["solcast_solar"],

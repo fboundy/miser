@@ -28,7 +28,12 @@ from .const import (
     MODEL_ENTITIES_AVAILABLE_WAIT,
     COST_ENTITY_OBJECTS,
     CONTROL_STATE,
+    TARIFF_SOURCE_ACCOUNT,
+    TARIFF_SOURCE_CODES,
+    TARIFF_SOURCE_ENTITIES,
+    TARIFF_SOURCE_OCTOPUS_ENERGY,
 )
+from .entity_tariff import PRICE_UNIT_AUTO, EntityTariff
 from .inverters import get_inverter_controller_class
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
 from .utils import (
@@ -155,15 +160,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
-    if entry.options.get("tariff_source", "") == "Get tariff codes from Octopus Energy integration":
+    if entry.options.get("tariff_source", "") == TARIFF_SOURCE_ENTITIES:
+        return _set_entity_tariffs(hass, entry)
+
+    if entry.options.get("tariff_source", "") == TARIFF_SOURCE_OCTOPUS_ENERGY:
         _LOGGER.debug("Loading data from OE integration")
         octopus_info = await get_octopus_integration_data(hass) or {}
-    elif entry.options.get("tariff_source", "") == "Specify Octopus Account ID and API Key":
+    elif entry.options.get("tariff_source", "") == TARIFF_SOURCE_ACCOUNT:
         _LOGGER.debug("Loading Octopus data from API using account details")
         octopus_info = await get_octopus_info_from_account(
             hass, entry.data.get("account_id", None), entry.data.get("api_key", None)
         ) or {}
-    elif entry.options.get("tariff_source", "") == "Specify Octopus import and export tariff codes directly":
+    elif entry.options.get("tariff_source", "") == TARIFF_SOURCE_CODES:
         octopus_info = {
             "tariff_code": {direction: entry.options.get(f"{direction}_code", None) for direction in IMPORT_EXPORT}
         }
@@ -193,6 +201,25 @@ async def _get_octopus_info(hass: HomeAssistant, entry: ConfigEntry):
         tariffs[direction] = await Tariff.create(tariff_code, export=(direction == "export"))
 
     hass.data[DOMAIN]["octopus_info"] = octopus_info
+    hass.data[DOMAIN]["tariffs"] = tariffs
+    hass.data[DOMAIN]["tariffs_checked_at"] = dt_util.utcnow()
+    return True
+
+
+def _set_entity_tariffs(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Use Home Assistant entities for prices; they are read fresh on every run."""
+    price_unit = entry.options.get("price_unit", PRICE_UNIT_AUTO)
+    tariffs = {}
+    for direction in IMPORT_EXPORT:
+        entity_ids = entry.options.get(f"{direction}_entities") or []
+        if entity_ids:
+            tariffs[direction] = EntityTariff(hass, entity_ids, export=(direction == "export"), price_unit=price_unit)
+    if "import" not in tariffs:
+        raise ConfigEntryNotReady("No import price entity configured")
+
+    hass.data[DOMAIN]["octopus_info"] = {
+        "tariff_code": {direction: tariff.tariff_code for direction, tariff in tariffs.items()}
+    }
     hass.data[DOMAIN]["tariffs"] = tariffs
     hass.data[DOMAIN]["tariffs_checked_at"] = dt_util.utcnow()
     return True

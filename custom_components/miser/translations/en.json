@@ -37,6 +37,19 @@
             "export_code": "Export Tariff Code"
           }
         },
+        "tariff_entities": {
+          "title": "Price Entities",
+          "description": "Choose the entities that provide your import and export prices. Entities with a list of rates (such as the Octopus Energy integration's current and next day rates) give Miser future prices; an entity with only a numeric state is used as a flat price. Prices are read on every optimiser run.",
+          "data": {
+            "import_entities": "Import price entities",
+            "export_entities": "Export price entities",
+            "price_unit": "Price units"
+          },
+          "data_description": {
+            "import_entities": "Select today's and tomorrow's rate entities so Miser can see ahead.",
+            "export_entities": "Leave empty if you are not paid for export."
+          }
+        },
         "system_parameters": {
           "title": "Enter System Parameters",
           "description": "Provide the specifications for your energy system, such as battery capacity and efficiency. These are initial values and can be edited via the Miser UI.",
@@ -72,7 +85,8 @@
         "missing_codes": "Both import and export tariff codes are required.",
         "missing_controller_entities": "The selected inverter integration does not expose the required entities.",
         "missing_parameters": "All system parameters must be provided.",
-        "missing_fields": "All required fields must be completed."
+        "missing_fields": "All required fields must be completed.",
+        "no_prices": "No usable prices found on the selected entities."
       }
     },
     "options": {

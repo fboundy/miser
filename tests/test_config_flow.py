@@ -141,3 +141,36 @@ async def test_options_flow_merges_into_existing_options(hass):
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert entry.options == {**original, "name": "House"}
+
+
+async def test_default_price_entities_suggest_octopus_energy_day_rates(hass):
+    from custom_components.miser.config_flow import _default_price_entities
+
+    for entity_id in [
+        "event.octopus_energy_electricity_a_current_day_rates",
+        "event.octopus_energy_electricity_a_next_day_rates",
+        "event.octopus_energy_electricity_b_export_current_day_rates",
+        "event.octopus_energy_electricity_b_export_next_day_rates",
+        "event.octopus_energy_electricity_a_previous_day_rates",
+    ]:
+        hass.states.async_set(entity_id, "2026-10-19T00:00:00+00:00")
+
+    import_ids, export_ids = _default_price_entities(hass)
+    assert import_ids == [
+        "event.octopus_energy_electricity_a_current_day_rates",
+        "event.octopus_energy_electricity_a_next_day_rates",
+    ]
+    assert export_ids == [
+        "event.octopus_energy_electricity_b_export_current_day_rates",
+        "event.octopus_energy_electricity_b_export_next_day_rates",
+    ]
+
+
+async def test_entities_give_prices_validation(hass):
+    from custom_components.miser.config_flow import _entities_give_prices
+
+    hass.states.async_set("sensor.rate", "0.2667", {"unit_of_measurement": "GBP/kWh"})
+    hass.states.async_set("sensor.text", "cheap")
+    assert _entities_give_prices(hass, ["sensor.rate"], "auto")
+    assert not _entities_give_prices(hass, ["sensor.text"], "auto")
+    assert not _entities_give_prices(hass, [], "auto")

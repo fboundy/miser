@@ -146,7 +146,13 @@ async def optimise(hass: HomeAssistant, now=None):
     await _get_consumption(hass=hass, start=start, end=end, freq=freq)
     await _get_solcast(hass=hass, start=start, end=end, freq=freq)
     await _refresh_tariffs_if_due(hass)
-    await _get_prices(hass=hass, start=start, end=end, freq=freq)
+    try:
+        await _get_prices(hass=hass, start=start, end=end, freq=freq)
+    except ValueError as err:
+        # e.g. price entities not loaded yet after a restart: skip this run.
+        _LOGGER.warning("Prices unavailable - run skipped: %s", err)
+        await _write_status(hass, "Awaiting Sensors")
+        return
     merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
     _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
     # >>> Do some checks on the data validity here

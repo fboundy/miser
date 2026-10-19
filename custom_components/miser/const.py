@@ -67,6 +67,12 @@ CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
 CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
 
+# Tariff sources offered by the config flow (stored in options["tariff_source"]).
+TARIFF_SOURCE_OCTOPUS_ENERGY = "Get tariff codes from Octopus Energy integration"
+TARIFF_SOURCE_ACCOUNT = "Specify Octopus Account ID and API Key"
+TARIFF_SOURCE_CODES = "Specify Octopus import and export tariff codes directly"
+TARIFF_SOURCE_ENTITIES = "Use Home Assistant entities for import and export prices"
+
 # Default values
 DEFAULT_CHARGER_POWER = 3000  # W
 DEFAULTS = {
