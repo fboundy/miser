@@ -1,5 +1,4 @@
 import logging
-from datetime import datetime
 
 import aiohttp
 import pandas as pd
@@ -14,18 +13,48 @@ from .const import (
     AGILE_PREDICT_URL,
 )
 
+from .entity_tariff import extend_daily_pattern
 from .utils import log_config_entry, redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
 
+# How often a Tariff re-fetches its rates. Octopus publishes Agile and Flux
+# rates daily and changes fixed rates from time to time; fetching only at setup
+# left Miser on stale prices until the next restart.
+RATE_REFRESH_INTERVAL = pd.Timedelta(hours=1)
+# Only rates overlapping this look-back are fetched (open-ended current rates
+# are still returned), instead of the tariff's whole history.
+RATE_LOOKBACK = pd.Timedelta(days=2)
 
-def _oct_time(self, d):
-    # print(d)
-    return datetime(
-        year=pd.Timestamp(d).year,
-        month=pd.Timestamp(d).month,
-        day=pd.Timestamp(d).day,
-    )
+
+def _utc(value) -> pd.Timestamp | None:
+    if value is None:
+        return None
+    stamp = pd.Timestamp(value)
+    return stamp.tz_convert("UTC") if stamp.tzinfo else stamp.tz_localize("UTC")
+
+
+def _usable_rates(results: list[dict]) -> list[dict]:
+    """Drop non-direct-debit duplicates; keep rows with no payment method."""
+    return [x for x in results if x.get("payment_method") != "NON_DIRECT_DEBIT"]
+
+
+def rates_to_series(rates: list[dict], index: pd.DatetimeIndex) -> pd.Series:
+    """Price for each slot from Octopus rates, honouring valid_from AND valid_to.
+
+    Each rate fills only its own [valid_from, valid_to) interval; an open-ended
+    rate (valid_to None) runs to the end. Rates are applied oldest first so a
+    newer rate overrides an older one. Slots no rate covers stay NaN.
+    """
+    series = pd.Series(index=index, dtype=float)
+    for rate in sorted(rates, key=lambda x: _utc(x["valid_from"])):
+        start = _utc(rate["valid_from"])
+        end = _utc(rate.get("valid_to"))
+        mask = index >= start
+        if end is not None:
+            mask &= index < end
+        series[mask] = float(rate["value_inc_vat"])
+    return series
 
 
 async def fetch_api_data(url: str, params: dict = None, api_key: str = None) -> dict:
@@ -220,6 +249,8 @@ class Tariff:
         self._area = kwargs.get("area", None)
         self._eco7_start = pd.Timestamp(eco7_start, tz="UTC")
         self._manual = manual
+        self._fetched_at: pd.Timestamp | None = None
+        self.agile_predict = None
 
     @classmethod
     async def create(cls, tariff_code, **kwargs):
@@ -285,30 +316,43 @@ class Tariff:
         #                 level="WARNING",
         #             )
 
-    async def _get_from_api(self, period_from: pd.Timestamp | None = None, **kwargs) -> dict:
-        params = OCTOPUS_PRODUCT_PARAMS | {
-            k: _oct_time(kwargs.get(k, None)) for k in ["period_from", "period_to"] if kwargs.get(k, None) is not None
-        }
+    async def _get_from_api(self, period_from: pd.Timestamp | None = None, **kwargs) -> None:
+        if period_from is None:
+            period_from = pd.Timestamp.now(tz="UTC").normalize() - RATE_LOOKBACK
+        params = OCTOPUS_PRODUCT_PARAMS | {"period_from": _utc(period_from).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
         if not self._export:
             url = OCTOPUS_RATE_URLS["fixed"].format(product=self.product, code=self.tariff_code)
             data = await fetch_api_data(url=url, params=params)
-            self.fixed = [x for x in data["results"] if x["payment_method"] != "NON_DIRECT_DEBIT"]
+            self.fixed = _usable_rates(data["results"])
 
         if self.is_eco7:
             url = OCTOPUS_RATE_URLS["day"].format(product=self.product, code=self.tariff_code)
             data = await fetch_api_data(url=url, params=params)
-            self.day = [x for x in data["results"] if x["payment_method"] == "DIRECT_DEBIT"]
+            self.day = _usable_rates(data["results"])
 
             url = OCTOPUS_RATE_URLS["night"].format(product=self.product, code=self.tariff_code)
             data = await fetch_api_data(url=url, params=params)
-            self.night = [x for x in data["results"] if x["payment_method"] == "DIRECT_DEBIT"]
+            self.night = _usable_rates(data["results"])
             self.unit = self.day
 
         else:
             url = OCTOPUS_RATE_URLS["unit"].format(product=self.product, code=self.tariff_code)
             data = await fetch_api_data(url=url, params=params)
-            self.unit = data["results"]
+            self.unit = _usable_rates(data["results"])
+
+        self._fetched_at = pd.Timestamp.now(tz="UTC")
+
+    async def _refresh_if_due(self) -> None:
+        """Re-fetch rates periodically; keep the last good rates if that fails."""
+        if self._fetched_at is not None and pd.Timestamp.now(tz="UTC") - self._fetched_at < RATE_REFRESH_INTERVAL:
+            return
+        try:
+            await self._get_from_api()
+        except Exception as err:  # noqa: BLE001 - fall back to the rates we have
+            if self._fetched_at is None:
+                raise
+            _LOGGER.warning("Unable to refresh %s rates; using rates from %s: %s", self.tariff_code, self._fetched_at, err)
 
     @property
     def start(self):
@@ -325,163 +369,36 @@ class Tariff:
             return max([pd.Timestamp(x["valid_to"]) for x in self.unit])
 
     async def to_df(self, start=None, end=None, **kwargs):
-        time_now = pd.Timestamp.now(tz="UTC")
-        if start is None:
-            if self.is_eco7:
-                start = min([pd.Timestamp(x["valid_from"]) for x in self.day])
+        await self._refresh_if_due()
 
-            # elif self.manual:
-            #     start = pd.Timestamp.now(tz=self.tz).floor("1D")
-
-            else:
-                start = min([pd.Timestamp(x["valid_from"]) for x in self.unit])
-
-        if end is None:
-            end = pd.Timestamp.now(tz=start.tzinfo).ceil("30min")
-
-        # use_day_ahead = kwargs.get("day_ahead", ((start > time_now) or (end > time_now)))
+        now = pd.Timestamp.now(tz="UTC")
+        start = _utc(start) if start is not None else now.floor("30min")
+        end = _utc(end) if end is not None else now.ceil("30min")
+        index = pd.date_range(start.floor("30min"), end, freq="30min")
 
         if self.is_eco7:
-            df = pd.concat(
-                [pd.DataFrame(x).set_index("valid_from")["value_inc_vat"] for x in [self.day, self.night]],
-                axis=1,
-            ).set_axis(["unit", "Night"], axis=1)
-            df.index = pd.to_datetime(df.index)
-            df = df.sort_index()
-            df = df.reindex(
-                index=pd.date_range(
-                    min([pd.Timestamp(x["valid_from"]) for x in self.day]),
-                    end,
-                    freq="30min",
-                )
-            ).ffill()
-            mask = (df.index.time >= self._eco7_start.time()) & (
-                df.index.time < (self._eco7_start + pd.Timedelta(7, "hours")).time()
-            )
-            df.loc[mask, "unit"] = df.loc[mask, "Night"]
-            df = df["unit"].loc[start:end]
-
-        # elif self.manual:
-        #     df = (
-        #         pd.concat(
-        #             [
-        #                 pd.DataFrame(
-        #                     index=[midnight + pd.Timedelta(f"{x['period_start']}:00") for x in self.unit],
-        #                     data=[{"unit": x["price"]} for x in self.unit],
-        #                 ).sort_index()
-        #                 for midnight in pd.date_range(
-        #                     start.floor("1D") - pd.Timedelta("1D"),
-        #                     end.ceil("1D"),
-        #                     freq="1D",
-        #                 )
-        #             ]
-        #         )
-        #         .resample("30min")
-        #         .ffill()
-        #         .loc[start:end]
-        #     )
-
+            day = rates_to_series(self.day, index)
+            night = rates_to_series(self.night, index)
+            night_start = self._eco7_start.time()
+            night_end = (self._eco7_start + pd.Timedelta(7, "hours")).time()
+            in_night = (index.time >= night_start) & (index.time < night_end)
+            unit = day.where(~in_night, night)
         else:
-            df = pd.DataFrame(self.unit).set_index("valid_from")["value_inc_vat"]
-            df.index = pd.to_datetime(df.index)
-            df = df.sort_index()
-            if self.is_agile:
+            unit = rates_to_series(self.unit, index)
+            if self.is_agile and unit.isna().any():
                 self.agile_predict = await self._get_agile_predict()
-
                 if self.agile_predict is not None:
-                    df = pd.concat(
-                        [
-                            df,
-                            self.agile_predict.loc[df.index[-1] + pd.Timedelta("30min") : end],
-                        ]
-                    )
+                    unit = unit.fillna(self.agile_predict.reindex(index))
 
-            # If the index frequency >30 minutes this is a block tariff. Expand known blocks to
-            # 30-minute slots, then repeat the last 24-hour pattern for unpublished future slots.
-            if len(df) == 1:
-                newindex = pd.date_range(df.index[0], end, freq="30min")
-                df = df.reindex(index=newindex).ffill().loc[start:]
-            elif (df.index[-1] - df.index[-2]).total_seconds() / 60 > 30:
-                newindex = pd.date_range(df.index[0], df.index[-1], freq="30min")
-                df = df.reindex(index=newindex).ffill()
-                while df.index[-1] < end:
-                    dfx = df.iloc[-48:].copy()
-                    dfx.index = dfx.index + pd.Timedelta(hours=24)
-                    df = pd.concat([df, dfx])
-                    df = df[~df.index.duplicated(keep="first")]
-                df = df.loc[start:end]
-            else:
-                i = 0
-                while df.index[-1] < end and i < 7:
-                    i += 1
-                    extended_index = pd.date_range(
-                        df.index[-1] + pd.Timedelta(30, "minutes"),
-                        df.index[-1] + pd.Timedelta(24, "hours"),
-                        freq="30min",
-                    )
-                    dfx = pd.concat([df, pd.DataFrame(index=extended_index)]).shift(48).loc[extended_index[0] :]
-                    df = pd.concat([df, dfx])
-                    df = df[df.columns[0]]
-                df = df.loc[start:end]
-            df.name = "unit"
+        # Slots after the last published rate repeat the previous 24 hours.
+        unit = extend_daily_pattern(unit).ffill().bfill()
+        df = pd.DataFrame({"unit": unit})
 
-            # # SVB logging
-            # # self.log("")
-            # # self.log("Printin df just before concat.....")
-            # # self.log(df.to_string())
-
-            # # SVB #
-            # # It is at this point that df now looks like the Dataframe that compare_tariffs loads. This is the point
-            # # to overwrite the Df with IOG data from the BottlecapDave integration, loaded in pv_opt.py and passed in here via self.host.io_prices.
-            # # (SVB Note: io_prices should be passed in via Class, but I cannot figure out the structure of Tariff and Contract Classes to do this)
-
-            # if len(self.host.io_prices) > 0:
-            #     # Add IO slot prices as a column to dataframe.
-            #     df = pd.concat([df, self.host.io_prices], axis=1).set_axis(["unit", "io_unit"], axis=1)
-
-            #     df = df.dropna(subset=["unit"])  # Drop Nans
-            #     mask = df["io_unit"] < df["unit"]  # Mask is true if an IOslot
-            #     df.loc[mask, "unit"] = df[
-            #         "io_unit"
-            #     ]  # Overwrite unit (prices from website) with io_unit (prices from OE integration) if in an IOslot.
-            #     df = df.drop(["io_unit"], axis=1)  # remove IO prices column
-
-            #     # self.log("To_df, Printing result")
-            #     # self.log(df.to_string())
-
-        # Add a column "fixed" for the standing charge.
         if not self._export:
-            if not self.manual:
-                x = pd.DataFrame(self.fixed).set_index("valid_from")["value_inc_vat"].sort_index()
-                x.index = pd.to_datetime(x.index)
-                newindex = pd.date_range(x.index[0], df.index[-1], freq="30min")
-                x = x.reindex(newindex).sort_index()
-                x = x.ffill().loc[df.index[0] :]
-            else:
-                x = pd.DataFrame(index=df.index, data={"fixed": self.fixed})
-
-            df = pd.concat([df, x], axis=1).set_axis(["unit", "fixed"], axis=1)
-            mask = df.index.time != pd.Timestamp("00:00", tz="UTC").time()
-            df.loc[mask, "fixed"] = 0
-
-        df = pd.DataFrame(df)
-        # # SVB logging
-        # # self.log("")
-        # # self.log("Printing final result of to_df.....")
-        # # self.log(df.to_string())
-
-        # # Update for Octopus Savings Events if they exists
-        # if (self.host is not None) and ("unit" in df.columns):
-        #     events = self.host.saving_events
-        #     for id in events:
-        #         event_start = pd.Timestamp(events[id]["start"]).floor("30min")
-        #         event_end = pd.Timestamp(events[id]["end"]).ceil("30min")
-        #         event_value = int(events[id]["octopoints_per_kwh"]) / 8
-
-        #         if event_start <= end or event_end > start and event_value > 0:
-        #             event_start = max(event_start, start)
-        #             event_end = min(event_end - pd.Timedelta(30, "minutes"), end)
-        #             df["unit"].loc[event_start:event_end] += event_value
+            fixed = rates_to_series(self.fixed, index).ffill().bfill().fillna(0)
+            # Standing charge (p/day) is booked once a day, at midnight UTC.
+            fixed[index.time != pd.Timestamp("00:00").time()] = 0
+            df["fixed"] = fixed
 
         return df
 

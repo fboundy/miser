@@ -84,7 +84,7 @@ class EntityTariff:
         series = pd.Series(index=index, dtype=float)
         if rates:
             series = _fill_from_rates(index, rates)
-            series = _extend_daily_pattern(series)
+            series = extend_daily_pattern(series)
             series = series.ffill().bfill()
         else:
             series[:] = flat
@@ -166,7 +166,7 @@ def _fill_from_rates(index: pd.DatetimeIndex, rates) -> pd.Series:
     return series
 
 
-def _extend_daily_pattern(series: pd.Series) -> pd.Series:
+def extend_daily_pattern(series: pd.Series) -> pd.Series:
     """Fill slots after the last published price by repeating the previous 24 h."""
     known = series.dropna()
     if known.empty:
