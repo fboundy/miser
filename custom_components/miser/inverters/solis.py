@@ -189,7 +189,7 @@ class SolisInverter(InverterController):
                 mismatches.append(f"{label} is {actual_text}, expected {requested_local.strftime('%H:%M')}")
 
         actual_soc = self._numeric_state(soc_key)
-        expected_soc = self._target_soc(target_soc)
+        expected_soc = self._programmed_target_soc(state, target_soc)
         if actual_soc is None or abs(actual_soc - expected_soc) > CONTROL_CONFIRM_SOC_TOLERANCE:
             mismatches.append(f"target SOC is {actual_soc}, expected {expected_soc}")
 
@@ -298,6 +298,28 @@ class SolisInverter(InverterController):
 
     def _target_soc(self, target_soc: float) -> int:
         return round(max(0, min(100, float(target_soc))))
+
+    def _discharge_target_soc(self, target_soc: float) -> int:
+        """Discharge target the inverter will accept.
+
+        A Solis rejects a timed-discharge target at or below its over-discharge
+        SOC and silently keeps the previous target (writing 15 with a 15% floor
+        left the slot at 54%, so a discharge would stop far too early). Raise
+        the target to one above that floor when the floor is known.
+        """
+        target = self._target_soc(target_soc)
+        if self._entity_id(MODEL_BATTERY_MINIMUM_SOC) is None:
+            return target
+        floor = self._numeric_state(MODEL_BATTERY_MINIMUM_SOC)
+        if floor is None:
+            return target
+        return max(target, self._target_soc(floor + 1))
+
+    def _programmed_target_soc(self, state: str, target_soc: float) -> int:
+        """The target SOC actually written for this control state."""
+        if state == "discharging":
+            return self._discharge_target_soc(target_soc)
+        return self._target_soc(target_soc)
 
     def _numeric_state(self, key: str) -> float | None:
         state = self._state(self._required_entity_id(key))
@@ -444,7 +466,7 @@ class SolisSolaxModbusInverter(SolisInverter):
             end_hours_key=CONTROL_TIMED_DISCHARGE_END_HOURS,
             end_minutes_key=CONTROL_TIMED_DISCHARGE_END_MINUTES,
         )
-        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
+        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._discharge_target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
         await self._turn_off_if_on(CONTROL_TIMED_CHARGE_ON)
         if self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is not None:
@@ -492,7 +514,7 @@ class SolisSolaxModbusInverter(SolisInverter):
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
         )
         if controls_match:
             _LOGGER.debug("Refreshing %s control despite matching Solax entity states", state)
@@ -600,7 +622,7 @@ class SolisCloudInverter(SolisInverter):
         await self._set_timed_mode()
         await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
         await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
-        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
+        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._discharge_target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
 
@@ -628,7 +650,7 @@ class SolisCloudInverter(SolisInverter):
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
         )
 
     async def set_mode(self, mode: str) -> None:
@@ -774,7 +796,7 @@ class SolisConnectInverter(SolisInverter):
         await self._set_self_use_mode()
         await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
         await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
-        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
+        await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._discharge_target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
         await self._turn_off_if_on(CONTROL_TIMED_CHARGE_ON)
         await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
@@ -811,7 +833,7 @@ class SolisConnectInverter(SolisInverter):
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._target_soc(target_soc)) <= 1)
+            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
         )
 
     async def set_mode(self, mode: str) -> None:
