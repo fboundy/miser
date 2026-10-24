@@ -66,6 +66,7 @@ CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
 CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
+CONF_PREVENT_CYCLING = "prevent_cycling"
 
 # Tariff sources offered by the config flow (stored in options["tariff_source"]).
 TARIFF_SOURCE_OCTOPUS_ENERGY = "Get tariff codes from Octopus Energy integration"
@@ -109,6 +110,9 @@ DEFAULTS = {
     # cheapest forward replacement cost (symmetric with the deficit penalty),
     # so plans that leave the battery usefully charged are valued for it.
     CONF_VALUE_SURPLUS_SOC: True,
+    # Never force the battery to export to the grid (outside Axle VPP events):
+    # stops buying cheap to sell back, which wears the battery for pennies.
+    CONF_PREVENT_CYCLING: True,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -225,6 +229,7 @@ SWITCH_ENTITIES = {
         CONF_OPTIMISE_DISCHARGING,
         CONF_WHOLE_HORIZON_BETA,
         CONF_VALUE_SURPLUS_SOC,
+        CONF_PREVENT_CYCLING,
     ]
 }
 

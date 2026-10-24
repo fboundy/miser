@@ -152,12 +152,14 @@ class SolisInverter(InverterController):
         """Compare the requested control with what the integration now reports."""
         if state == "charging":
             enable_key = CONTROL_TIMED_CHARGE_ON
+            opposite_key = CONTROL_TIMED_DISCHARGE_ON
             start_keys = (CONTROL_TIMED_CHARGE_START_HOURS, CONTROL_TIMED_CHARGE_START_MINUTES)
             end_keys = (CONTROL_TIMED_CHARGE_END_HOURS, CONTROL_TIMED_CHARGE_END_MINUTES)
             current_key = CONTROL_TIMED_CHARGE_CURRENT
             soc_key = CONTROL_TIMED_CHARGE_SOC
         elif state == "discharging":
             enable_key = CONTROL_TIMED_DISCHARGE_ON
+            opposite_key = CONTROL_TIMED_CHARGE_ON
             start_keys = (CONTROL_TIMED_DISCHARGE_START_HOURS, CONTROL_TIMED_DISCHARGE_START_MINUTES)
             end_keys = (CONTROL_TIMED_DISCHARGE_END_HOURS, CONTROL_TIMED_DISCHARGE_END_MINUTES)
             current_key = CONTROL_TIMED_DISCHARGE_CURRENT
@@ -174,6 +176,8 @@ class SolisInverter(InverterController):
 
         if self._entity_id(enable_key) is not None and not self._switch_on(enable_key):
             mismatches.append(f"{state} enable switch is off")
+        if self._switch_on(opposite_key):
+            mismatches.append("the opposite timed slot is still enabled")
 
         for label, keys, requested in (("start", start_keys, start), ("end", end_keys, end)):
             if self._entity_id(keys[0]) is None:
@@ -335,6 +339,11 @@ class SolisInverter(InverterController):
         state = self._state(entity_id)
         return state is not None and state.state.lower() == "on"
 
+    async def _turn_off_if_on(self, key: str) -> None:
+        """Switch off the opposite timed slot so charge and discharge never overlap."""
+        if self._entity_id(key) is not None and self._switch_on(key):
+            await self._turn_off(key)
+
 
 class SolisSolaxModbusInverter(SolisInverter):
     """Solis inverter controlled through the SolaX Modbus integration."""
@@ -421,6 +430,7 @@ class SolisSolaxModbusInverter(SolisInverter):
         )
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_off_if_on(CONTROL_TIMED_DISCHARGE_ON)
         if self._entity_id(CONTROL_TIMED_CHARGE_ON) is not None:
             await self._turn_on(CONTROL_TIMED_CHARGE_ON)
         await self._press(CONTROL_TIMED_CHARGE_BUTTON)
@@ -436,6 +446,7 @@ class SolisSolaxModbusInverter(SolisInverter):
         )
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_off_if_on(CONTROL_TIMED_CHARGE_ON)
         if self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is not None:
             await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
@@ -756,6 +767,7 @@ class SolisConnectInverter(SolisInverter):
         await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_off_if_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._turn_on(CONTROL_TIMED_CHARGE_ON)
 
     async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
@@ -764,6 +776,7 @@ class SolisConnectInverter(SolisInverter):
         await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._turn_off_if_on(CONTROL_TIMED_CHARGE_ON)
         await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
 
     async def control_idle(self) -> None:

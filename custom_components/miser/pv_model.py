@@ -173,6 +173,24 @@ class PVsystemModel:
         except:
             return self.consumption.index
 
+    def forced_discharge_allowed(self, flows: pd.DataFrame) -> pd.Series:
+        """Which slots may contain a forced (grid-export) discharge.
+
+        `discharge_windows` is None when unrestricted. With Prevent Cycling on
+        it is a list of (start, end) windows - Axle VPP events - outside which
+        the plan may not force the battery to export: no buying cheap to sell
+        back, and no emptying the battery to the grid before a refill. The
+        battery still covers the house in self-use and still grid-charges.
+        """
+        windows = getattr(self, "discharge_windows", None)
+        if windows is None:
+            return pd.Series(True, index=flows.index)
+        slot_ends = flows.index + pd.to_timedelta(flows["dt_hours"], unit="h")
+        allowed = pd.Series(False, index=flows.index)
+        for start, end in windows:
+            allowed |= (flows.index < end) & (slot_ends > start)
+        return allowed
+
     async def forced(self, slots=None) -> pd.Series:
         slots = slots or []
         forced = pd.Series(index=self.index, data=0)
@@ -633,6 +651,7 @@ class PVsystemModel:
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["forced"] <= 0)
             & (flows["solar"] <= flows["consumption"])
+            & self.forced_discharge_allowed(flows)
         )
 
         a0 = available.sum()
@@ -739,6 +758,7 @@ class PVsystemModel:
             & (-flows["forced"] < self.discharge_power_limit)
             & (flows["soc_end"] > self.battery.max_dod * 100)
             & (flows["solar"] <= flows["consumption"])
+            & self.forced_discharge_allowed(flows)
         ]
 
         if candidate_flows.empty:
@@ -841,7 +861,9 @@ class PVsystemModel:
         if write_cost:
             _LOGGER.info("Whole-horizon inverter write cost: %.1fp per control change", write_cost)
 
+        discharge_allowed = self.forced_discharge_allowed(flows)
         for start, row in flows.iterrows():
+            may_discharge = bool(discharge_allowed[start])
             next_costs: dict[tuple[float, str], float] = {}
             next_energies: dict[tuple[float, str], float] = {}
             next_paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {}
@@ -860,6 +882,8 @@ class PVsystemModel:
                     requirement=requirement,
                     dt_hours=dt_hours,
                 ):
+                    if not may_discharge and forced_power is not None and forced_power < 0:
+                        continue
                     slot_cost = (
                         max(grid, 0) * dt_hours * float(row["import"])
                         + min(grid, 0) * dt_hours * float(row["export"])

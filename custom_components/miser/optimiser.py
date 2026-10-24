@@ -40,6 +40,7 @@ from .const import (
     CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_VALUE_SURPLUS_SOC,
     CONF_READ_ONLY,
+    CONF_PREVENT_CYCLING,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -153,6 +154,13 @@ async def optimise(hass: HomeAssistant, now=None):
         _LOGGER.warning("Prices unavailable - run skipped: %s", err)
         await _write_status(hass, "Awaiting Sensors")
         return
+
+    # Prevent Cycling: the plan may only force the battery to export during
+    # Axle VPP events. None leaves forced discharge unrestricted.
+    if await get_value(hass, CONF_PREVENT_CYCLING, default_value=DEFAULTS[CONF_PREVENT_CYCLING]):
+        model.discharge_windows = _paid_export_windows(hass)
+    else:
+        model.discharge_windows = None
     merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
     _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
     # >>> Do some checks on the data validity here
@@ -460,7 +468,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         next_slot_power=_reported_battery_power(model, next_slot),
     )
 
-    slots_to_apply = _slots_to_apply(control_slots, now, apply_window)
+    slots_to_apply = _slot_to_apply(control_slots, now, apply_window, current_slot)
 
     # Read Only: plan and report as normal, but never write to the inverter.
     if await get_value(hass, CONF_READ_ONLY, default_value=DEFAULTS[CONF_READ_ONLY]):
@@ -718,6 +726,25 @@ def _drop_short_control_windows(control_slots: list[dict], min_duration: pd.Time
             min_duration,
         )
     return kept
+
+
+def _slot_to_apply(
+    control_slots: list[dict],
+    now: pd.Timestamp,
+    apply_window: pd.Timedelta,
+    current_slot: dict | None,
+) -> list[dict]:
+    """The single slot to programme: the one running now, else the next to start.
+
+    The inverter must never hold a charge and a discharge slot that both cover
+    the present: given both, a Solis just charges, so planned discharges did not
+    happen and Miser reported "Discharging" while the battery charged. The next
+    window is picked up by the compliance check scheduled at each slot boundary.
+    """
+    if current_slot is not None:
+        return [current_slot]
+    upcoming = _slots_to_apply(control_slots, now, apply_window)
+    return upcoming[:1]
 
 
 def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: pd.Timedelta) -> list[dict]:
@@ -1828,6 +1855,14 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     _apply_axle_vpp_export_price(hass, prices, freq)
     hass.data[DOMAIN]["model"].prices = prices.loc[start : end - freq]
     hass.data[DOMAIN]["model"].valuation_prices = prices.loc[end : valuation_end - freq]
+
+
+def _paid_export_windows(hass: HomeAssistant) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
+    """Windows where forced export is allowed even with Prevent Cycling on."""
+    window = axle_vpp_control_window(hass)
+    if window is None:
+        return []
+    return [(window["event_start"], window["event_end"])]
 
 
 def _apply_axle_vpp_export_price(hass: HomeAssistant, prices: pd.DataFrame, freq: pd.Timedelta) -> None:
