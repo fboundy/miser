@@ -47,6 +47,19 @@ SOLIS_CLOUD_TIMED_MODE = "Self-Use Mode - Allow Grid Charging"
 SOLIS_CLOUD_IDLE_MODE = "Self-Use Mode - No Grid Charging"
 SOLIS_CONNECT_IDLE_MODE = "Self-Use"
 SOLIS_CONNECT_BACKUP_MODE = "Backup/Reserve"
+SOLIS_CONNECT_STORAGE_CONTROL = "storage_control_value"
+# Work-mode option for each value of the storage-control register (43110), as
+# defined by SolisConnect's work-mode select.
+SOLIS_CONNECT_MODES_BY_REGISTER = {
+    1: "Self-Use - No Grid Charging",
+    17: "Backup/Reserve - No Grid Charging",
+    33: "Self-Use",
+    37: "Off-Grid Mode",
+    41: "Battery Awaken",
+    49: "Backup/Reserve",
+    64: "Feed-in priority - No Grid Charging",
+    96: "Feed-in priority",
+}
 SOLIS_CONNECT_CLOCK_YEAR = "clock_year"
 SOLIS_CONNECT_CLOCK_MONTH = "clock_month"
 SOLIS_CONNECT_CLOCK_DAY = "clock_day"
@@ -768,6 +781,7 @@ class SolisConnectInverter(SolisInverter):
             SOLIS_CONNECT_CLOCK_HOURS: "sensor.{device_name}_clock_hours",
             SOLIS_CONNECT_CLOCK_MINUTES: "sensor.{device_name}_clock_minutes",
             SOLIS_CONNECT_CLOCK_SECONDS: "sensor.{device_name}_clock_seconds",
+            SOLIS_CONNECT_STORAGE_CONTROL: "sensor.{device_name}_storage_control_switching_value",
         },
     }
 
@@ -867,15 +881,26 @@ class SolisConnectInverter(SolisInverter):
             blocking=True,
         )
 
-    async def get_mode(self) -> str:
-        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
-        return None if state is None else state.state
-
     async def power_to_current(self, power: float) -> float | None:
         voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
         if voltage is None or voltage <= 0:
             return None
         return abs(float(power)) / voltage
+
+    async def get_mode(self) -> str | None:
+        """Current work mode, read from the storage-control register.
+
+        The work-mode select can sit at "unknown" indefinitely. Taking that at
+        face value made Miser re-select the mode on every run, and selecting
+        Backup/Reserve resets the inverter's Backup SOC to 99%, so a reserve
+        set by the user was wiped within minutes. The register is reliable.
+        """
+        if self._entity_id(SOLIS_CONNECT_STORAGE_CONTROL) is not None:
+            value = self._numeric_state(SOLIS_CONNECT_STORAGE_CONTROL)
+            if value is not None and int(value) in SOLIS_CONNECT_MODES_BY_REGISTER:
+                return SOLIS_CONNECT_MODES_BY_REGISTER[int(value)]
+        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
+        return None if state is None else state.state
 
     async def _set_base_mode(self) -> None:
         """Self-Use normally; Backup/Reserve while Miser's Backup Mode is on."""
