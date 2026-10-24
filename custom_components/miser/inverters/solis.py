@@ -92,8 +92,26 @@ class SolisInverter(InverterController):
     def __init__(self, hass, integration_data: dict | None = None) -> None:
         self.hass = hass
         self.integration_data = integration_data or {}
-        # Set by the optimiser on every run from Miser's Backup Mode switch.
+        # Set by the optimiser on every run from Miser's Backup Mode switch and
+        # Backup SOC number.
         self.backup_mode = False
+        self.backup_soc: float | None = None
+
+    async def ensure_backup_soc(self) -> None:
+        """Keep the inverter's Backup SOC at Miser's value while Backup Mode is on.
+
+        Selecting Backup/Reserve resets the inverter's Backup SOC to 99%, so this
+        runs after any mode change and rewrites the reserve only when it differs.
+        """
+        if not self.backup_mode or self.backup_soc is None:
+            return
+        if self._entity_id(CONTROL_BACKUP_MODE_SOC) is None:
+            return
+        target = self._target_soc(self.backup_soc)
+        current = self._numeric_state(CONTROL_BACKUP_MODE_SOC)
+        if current is not None and abs(current - target) < 1:
+            return
+        await self._set_number(CONTROL_BACKUP_MODE_SOC, target)
 
     @property
     def supports_backup_mode(self) -> bool:

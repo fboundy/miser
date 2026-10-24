@@ -68,6 +68,7 @@ CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
 CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
 CONF_PREVENT_CYCLING = "prevent_cycling"
 CONF_BACKUP_MODE = "backup_mode"
+CONF_BACKUP_SOC = "backup_soc"
 
 # Tariff sources offered by the config flow (stored in options["tariff_source"]).
 TARIFF_SOURCE_OCTOPUS_ENERGY = "Get tariff codes from Octopus Energy integration"
@@ -117,6 +118,9 @@ DEFAULTS = {
     # Hold the inverter's Backup SOC (e.g. when power cuts are likely): plan with
     # it as the battery floor and run the inverter in its backup/reserve mode.
     CONF_BACKUP_MODE: False,
+    # Reserve held while Backup Mode is on. Miser owns this value: the inverter's
+    # own Backup SOC resets to 99% whenever Backup/Reserve is selected.
+    CONF_BACKUP_SOC: 50,
 }
 
 PV_SYSTEM_ENTITIES = [
@@ -369,6 +373,14 @@ NUMBER_ENTITIES = {
         "step": 1,
         "default": DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
         "unit": "p",
+    },
+    CONF_BACKUP_SOC: {
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "default": DEFAULTS[CONF_BACKUP_SOC],
+        "unit": PERCENTAGE,
+        "device_class": SensorDeviceClass.BATTERY,
     },
 }
 

@@ -42,7 +42,7 @@ from .const import (
     CONF_READ_ONLY,
     CONF_PREVENT_CYCLING,
     CONF_BACKUP_MODE,
-    CONTROL_BACKUP_MODE_SOC,
+    CONF_BACKUP_SOC,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -457,7 +457,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     current_slot = _find_current_control_slot(control_slots, now)
 
     backup_soc = getattr(model, "backup_soc", None)
-    _set_controller_backup_mode(hass, inverter_controller, backup_soc is not None)
+    _set_controller_backup_mode(hass, inverter_controller, backup_soc is not None, backup_soc)
 
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
@@ -512,6 +512,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
                     await control_idle()
         except (RuntimeError, HomeAssistantError) as err:
             _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
+        await _ensure_backup_reserve(inverter_controller)
         return
 
     all_confirmed = True
@@ -519,10 +520,23 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         if not await _programme_control_slot(hass, inverter_controller, slot, model):
             all_confirmed = False
 
+    await _ensure_backup_reserve(inverter_controller)
+
     if all_confirmed:
         _clear_control_failure(hass)
     else:
         await _write_status(hass, CONTROL_FAILED_STATE)
+
+
+async def _ensure_backup_reserve(inverter_controller) -> None:
+    """After any mode change, put the inverter's Backup SOC back to Miser's reserve."""
+    ensure = getattr(inverter_controller, "ensure_backup_soc", None)
+    if ensure is None:
+        return
+    try:
+        await ensure()
+    except (RuntimeError, HomeAssistantError) as err:
+        _LOGGER.warning("Unable to set the inverter's Backup SOC: %s", err)
 
 
 def _battery_side_power(model, state: str, power: float) -> float:
@@ -786,10 +800,13 @@ def _display_state(state: str, backup: bool = False) -> str:
     return f"{display} (Backup)" if backup else display
 
 
-def _set_controller_backup_mode(hass: HomeAssistant, inverter_controller, backup: bool) -> None:
-    """Tell the controller which base mode to hold; warn once if it can't do backup."""
+def _set_controller_backup_mode(
+    hass: HomeAssistant, inverter_controller, backup: bool, backup_soc: float | None = None
+) -> None:
+    """Tell the controller which base mode and reserve to hold; warn once if it can't do backup."""
     if hasattr(inverter_controller, "backup_mode"):
         inverter_controller.backup_mode = backup
+        inverter_controller.backup_soc = backup_soc if backup else None
     if backup and not getattr(inverter_controller, "supports_backup_mode", False):
         data = hass.data.get(DOMAIN, {})
         if not data.get("backup_mode_unsupported_warned"):
@@ -1892,10 +1909,10 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
 async def _battery_floor_soc(hass: HomeAssistant, model) -> tuple[bool, float]:
     """(backup_active, floor %) for planning.
 
-    Backup Mode swaps the inverter's Backup SOC in for the over-discharge SOC,
-    so the plan still optimises charge and discharge but never plans below the
-    reserve. Falls back to the over-discharge SOC if the Backup SOC can't be
-    read.
+    Backup Mode swaps Miser's Backup SOC in for the over-discharge SOC, so the
+    plan still optimises charge and discharge but never plans below the
+    reserve. Miser's own number is used, not the inverter's Backup SOC, which
+    reads 99% whenever Backup/Reserve has just been selected.
     """
     minimum = _soc_value(await get_value(hass, MODEL_BATTERY_MINIMUM_SOC))
     if minimum is None:
@@ -1904,10 +1921,9 @@ async def _battery_floor_soc(hass: HomeAssistant, model) -> tuple[bool, float]:
     if not await get_value(hass, CONF_BACKUP_MODE, default_value=DEFAULTS[CONF_BACKUP_MODE]):
         return False, minimum
 
-    backup_soc = _soc_value(await get_value(hass, CONTROL_BACKUP_MODE_SOC))
+    backup_soc = _soc_value(await get_value(hass, CONF_BACKUP_SOC, default_value=DEFAULTS[CONF_BACKUP_SOC]))
     if backup_soc is None:
-        _LOGGER.warning("Backup Mode is on but the Backup SOC is unavailable; planning to %.0f%%", minimum)
-        return False, minimum
+        backup_soc = float(DEFAULTS[CONF_BACKUP_SOC])
     return True, max(backup_soc, minimum)
 
 

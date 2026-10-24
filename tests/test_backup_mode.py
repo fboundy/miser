@@ -7,6 +7,7 @@ import pytest
 
 from custom_components.miser.const import (
     CONF_BACKUP_MODE,
+    CONF_BACKUP_SOC,
     CONTROL_BACKUP_MODE_SOC,
     CONTROL_STATE,
     COST_ENTITY_OBJECTS,
@@ -28,19 +29,25 @@ class _ConfigEntries:
 
 
 class _FloorHass:
+    """Miser's Backup Mode switch and Backup SOC number, plus the inverter's 99% Backup SOC."""
+
     def __init__(self, backup: str, backup_soc: str | None, minimum: str = "15") -> None:
-        states = {"switch.miser_backup_mode": _State(backup), "number.odsoc": _State(minimum)}
-        control = {}
+        states = {
+            "switch.miser_backup_mode": _State(backup),
+            "number.odsoc": _State(minimum),
+            "number.inverter_backup_soc": _State("99"),  # must be ignored for planning
+        }
+        config = {CONF_BACKUP_MODE: "switch.miser_backup_mode"}
         if backup_soc is not None:
-            states["number.backup_soc"] = _State(backup_soc)
-            control[CONTROL_BACKUP_MODE_SOC] = "number.backup_soc"
+            states["number.miser_backup_soc"] = _State(backup_soc)
+            config[CONF_BACKUP_SOC] = "number.miser_backup_soc"
         self.states = type("S", (), {"get": lambda _self, entity_id: states.get(entity_id)})()
         self.config_entries = _ConfigEntries()
         self.data = {
             DOMAIN: {
-                "config_entities": {CONF_BACKUP_MODE: "switch.miser_backup_mode"},
+                "config_entities": config,
                 "model_entities": {MODEL_BATTERY_MINIMUM_SOC: "number.odsoc"},
-                "control_entities": control,
+                "control_entities": {CONTROL_BACKUP_MODE_SOC: "number.inverter_backup_soc"},
             }
         }
 
@@ -56,20 +63,21 @@ def test_backup_off_uses_overdischarge_soc() -> None:
     assert asyncio.run(_battery_floor_soc(_FloorHass("off", "50"), _model())) == (False, 15.0)
 
 
-def test_backup_on_uses_backup_soc() -> None:
-    assert asyncio.run(_battery_floor_soc(_FloorHass("on", "50"), _model())) == (True, 50.0)
+def test_backup_on_uses_miser_backup_soc_not_inverters() -> None:
+    """The inverter reads 99% after Backup/Reserve is selected; Miser's own value is used."""
+    assert asyncio.run(_battery_floor_soc(_FloorHass("on", "60"), _model())) == (True, 60.0)
 
 
 def test_backup_soc_below_overdischarge_is_raised_to_it() -> None:
     assert asyncio.run(_battery_floor_soc(_FloorHass("on", "10"), _model())) == (True, 15.0)
 
 
-def test_unavailable_backup_soc_falls_back() -> None:
-    assert asyncio.run(_battery_floor_soc(_FloorHass("on", "unavailable"), _model())) == (False, 15.0)
+def test_unavailable_backup_soc_uses_default() -> None:
+    assert asyncio.run(_battery_floor_soc(_FloorHass("on", "unavailable"), _model())) == (True, 50.0)
 
 
-def test_missing_backup_soc_entity_falls_back() -> None:
-    assert asyncio.run(_battery_floor_soc(_FloorHass("on", None), _model())) == (False, 15.0)
+def test_missing_backup_soc_entity_uses_default() -> None:
+    assert asyncio.run(_battery_floor_soc(_FloorHass("on", None), _model())) == (True, 50.0)
 
 
 def test_plan_never_goes_below_backup_floor() -> None:
@@ -147,7 +155,12 @@ class _BackupAwareController(_RecordingController):
     def __init__(self) -> None:
         super().__init__()
         self.backup_mode = False
+        self.backup_soc = None
         self.supports_backup_mode = True
+        self.ensured: list[float | None] = []
+
+    async def ensure_backup_soc(self) -> None:
+        self.ensured.append(self.backup_soc)
 
 
 @pytest.mark.asyncio
@@ -164,4 +177,47 @@ async def test_apply_sets_controller_mode_and_status() -> None:
     await _apply_inverter_control(hass, model, schedule_checks=False)
 
     assert controller.backup_mode is True
+    assert controller.backup_soc == 50.0
+    assert controller.ensured == [50.0]  # reserve re-applied after control
     assert state.value == "Charging (Backup)"
+
+
+# --- Keeping the inverter's Backup SOC at Miser's reserve ---
+
+
+def _number_writes(hass: _Hass, entity_id: str) -> list:
+    return [data["value"] for domain, service, data in hass.services.calls if domain == "number" and data.get("entity_id") == entity_id]
+
+
+def _reserve_hass(inverter_value: str) -> _Hass:
+    hass = _Hass(charge_on="off", discharge_on="off")
+    hass.data[DOMAIN]["control_entities"][CONTROL_BACKUP_MODE_SOC] = "number.inverter_backup_soc"
+    hass.states.states["number.inverter_backup_soc"] = _State(inverter_value)
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_reserve_rewritten_after_reset_to_99() -> None:
+    hass = _reserve_hass("99")
+    inverter = SolisConnectInverter(hass)
+    inverter.backup_mode, inverter.backup_soc = True, 60
+    await inverter.ensure_backup_soc()
+    assert _number_writes(hass, "number.inverter_backup_soc") == [60]
+
+
+@pytest.mark.asyncio
+async def test_reserve_not_rewritten_when_already_set() -> None:
+    hass = _reserve_hass("60")
+    inverter = SolisConnectInverter(hass)
+    inverter.backup_mode, inverter.backup_soc = True, 60
+    await inverter.ensure_backup_soc()
+    assert _number_writes(hass, "number.inverter_backup_soc") == []
+
+
+@pytest.mark.asyncio
+async def test_reserve_left_alone_when_backup_off() -> None:
+    hass = _reserve_hass("99")
+    inverter = SolisConnectInverter(hass)
+    inverter.backup_mode, inverter.backup_soc = False, 60
+    await inverter.ensure_backup_soc()
+    assert _number_writes(hass, "number.inverter_backup_soc") == []
