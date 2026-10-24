@@ -41,6 +41,8 @@ from .const import (
     CONF_VALUE_SURPLUS_SOC,
     CONF_READ_ONLY,
     CONF_PREVENT_CYCLING,
+    CONF_BACKUP_MODE,
+    CONTROL_BACKUP_MODE_SOC,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
@@ -53,6 +55,7 @@ from .const import (
     CONTROL_TARGET_SOC,
     CONTROL_PASS_THREHOLD,
     MODEL_CONSUMPTION_TODAY,
+    MODEL_BATTERY_MINIMUM_SOC,
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
     MODEL_MIN_SLOT_POWER,
@@ -178,6 +181,13 @@ async def optimise(hass: HomeAssistant, now=None):
         return
     else:
         model.set_start(pd.Timestamp.now(tz="UTC"))
+
+    # Battery floor for this run: the inverter's Backup SOC while Backup Mode is
+    # on, otherwise its over-discharge SOC. Read every run so changes apply
+    # without a reload.
+    backup_active, floor_soc = await _battery_floor_soc(hass, model)
+    model.battery.max_dod = floor_soc / 100
+    model.backup_soc = floor_soc if backup_active else None
 
     # Read once on the loop and stash it: the terminal valuation is used inside
     # the compute passes that run in the executor, which cannot touch hass.
@@ -446,6 +456,9 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     control_slots = _drop_short_control_windows(control_slots, apply_window)
     current_slot = _find_current_control_slot(control_slots, now)
 
+    backup_soc = getattr(model, "backup_soc", None)
+    _set_controller_backup_mode(hass, inverter_controller, backup_soc is not None)
+
     desired_state = current_slot["state"] if current_slot is not None else "idle"
     desired_power = current_slot["power"] if current_slot is not None else 0
     # Report the window's terminal target, not the current fragment's, so the
@@ -459,13 +472,14 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     next_slot = _find_next_control_slot(control_slots, now)
     await _write_control_entities(
         hass,
-        state=_display_state(desired_state),
+        state=_display_state(desired_state, backup=backup_soc is not None),
         force_current=desired_current if desired_state != "idle" else 0,
         force_power=_reported_battery_power(model, current_slot) if desired_state != "idle" else 0,
         target_soc=desired_target_soc if desired_state != "idle" else None,
         current_slot=current_slot,
         next_slot=next_slot,
         next_slot_power=_reported_battery_power(model, next_slot),
+        backup_soc=backup_soc,
     )
 
     slots_to_apply = _slot_to_apply(control_slots, now, apply_window, current_slot)
@@ -763,12 +777,27 @@ def _slots_to_apply(control_slots: list[dict], now: pd.Timestamp, apply_window: 
     return sorted(slots, key=lambda slot: slot["start"])
 
 
-def _display_state(state: str) -> str:
-    return {
+def _display_state(state: str, backup: bool = False) -> str:
+    display = {
         "idle": "Idle",
         "charging": "Charging",
         "discharging": "Discharging",
     }.get(state, state)
+    return f"{display} (Backup)" if backup else display
+
+
+def _set_controller_backup_mode(hass: HomeAssistant, inverter_controller, backup: bool) -> None:
+    """Tell the controller which base mode to hold; warn once if it can't do backup."""
+    if hasattr(inverter_controller, "backup_mode"):
+        inverter_controller.backup_mode = backup
+    if backup and not getattr(inverter_controller, "supports_backup_mode", False):
+        data = hass.data.get(DOMAIN, {})
+        if not data.get("backup_mode_unsupported_warned"):
+            data["backup_mode_unsupported_warned"] = True
+            _LOGGER.warning(
+                "Backup Mode is on: planning above the Backup SOC, but this inverter integration "
+                "cannot switch the inverter to its backup mode - set that on the inverter"
+            )
 
 
 def _schedule_control_compliance_checks(hass: HomeAssistant, control_slots: list[dict]) -> None:
@@ -828,11 +857,14 @@ async def _write_control_entities(
     current_slot: dict | None,
     next_slot: dict | None,
     next_slot_power: float | None = None,
+    backup_soc: float | None = None,
 ) -> None:
     sensor_entities = hass.data[DOMAIN].get(COST_ENTITY_OBJECTS, {})
     attributes = {
         "current_slot": _serialise_control_slot(current_slot),
         "next_slot": _serialise_control_slot(next_slot),
+        "backup_mode": backup_soc is not None,
+        "backup_soc": backup_soc,
     }
 
     updates = {
@@ -1855,6 +1887,35 @@ async def _get_prices(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestam
     _apply_axle_vpp_export_price(hass, prices, freq)
     hass.data[DOMAIN]["model"].prices = prices.loc[start : end - freq]
     hass.data[DOMAIN]["model"].valuation_prices = prices.loc[end : valuation_end - freq]
+
+
+async def _battery_floor_soc(hass: HomeAssistant, model) -> tuple[bool, float]:
+    """(backup_active, floor %) for planning.
+
+    Backup Mode swaps the inverter's Backup SOC in for the over-discharge SOC,
+    so the plan still optimises charge and discharge but never plans below the
+    reserve. Falls back to the over-discharge SOC if the Backup SOC can't be
+    read.
+    """
+    minimum = _soc_value(await get_value(hass, MODEL_BATTERY_MINIMUM_SOC))
+    if minimum is None:
+        minimum = model.battery.max_dod * 100
+
+    if not await get_value(hass, CONF_BACKUP_MODE, default_value=DEFAULTS[CONF_BACKUP_MODE]):
+        return False, minimum
+
+    backup_soc = _soc_value(await get_value(hass, CONTROL_BACKUP_MODE_SOC))
+    if backup_soc is None:
+        _LOGGER.warning("Backup Mode is on but the Backup SOC is unavailable; planning to %.0f%%", minimum)
+        return False, minimum
+    return True, max(backup_soc, minimum)
+
+
+def _soc_value(value) -> float | None:
+    if not _is_finite(value):
+        return None
+    value = float(value)
+    return value if 0 <= value <= 100 else None
 
 
 def _paid_export_windows(hass: HomeAssistant) -> list[tuple[pd.Timestamp, pd.Timestamp]]:

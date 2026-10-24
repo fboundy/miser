@@ -46,6 +46,7 @@ _LOGGER = logging.getLogger(__name__)
 SOLIS_CLOUD_TIMED_MODE = "Self-Use Mode - Allow Grid Charging"
 SOLIS_CLOUD_IDLE_MODE = "Self-Use Mode - No Grid Charging"
 SOLIS_CONNECT_IDLE_MODE = "Self-Use"
+SOLIS_CONNECT_BACKUP_MODE = "Backup/Reserve"
 SOLIS_CONNECT_CLOCK_YEAR = "clock_year"
 SOLIS_CONNECT_CLOCK_MONTH = "clock_month"
 SOLIS_CONNECT_CLOCK_DAY = "clock_day"
@@ -70,10 +71,27 @@ class SolisInverter(InverterController):
     # Inverter mode that a timed charge/discharge requires, or None when the
     # controller does not set one.
     control_mode: ClassVar[str | None] = None
+    # Mode used instead of control_mode while Miser's Backup Mode is on: the
+    # inverter holds the battery at its backup SOC and switches the backup port
+    # to the battery the moment the grid drops. None if not supported.
+    backup_control_mode: ClassVar[str | None] = None
 
     def __init__(self, hass, integration_data: dict | None = None) -> None:
         self.hass = hass
         self.integration_data = integration_data or {}
+        # Set by the optimiser on every run from Miser's Backup Mode switch.
+        self.backup_mode = False
+
+    @property
+    def supports_backup_mode(self) -> bool:
+        return self.backup_control_mode is not None
+
+    @property
+    def active_control_mode(self) -> str | None:
+        """The base inverter mode Miser should hold right now."""
+        if self.backup_mode and self.backup_control_mode is not None:
+            return self.backup_control_mode
+        return self.control_mode
 
     @property
     @abstractmethod
@@ -169,10 +187,11 @@ class SolisInverter(InverterController):
 
         mismatches = []
 
-        if self.control_mode is not None:
+        expected_mode = self.active_control_mode
+        if expected_mode is not None:
             mode = await self.get_mode()
-            if mode != self.control_mode:
-                mismatches.append(f"mode is {mode!r}, expected {self.control_mode!r}")
+            if mode != expected_mode:
+                mismatches.append(f"mode is {mode!r}, expected {expected_mode!r}")
 
         if self._entity_id(enable_key) is not None and not self._switch_on(enable_key):
             mismatches.append(f"{state} enable switch is off")
@@ -684,6 +703,7 @@ class SolisConnectInverter(SolisInverter):
 
     integration: ClassVar[str] = "solisconnect"
     control_mode: ClassVar[str | None] = SOLIS_CONNECT_IDLE_MODE
+    backup_control_mode: ClassVar[str | None] = SOLIS_CONNECT_BACKUP_MODE
     entity_defs: ClassVar[dict[str, dict[str, str]]] = {
         "model_entities": {
             MODEL_BATTERY_SOC: "sensor.{device_name}_battery_soc",
@@ -784,7 +804,7 @@ class SolisConnectInverter(SolisInverter):
         _LOGGER.debug("SolisConnect inverter RTC write is not exposed; ignoring set_time(%s)", time)
 
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
-        await self._set_self_use_mode()
+        await self._set_base_mode()
         await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
         await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
@@ -793,7 +813,7 @@ class SolisConnectInverter(SolisInverter):
         await self._turn_on(CONTROL_TIMED_CHARGE_ON)
 
     async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
-        await self._set_self_use_mode()
+        await self._set_base_mode()
         await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
         await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._discharge_target_soc(target_soc))
@@ -804,12 +824,12 @@ class SolisConnectInverter(SolisInverter):
     async def control_idle(self) -> None:
         await self._turn_off(CONTROL_TIMED_CHARGE_ON)
         await self._turn_off(CONTROL_TIMED_DISCHARGE_ON)
-        await self.set_mode(SOLIS_CONNECT_IDLE_MODE)
+        await self.set_mode(self.active_control_mode)
 
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
         if state == "idle":
             return (
-                await self.get_mode() == SOLIS_CONNECT_IDLE_MODE
+                await self.get_mode() == self.active_control_mode
                 and not self._switch_on(CONTROL_TIMED_CHARGE_ON)
                 and not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
             )
@@ -857,9 +877,11 @@ class SolisConnectInverter(SolisInverter):
             return None
         return abs(float(power)) / voltage
 
-    async def _set_self_use_mode(self) -> None:
-        if await self.get_mode() != SOLIS_CONNECT_IDLE_MODE:
-            await self.set_mode(SOLIS_CONNECT_IDLE_MODE)
+    async def _set_base_mode(self) -> None:
+        """Self-Use normally; Backup/Reserve while Miser's Backup Mode is on."""
+        mode = self.active_control_mode
+        if await self.get_mode() != mode:
+            await self.set_mode(mode)
 
 
 SOLIS_INVERTER_CLASSES = {
