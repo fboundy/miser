@@ -40,7 +40,7 @@ from .const import (
     CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_VALUE_SURPLUS_SOC,
     CONF_READ_ONLY,
-    CONF_PREVENT_CYCLING,
+    CONF_CYCLING_THRESHOLD,
     CONF_BACKUP_MODE,
     CONF_BACKUP_SOC,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD,
@@ -157,13 +157,6 @@ async def optimise(hass: HomeAssistant, now=None):
         _LOGGER.warning("Prices unavailable - run skipped: %s", err)
         await _write_status(hass, "Awaiting Sensors")
         return
-
-    # Prevent Cycling: the plan may only force the battery to export during
-    # Axle VPP events. None leaves forced discharge unrestricted.
-    if await get_value(hass, CONF_PREVENT_CYCLING, default_value=DEFAULTS[CONF_PREVENT_CYCLING]):
-        model.discharge_windows = _paid_export_windows(hass)
-    else:
-        model.discharge_windows = None
     merged_model_data = pd.concat([getattr(model, x) for x in ["consumption", "solar", "prices"]], axis=1)
     _LOGGER.debug(f"Merged Model Data:\n{merged_model_data.to_string()}")
     # >>> Do some checks on the data validity here
@@ -274,6 +267,7 @@ async def optimise(hass: HomeAssistant, now=None):
     model.optimised_flows = getattr(model, optimised_key.replace("_cost", "_flows"))
     model.best_cost = model.optimised_cost
     _LOGGER.debug(f"Optimised cost: {model.optimised_cost:6.1f} ({optimised_key})")
+    await _drop_small_cycles(hass, model)
     await _finalise_optimised_output(hass, model)
 
     if _is_unloading(hass):
@@ -1171,6 +1165,71 @@ def _slot_value(slot: dict | None, key: str, local_time: bool = False):
     return value
 
 
+CYCLE_PRUNE_MAX_PASSES = 20
+
+
+async def _drop_small_cycles(hass: HomeAssistant, model) -> None:
+    """Drop forced-export windows worth less than the Cycling Threshold.
+
+    Each forced export is one battery cycle: energy pushed to the grid that is
+    later bought back. A window's worth is how much the plan's cost rises
+    without it. Windows below the threshold - small or alternating cycles that
+    wear the battery for pennies - are removed, least valuable first,
+    re-costing after each removal. Valuable cycles (a big evening export, or an
+    Axle VPP event at a premium export price) clear the threshold and stay.
+    """
+    if model.optimised_flows is None or not model.optimised_slots:
+        return
+    threshold = await get_value(hass, CONF_CYCLING_THRESHOLD, default_value=DEFAULTS[CONF_CYCLING_THRESHOLD])
+    if not _is_finite(threshold) or float(threshold) <= 0:
+        return
+    threshold = float(threshold)
+
+    slots = list(model.optimised_slots)
+    cost = model.optimised_cost
+    flows = model.optimised_flows
+    dropped = 0
+
+    for _ in range(CYCLE_PRUNE_MAX_PASSES):
+        weakest = None
+        for window in _control_windows(flows):
+            if window["state"] != "discharging":
+                continue
+            candidate = [
+                (start, power)
+                for start, power in slots
+                if not (power < 0 and window["start"] <= start < window["end"])
+            ]
+            if len(candidate) == len(slots):
+                continue
+            candidate_cost, candidate_flows = await _run_compute(
+                hass, lambda candidate=candidate: _calculate_cost_and_flows(model, candidate)
+            )
+            if not _is_finite(candidate_cost):
+                continue
+            worth = candidate_cost - cost
+            if worth < threshold and (weakest is None or worth < weakest[0]):
+                weakest = (worth, window, candidate, candidate_cost, candidate_flows)
+
+        if weakest is None:
+            break
+        worth, window, slots, cost, flows = weakest
+        dropped += 1
+        _LOGGER.info(
+            "Dropped forced export %s-%s: worth %.1fp, below the %.0fp cycling threshold",
+            window["start"],
+            window["end"],
+            worth,
+            threshold,
+        )
+
+    if dropped:
+        model.optimised_slots = slots
+        model.optimised_cost = cost
+        model.optimised_flows = flows
+        model.best_cost = cost
+
+
 async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
     """Reduce inverter writes where that does not materially affect the chosen cost."""
     if model.optimised_flows is None or model.optimised_flows.empty:
@@ -1932,14 +1991,6 @@ def _soc_value(value) -> float | None:
         return None
     value = float(value)
     return value if 0 <= value <= 100 else None
-
-
-def _paid_export_windows(hass: HomeAssistant) -> list[tuple[pd.Timestamp, pd.Timestamp]]:
-    """Windows where forced export is allowed even with Prevent Cycling on."""
-    window = axle_vpp_control_window(hass)
-    if window is None:
-        return []
-    return [(window["event_start"], window["event_end"])]
 
 
 def _apply_axle_vpp_export_price(hass: HomeAssistant, prices: pd.DataFrame, freq: pd.Timedelta) -> None:

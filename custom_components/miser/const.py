@@ -66,7 +66,7 @@ CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
 CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
-CONF_PREVENT_CYCLING = "prevent_cycling"
+CONF_CYCLING_THRESHOLD = "cycling_threshold"
 CONF_BACKUP_MODE = "backup_mode"
 CONF_BACKUP_SOC = "backup_soc"
 
@@ -112,9 +112,10 @@ DEFAULTS = {
     # cheapest forward replacement cost (symmetric with the deficit penalty),
     # so plans that leave the battery usefully charged are valued for it.
     CONF_VALUE_SURPLUS_SOC: True,
-    # Never force the battery to export to the grid (outside Axle VPP events):
-    # stops buying cheap to sell back, which wears the battery for pennies.
-    CONF_PREVENT_CYCLING: True,
+    # Minimum a forced export (one charge/discharge cycle) must be worth, in
+    # pence over the horizon, to stay in the plan. Drops small or alternating
+    # cycles that wear the battery for pennies; 0 allows all cycling.
+    CONF_CYCLING_THRESHOLD: 20,
     # Hold the inverter's Backup SOC (e.g. when power cuts are likely): plan with
     # it as the battery floor and run the inverter in its backup/reserve mode.
     CONF_BACKUP_MODE: False,
@@ -237,7 +238,6 @@ SWITCH_ENTITIES = {
         CONF_OPTIMISE_DISCHARGING,
         CONF_WHOLE_HORIZON_BETA,
         CONF_VALUE_SURPLUS_SOC,
-        CONF_PREVENT_CYCLING,
         CONF_BACKUP_MODE,
     ]
 }
@@ -372,6 +372,13 @@ NUMBER_ENTITIES = {
         "max": 50,
         "step": 1,
         "default": DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
+        "unit": "p",
+    },
+    CONF_CYCLING_THRESHOLD: {
+        "min": 0,
+        "max": 100,
+        "step": 1,
+        "default": DEFAULTS[CONF_CYCLING_THRESHOLD],
         "unit": "p",
     },
     CONF_BACKUP_SOC: {

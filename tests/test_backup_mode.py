@@ -88,7 +88,6 @@ def test_plan_never_goes_below_backup_floor() -> None:
     model.consumption = pd.Series(800.0, index=idx, name="consumption")
     model.prices = pd.DataFrame({"import": 7.43, "export": 13.0}, index=idx)
     model.initial_soc = 70
-    model.discharge_windows = None  # cycling allowed, to push the battery down hard
 
     slots = asyncio.run(model.whole_horizon(soc_step_percent=5, state_resolution_wh=500))
     flows = asyncio.run(model.flows(slots=slots))
