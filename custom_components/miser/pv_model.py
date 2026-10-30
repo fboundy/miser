@@ -338,6 +338,12 @@ class PVsystemModel:
                             search_window = search_window[search_window["countback"] == 0]
                             search_window = search_window[search_window["forced"] < (self.charge_power_limit)]
                             search_window = search_window[search_window["soc_end"] <= MODEL_MAX_SEARCH_WINDOW_SOC]
+                            # The filters above can leave nothing, e.g. a battery
+                            # already full before an expensive evening slot.
+                            if search_window.empty:
+                                _LOGGER.info(str_log + " No slot with charge headroom")
+                                df.loc[max_slot, "tested"] = True
+                                continue
 
                             str_log += f" {round_trip_energy_required:5.2f} kWh at {max_import_cost:6.2f}p."
 
@@ -379,7 +385,7 @@ class PVsystemModel:
                                     remaining_slot_capacity = slot_charger_power_available - min_power
 
                                     if remaining_slot_capacity < MODEL_MIN_SLOT_POWER:
-                                        df["available"][slot] = False
+                                        df.loc[slot, "available"] = False
 
                                     slots.append(
                                         (
@@ -402,10 +408,10 @@ class PVsystemModel:
 
                             else:
                                 _LOGGER.info(str_log + "No cheaper slots")
-                                df["tested"].loc[max_slot] = True
+                                df.loc[max_slot, "tested"] = True
                         else:
                             _LOGGER.info(str_log + "No search window")
-                            df["tested"].loc[max_slot] = True
+                            df.loc[max_slot, "tested"] = True
                 else:
                     done = True
             else:

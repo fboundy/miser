@@ -251,6 +251,7 @@ class Tariff:
         self._manual = manual
         self._fetched_at: pd.Timestamp | None = None
         self.agile_predict = None
+        self._agile_predict_at: pd.Timestamp | None = None
 
     @classmethod
     async def create(cls, tariff_code, **kwargs):
@@ -386,9 +387,9 @@ class Tariff:
         else:
             unit = rates_to_series(self.unit, index)
             if self.is_agile and unit.isna().any():
-                self.agile_predict = await self._get_agile_predict()
-                if self.agile_predict is not None:
-                    unit = unit.fillna(self.agile_predict.reindex(index))
+                agile_predict = await self._get_agile_predict()
+                if agile_predict is not None:
+                    unit = unit.fillna(agile_predict.reindex(index))
 
         # Slots after the last published rate repeat the previous 24 hours.
         unit = extend_daily_pattern(unit).ffill().bfill()
@@ -402,11 +403,25 @@ class Tariff:
 
         return df
 
-    async def _get_agile_predict(self):
+    async def _get_agile_predict(self) -> pd.Series | None:
+        """Agile Predict forecast, re-fetched at most every RATE_REFRESH_INTERVAL.
+
+        Only fills prices Octopus has not published yet, so a failure keeps the
+        last forecast (or none) and the run goes on: extend_daily_pattern covers
+        the gap. Letting the error through used to abort the whole optimiser run.
+        """
+        now = pd.Timestamp.now(tz="UTC")
+        if self._agile_predict_at is not None and now - self._agile_predict_at < RATE_REFRESH_INTERVAL:
+            return self.agile_predict
+        self._agile_predict_at = now
+
         url = f"{AGILE_PREDICT_URL}{self.dno_region}?days=2&high_low=false"
-        data = await fetch_api_data(url=url)
+        try:
+            data = await fetch_api_data(url=url)
+            df = pd.DataFrame(data[0]["prices"]).set_index("date_time")
+            df.index = pd.to_datetime(df.index, utc=True)
+            self.agile_predict = df["agile_pred"]
+        except Exception as err:  # noqa: BLE001 - the forecast is optional
+            _LOGGER.warning("Agile Predict unavailable; repeating the previous day's prices instead: %s", err)
 
-        df = pd.DataFrame(data[0]["prices"]).set_index("date_time")
-        df.index = pd.to_datetime(df.index, utc=True)
-
-        return df["agile_pred"]
+        return self.agile_predict
