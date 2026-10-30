@@ -62,6 +62,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 class OptimiserSensor(MiserEntity, SensorEntity):
     """A sensor entity for the Miser PV System Optimiser."""
 
+    # The plan lists change every run and run to ~10 KB per sensor; recording
+    # them stored a fresh copy every 10 minutes. They stay on the live state.
+    _unrecorded_attributes = frozenset({COST_SLOTS, COST_FLOWS, LAST_UPDATED})
+
     def __init__(
         self,
         config_entry,

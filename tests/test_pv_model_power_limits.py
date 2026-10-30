@@ -31,7 +31,8 @@ def _model(inverter_power: int = 3600) -> PVsystemModel:
 def test_battery_limits_are_the_dc_figures() -> None:
     model = _model()
     assert model.battery_charge_limit == 3000
-    assert model.battery_discharge_limit == 3000
+    # Discharge is set by the inverter's AC rating, not the charger power.
+    assert round(model.battery_discharge_limit, 3) == round(3600 / 0.97, 3)
 
 
 def test_grid_side_charge_limit_drives_battery_to_its_limit() -> None:
@@ -43,9 +44,15 @@ def test_grid_side_charge_limit_drives_battery_to_its_limit() -> None:
 
 def test_grid_side_discharge_limit_drives_battery_to_its_limit() -> None:
     model = _model()
-    assert round(model.discharge_power_limit, 3) == round(3000 * 0.97, 3)
+    assert round(model.discharge_power_limit, 3) == 3600
     commanded = _battery_side_power(model, "discharging", -model.discharge_power_limit)
-    assert round(commanded, 6) == 3000
+    assert round(commanded, 6) == round(3600 / 0.97, 6)
+
+
+def test_discharge_is_not_capped_by_charger_power() -> None:
+    """Regression: a 3.6 kW inverter's exports were held at 2.9 kW because the
+    discharge limit reused the 3 kW charger-derived current limit."""
+    assert _model(inverter_power=3600).discharge_power_limit == 3600
 
 
 def test_discharge_limit_still_capped_by_inverter_ac_rating() -> None:

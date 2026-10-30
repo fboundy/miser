@@ -6,7 +6,7 @@ from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 import homeassistant.util.dt as dt_util
 from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval, async_track_state_change
 
@@ -283,8 +283,16 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     integration = entry.options["integration"]
 
     _LOGGER.debug(f"Checking entities for inverter brand {brand} with integration {integration}")
+    try:
+        inverter_controller_class = get_inverter_controller_class(brand, integration)
+    except KeyError as err:
+        raise ConfigEntryError(f"Miser has no controller for {brand} inverters via {integration}") from err
+
+    # A plain error here marks setup failed for good; NotReady makes HA retry
+    # once the inverter integration is set up and has registered its entities.
     integration_data, integration_entities = await get_integration_entities(hass=hass, integration=integration)
-    inverter_controller_class = get_inverter_controller_class(brand, integration)
+    if not integration_entities:
+        raise ConfigEntryNotReady(f"No entities found for the {integration} integration; is it set up?")
     inverter_controller = inverter_controller_class(
         hass=hass,
         integration_data=integration_data,
