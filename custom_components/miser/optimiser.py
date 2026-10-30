@@ -124,6 +124,35 @@ async def _run_compute(hass: HomeAssistant, factory):
 
 
 async def optimise(hass: HomeAssistant, now=None):
+    """Run the optimiser, one run at a time.
+
+    The timer, config-entity and Axle callbacks can all fire while a run is
+    still computing. Every run works on the one shared model, so two at once
+    corrupt each other (seen live as KeyError/IndexingError crashes inside the
+    model). A trigger that arrives mid-run asks for one re-run instead, so the
+    latest settings and states are still acted on.
+    """
+    data = hass.data.get(DOMAIN)
+    if not data or data.get("unloading"):
+        _LOGGER.debug("Skipping optimise because Miser is unloading or unloaded")
+        return
+
+    lock = data.setdefault("optimise_lock", asyncio.Lock())
+    if lock.locked():
+        data["optimise_rerun"] = True
+        _LOGGER.debug("Optimiser already running; queued one re-run")
+        return
+
+    async with lock:
+        while True:
+            data["optimise_rerun"] = False
+            await _optimise(hass)
+            if not data.get("optimise_rerun") or _is_unloading(hass):
+                return
+            _LOGGER.debug("Re-running optimiser for a trigger that arrived mid-run")
+
+
+async def _optimise(hass: HomeAssistant) -> None:
     data = hass.data.get(DOMAIN)
     if not data or data.get("unloading"):
         _LOGGER.debug("Skipping optimise because Miser is unloading or unloaded")

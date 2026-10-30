@@ -113,6 +113,24 @@ async def test_first_fetch_failure_is_raised(monkeypatch) -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_agile_predict_failure_falls_back_and_is_not_retried_every_run(monkeypatch) -> None:
+    """Regression: an Agile Predict outage aborted the whole optimiser run."""
+    tariff = Tariff("E-1R-AGILE-24-10-01-C")
+    tariff.unit = [_rate(20.0, "2026-10-19T00:00:00Z", "2026-10-20T00:00:00Z")]
+    tariff.fixed = [_rate(50.0, "2026-01-01T00:00:00Z")]
+    tariff._fetched_at = pd.Timestamp.now(tz="UTC")
+    fetch = AsyncMock(side_effect=OSError("Agile Predict down"))
+    monkeypatch.setattr(octopus, "fetch_api_data", fetch)
+
+    for _ in range(2):
+        df = await tariff.to_df(start=pd.Timestamp("2026-10-19 12:00", tz="UTC"), end=pd.Timestamp("2026-10-20 12:00", tz="UTC"))
+        # Tomorrow is unpublished: it repeats today rather than failing.
+        assert set(df["unit"]) == {20.0}
+
+    assert fetch.await_count == 1
+
+
 def test_non_direct_debit_duplicates_are_dropped() -> None:
     rates = octopus._usable_rates([_rate(20.0, "2026-01-01T00:00:00Z"), _rate(21.0, "2026-01-01T00:00:00Z", payment="NON_DIRECT_DEBIT"), _rate(19.0, "2026-01-01T00:00:00Z", payment=None)])
     assert sorted(r["value_inc_vat"] for r in rates) == [19.0, 20.0]
