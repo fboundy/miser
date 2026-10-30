@@ -98,6 +98,11 @@ class BatteryModel:
             max_charge_power = 100000
         return max_charge_power
 
+    @property
+    def max_discharge_power(self) -> int:
+        """returns the maximum watts at which the battery can discharge."""
+        return self.max_charge_power
+
 
 class PVsystemModel:
     def __init__(
@@ -143,14 +148,9 @@ class PVsystemModel:
 
     @property
     def battery_discharge_limit(self) -> float:
-        """Maximum power out of the battery (DC): what the inverter needs to run at its AC rating.
-
-        Not the charge limit: that comes from the charger power, and reusing it
-        held a 3.6 kW inverter's exports at 2.9 kW. The inverter enforces the
-        BMS's own discharge limit regardless.
-        """
-        efficiency = self.inverter.inverter_efficiency or 1
-        return self.inverter.inverter_power / efficiency
+        """Maximum power out of the battery (DC)."""
+        # Not the inverter's AC rating: a Solis S5-EH1P 3.6 kW rejects timed-discharge currents above ~62.5 A.
+        return self.battery.max_discharge_power
 
     @property
     def charge_power_limit(self) -> float:
