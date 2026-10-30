@@ -35,6 +35,8 @@ async def get_integration_entities(hass: HomeAssistant, integration: str) -> tup
 
         return selected_config_entry.data, associated_entities
 
+    return {}, []
+
 
 async def get_value(hass: HomeAssistant, key: str, default_value=None) -> bool | int | float:
     """
