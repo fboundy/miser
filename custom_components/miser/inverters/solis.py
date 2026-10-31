@@ -66,6 +66,17 @@ SOLIS_CONNECT_CLOCK_DAY = "clock_day"
 SOLIS_CONNECT_CLOCK_HOURS = "clock_hours"
 SOLIS_CONNECT_CLOCK_MINUTES = "clock_minutes"
 SOLIS_CONNECT_CLOCK_SECONDS = "clock_seconds"
+# SolisConnect sets its control entities on write, before the inverter takes the
+# value. These read-only register sensors show what the inverter actually holds.
+SOLIS_CONNECT_TOU_SWITCH = "tou_v2_switch"
+# Register 43707 bits for slot 1.
+SOLIS_CONNECT_TOU_SWITCH_BITS = {CONTROL_TIMED_CHARGE_ON: 0, CONTROL_TIMED_DISCHARGE_ON: 6}
+SOLIS_CONNECT_TOU_TIMES = {
+    CONTROL_TIMED_CHARGE_START_HOURS: "charge_start",
+    CONTROL_TIMED_CHARGE_END_HOURS: "charge_end",
+    CONTROL_TIMED_DISCHARGE_START_HOURS: "discharge_start",
+    CONTROL_TIMED_DISCHARGE_END_HOURS: "discharge_end",
+}
 
 # How long to wait after writing before reading the inverter back. The Solis
 # integrations update their control entities optimistically on write, so a
@@ -224,9 +235,9 @@ class SolisInverter(InverterController):
             if mode != expected_mode:
                 mismatches.append(f"mode is {mode!r}, expected {expected_mode!r}")
 
-        if self._entity_id(enable_key) is not None and not self._switch_on(enable_key):
+        if self._entity_id(enable_key) is not None and not self._slot_enabled(enable_key):
             mismatches.append(f"{state} enable switch is off")
-        if self._switch_on(opposite_key):
+        if self._slot_enabled(opposite_key):
             mismatches.append("the opposite timed slot is still enabled")
 
         for label, keys, requested in (("start", start_keys, start), ("end", end_keys, end)):
@@ -410,6 +421,10 @@ class SolisInverter(InverterController):
             return False
         state = self._state(entity_id)
         return state is not None and state.state.lower() == "on"
+
+    def _slot_enabled(self, key: str) -> bool:
+        """Whether the inverter holds a timed slot enabled, for confirming writes."""
+        return self._switch_on(key)
 
     async def _turn_off_if_on(self, key: str) -> None:
         """Switch off the opposite timed slot so charge and discharge never overlap."""
@@ -800,8 +815,28 @@ class SolisConnectInverter(SolisInverter):
             SOLIS_CONNECT_CLOCK_MINUTES: "sensor.{device_name}_clock_minutes",
             SOLIS_CONNECT_CLOCK_SECONDS: "sensor.{device_name}_clock_seconds",
             SOLIS_CONNECT_STORAGE_CONTROL: "sensor.{device_name}_storage_control_switching_value",
+            SOLIS_CONNECT_TOU_SWITCH: "sensor.{device_name}_time_of_use_v2_switch",
+            **{
+                f"tou_{name}_{part}": f"sensor.{{device_name}}_grid_time_of_use_{name}_{part}_slot_1"
+                for name in SOLIS_CONNECT_TOU_TIMES.values()
+                for part in ("hour", "minute")
+            },
         },
     }
+
+    def _slot_enabled(self, key: str) -> bool:
+        bit = SOLIS_CONNECT_TOU_SWITCH_BITS.get(key)
+        if bit is not None and self._entity_id(SOLIS_CONNECT_TOU_SWITCH) is not None:
+            value = self._numeric_state(SOLIS_CONNECT_TOU_SWITCH)
+            if value is not None:
+                return bool(int(value) >> bit & 1)
+        return self._switch_on(key)
+
+    def _programmed_time(self, hours_key: str, minutes_key: str) -> tuple[int, int] | None:
+        name = SOLIS_CONNECT_TOU_TIMES.get(hours_key)
+        if name is not None and self._entity_id(f"tou_{name}_hour") is not None:
+            return super()._programmed_time(f"tou_{name}_hour", f"tou_{name}_minute")
+        return super()._programmed_time(hours_key, minutes_key)
 
     async def get_time(self) -> datetime:
         values = {
@@ -862,8 +897,8 @@ class SolisConnectInverter(SolisInverter):
         if state == "idle":
             return (
                 await self.get_mode() == self.active_control_mode
-                and not self._switch_on(CONTROL_TIMED_CHARGE_ON)
-                and not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
+                and not self._slot_enabled(CONTROL_TIMED_CHARGE_ON)
+                and not self._slot_enabled(CONTROL_TIMED_DISCHARGE_ON)
             )
 
         if state == "charging":
@@ -881,7 +916,7 @@ class SolisConnectInverter(SolisInverter):
         actual_current = self._numeric_state(current_key)
         actual_soc = self._numeric_state(soc_key)
         return (
-            self._switch_on(enable_key)
+            self._slot_enabled(enable_key)
             and actual_current is not None
             and actual_soc is not None
             and abs(actual_current - requested_current) <= 0.1

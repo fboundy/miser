@@ -19,7 +19,7 @@ from custom_components.miser.const import (
     CONTROL_TIMED_DISCHARGE_START_HOURS,
     DOMAIN,
 )
-from custom_components.miser.inverters.solis import SolisConnectInverter
+from custom_components.miser.inverters.solis import SOLIS_CONNECT_TOU_SWITCH, SolisConnectInverter
 
 ENTITIES = {
     CONTROL_BATTERY_VOLTAGE: "sensor.v",
@@ -115,3 +115,39 @@ async def test_confirmation_flags_opposite_slot_left_on() -> None:
     mismatches = await SolisConnectInverter(hass)._control_mismatches("charging", NOW, NOW, 100, 3000)
 
     assert "the opposite timed slot is still enabled" in mismatches
+
+
+def _with_registers(hass: _Hass, switch: str, charge_start: tuple[str, str]) -> _Hass:
+    hass.data[DOMAIN]["control_entities"].update(
+        {
+            SOLIS_CONNECT_TOU_SWITCH: "sensor.tou",
+            "tou_charge_start_hour": "sensor.csh",
+            "tou_charge_start_minute": "sensor.csm",
+        }
+    )
+    hass.states.states.update(
+        {"sensor.tou": _State(switch), "sensor.csh": _State(charge_start[0]), "sensor.csm": _State(charge_start[1])}
+    )
+    return hass
+
+
+@pytest.mark.asyncio
+async def test_confirmation_reads_inverter_registers_not_optimistic_switches() -> None:
+    # Overnight 2026-10-31: SolisConnect showed the charge slot on while the inverter held it off.
+    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch="64", charge_start=("0", "30"))
+    hass.states.states["time.cs"] = _State("01:00:00")
+    mismatches = await SolisConnectInverter(hass)._control_mismatches("charging", NOW, NOW, 100, 3000)
+
+    assert "charging enable switch is off" in mismatches
+    assert "the opposite timed slot is still enabled" in mismatches
+    assert "start is 00:30, expected 01:00" in mismatches
+
+
+@pytest.mark.asyncio
+async def test_confirmation_passes_when_registers_match() -> None:
+    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch="1", charge_start=("1", "0"))
+    mismatches = await SolisConnectInverter(hass)._control_mismatches("charging", NOW, NOW, 100, 3000)
+
+    assert "charging enable switch is off" not in mismatches
+    assert "the opposite timed slot is still enabled" not in mismatches
+    assert not any(m.startswith("start is") for m in mismatches)
