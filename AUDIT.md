@@ -19,11 +19,11 @@ one process at once. These are the timer, a settings change and Axle events.
 | 2 | High-cost pass crashes when no slot can take a charge | Fixed `40ff3a7` |
 | 3 | Agile Predict fetched every run; a failure kills the run | Fixed `40ff3a7` |
 | 4 | Discharge capped by charger power | Won't fix: the Solis rejects >~62.5 A (`af684f7`) |
-| 5 | Five settings appear in HA but do nothing | Open |
+| 5 | Five settings appear in HA but do nothing | Fixed (see below) |
 | 6 | Setup fails for good instead of retrying | Fixed `f0ce538` |
 | 7 | Big plan attributes saved to the HA database every run | Fixed `f0ce538` |
 | 8 | Battery model loop is slow | Open |
-| 9 | Device-name helper exists twice and the copies disagree | Open |
+| 9 | Device-name helper exists twice and the copies disagree | Fixed (see below) |
 | 10 | Standing charge downloaded hourly, never used | Open |
 | 11 | Three Solis controllers copy the same methods | Open |
 | 12 | Controller code nothing calls | Open |
@@ -37,27 +37,12 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ### Should fix
 
-5. **Five settings appear in HA but do nothing** (`const.py:58-62`, their `SWITCH_ENTITIES`/`NUMBER_ENTITIES` entries; `inverter_loss` in `config_flow.py:378`, `pv_model.py:58`)
-   - **What this is:** These are the switches "Use Solar" and "Include Export", and the numbers "Power Resolution",
-     "Sleep SOC" and "Inverter Loss".
-   - **Problem:** Nothing reads them. If you turn "Use Solar" off, the Solcast forecast is still used. `InverterModel`
-     stores `inverter_loss`, but no calculation uses it.
-   - **Fix:** Delete all five. Or wire up "Use Solar" in `_get_solcast` with one `if`, and delete the other four.
-   - **If we skip it:** Users change a setting, see no effect, and file bug reports.
-
 8. **The battery model loop is slow** (`pv_model.py:228-252`)
    - **What this is:** `flows()` simulates the battery one half-hour at a time. It is called hundreds of times per run.
    - **Problem:** Each step reads `df["battery_temp"].loc[idx]` and `df["dt_hours"].loc[idx]`. These are slow pandas
      lookups. A run takes up to a minute, and that is how long the optimiser lock is held.
    - **Fix:** Before the loop, take `.to_numpy()` of both columns and loop over plain floats. The results stay the same.
    - **If we skip it:** Runs stay long, and the background thread and CPU stay busy.
-
-9. **The same device-name helper exists twice and the copies disagree** (`config_flow.py:122` vs `__init__.py:339`)
-   - **What this is:** Both copies guess the inverter's entity prefix, for example `solis_s5_eh1p`.
-   - **Problem:** The config-flow copy looks only at model entities and returns `None`. The setup copy looks at every
-     entity type and falls back to the first entity. So setup can pick a different prefix from the one the config flow checked.
-   - **Fix:** Move the `__init__.py` version to `utils.py` and import it in both places.
-   - **If we skip it:** The config flow accepts a setup that then cannot find its entities.
 
 10. **The standing charge is downloaded every hour and never used** (`octopus.py:326, 402`; `entity_tariff.py:94`)
     - **What this is:** The `fixed` column holds the daily standing charge.
@@ -102,6 +87,16 @@ one process at once. These are the timer, a settings change and Axle events.
     - **Fix:** Take `time_of_day` from `index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time`.
 
 ## Fixed
+
+5. **Five settings appeared in HA but did nothing**
+   - **Fix:** "Use Solar" now works: when it is off, `_get_solcast` uses a zero solar forecast. "Include Export",
+     "Power Resolution", "Sleep SOC" and "Inverter Loss" are deleted. Tested in `tests/test_use_solar.py`.
+   - **Leftover:** HA keeps the four deleted entities in its registry as "no longer provided" until you remove them in the UI.
+
+9. **The device-name helper existed twice and the copies disagreed**
+   - **Fix:** One copy, `infer_integration_device_name` in `utils.py`, now serves both the config flow and setup. It
+     counts only the model entities, which are the ones setup requires, and returns `None` instead of guessing.
+     On the live registry it still picks `solis_s5_eh1p`. Tested in `tests/test_setup_missing_inverter.py`.
 
 17. **The write check trusted SolisConnect's echo, not the inverter** (`inverters/solis.py`, `SolisConnectInverter`)
     - **What happened:** SolisConnect updates its switch, time and number entities as soon as it sends a write. From

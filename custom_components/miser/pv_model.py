@@ -38,7 +38,6 @@ class InverterModel:
     Attributes:
         inverter_efficiency: A float describing the DC-AC efficiency of the inverter.
         charger_efficiency: A float describing the AC-DC efficiency of the inverter.
-        inverter_loss: An int describing the internal power consumption of the inverter at zero load.
         inverter_power: An int describing the DC-AC power of the inverter.
         charger_power: An int describing the maximum battery-side (DC) charge power.
     """
@@ -47,7 +46,6 @@ class InverterModel:
         self,
         inverter_efficiency: float = 0.97,
         charger_efficiency: float = 0.91,
-        inverter_loss: int = 100,
         inverter_power: int = 3000,
         charger_power: int = 3500,
     ) -> None:
@@ -55,7 +53,6 @@ class InverterModel:
         self.charger_efficiency = charger_efficiency / 100
         self.inverter_power = inverter_power
         self.charger_power = charger_power
-        self.inverter_loss = inverter_loss
 
     def __str__(self):
         pass
