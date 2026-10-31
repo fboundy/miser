@@ -19,7 +19,6 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     MODEL_BATTERY_MINIMUM_SOC,
     DEFAULT_BATTERY_VOLTAGE,
-    CONF_INVERTER_LOSS,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
@@ -37,10 +36,12 @@ from .entity_tariff import PRICE_UNIT_AUTO, EntityTariff
 from .inverters import get_inverter_controller_class
 from .octopus import get_octopus_info_from_account, get_octopus_integration_data, Tariff
 from .utils import (
+    entity_template_candidates,
     get_instance_id,
     get_integration_entities,
     get_value,
     get_key_for_entity,
+    infer_integration_device_name,
     log_config_entry,
     redact_sensitive,
 )
@@ -299,11 +300,13 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     entity_defs = inverter_controller.entity_defs
     entity_ids = [entity.entity_id for entity in integration_entities]
-    integration_device_name = _infer_integration_device_name(
+    integration_device_name = infer_integration_device_name(
         entity_ids=entity_ids,
         entity_defs=entity_defs,
     )
     _LOGGER.debug(f"Integration device name: {integration_device_name}")
+    if integration_device_name is None:
+        return False
 
     hass.data[DOMAIN]["integration_data"] = integration_data
     hass.data[DOMAIN]["inverter_controller"] = inverter_controller
@@ -314,7 +317,7 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for entity_type in ENTITY_TYPES:
         entity_ids = entity_defs.get(entity_type, {})
         for key, template in entity_ids.items():
-            expected_entity_ids = _entity_template_candidates(template, integration_device_name)
+            expected_entity_ids = entity_template_candidates(template, integration_device_name)
             str_log = f"  {key:35s}: {expected_entity_ids[0]:50s} "
             index = next((index_lookup.get(entity_id) for entity_id in expected_entity_ids if entity_id in index_lookup), None)
             if index is None:
@@ -336,40 +339,6 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return success
 
 
-def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str:
-    """Infer the entity object prefix used by the selected inverter integration."""
-    candidates: dict[str, int] = {}
-
-    for entity_type in ENTITY_TYPES:
-        for entity_templates in entity_defs.get(entity_type, {}).values():
-            for template in _entity_templates(entity_templates):
-                if "{device_name}" not in template:
-                    continue
-                domain, object_template = template.split(".", 1)
-                suffix = object_template.split("{device_name}", 1)[1]
-
-                for entity_id in entity_ids:
-                    entity_domain, entity_object_id = entity_id.split(".", 1)
-                    if entity_domain == domain and entity_object_id.endswith(suffix):
-                        candidate = entity_object_id[: -len(suffix)]
-                        candidates[candidate] = candidates.get(candidate, 0) + 1
-
-    if candidates:
-        return max(candidates, key=candidates.get)
-
-    return entity_ids[0].split(".", 1)[1].split("_", 1)[0]
-
-
-def _entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
-    return [template.replace("{device_name}", device_name) for template in _entity_templates(templates)]
-
-
-def _entity_templates(templates: str | list[str]) -> list[str]:
-    if isinstance(templates, str):
-        return [templates]
-    return list(templates)
-
-
 async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Read the inverter model parameters from the relevant config entities
     _LOGGER.debug("Loading PV system model")
@@ -380,7 +349,6 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
             CONF_CHARGER_EFFICIENCY,
             CONF_INVERTER_POWER,
             CONF_CHARGER_POWER,
-            CONF_INVERTER_LOSS,
         ]
     }
 

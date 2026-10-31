@@ -33,6 +33,7 @@ from .const import (
     CONF_LOAD_MARGIN,
     CONF_WEEKDAY_WEIGHTING,
     CONF_SOLCAST_CONFIDENCE,
+    CONF_USE_SOLAR,
     CONF_SHAPE_CONSUMPTION,
     CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
@@ -1925,8 +1926,9 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
     index = pd.date_range(start=start, end=end, freq=freq, inclusive="left")
     solcast = pd.DataFrame(index=index, data={"weighted": 0})
 
-    # Log ConfigEntry contents
-    if config_entries:
+    if not await get_value(hass, CONF_USE_SOLAR, default_value=DEFAULTS[CONF_USE_SOLAR]):
+        _LOGGER.debug("Use Solar is off; using zero solar forecast")
+    elif config_entries:
         # _LOGGER.debug("Solcast integration:")
         entry = config_entries[0]
         # log_config_entry(entry)

@@ -44,7 +44,6 @@ CONF_INVERTER_POWER = "inverter_power"
 CONF_CHARGER_POWER = "charger_power"
 CONF_INVERTER_EFFICIENCY = "inverter_efficiency"
 CONF_CHARGER_EFFICIENCY = "charger_efficiency"
-CONF_INVERTER_LOSS = "inverter_loss"
 CONF_BATTERY_MINIMUM_SOC = "battery_minimum_soc"
 CONF_USE_CONSUMPTION_HISTORY = "use_consumption_history"
 CONF_HISTORY_DAYS = "history_days"
@@ -55,11 +54,8 @@ CONF_DAILY_CONSUMPTION_KWH = "daily_consumption_kwh"
 CONF_MINIMUM_DAILY_CONSUMPTION_KWH = "minimum_daily_consumption_kwh"
 CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
 CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
-CONF_POWER_RESOLUTION = "power_resolution"
-CONF_SLEEP_SOC = "sleep_soc"
 CONF_USE_SOLAR = "use_solar"
 CONF_READ_ONLY = "read_only"
-CONF_INCLUDE_EXPORT = "include_export"
 CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
@@ -85,7 +81,6 @@ DEFAULTS = {
     CONF_CHARGER_POWER: DEFAULT_CHARGER_POWER,  # W
     CONF_INVERTER_EFFICIENCY: 97,  # Percent
     CONF_CHARGER_EFFICIENCY: 91,  # Percent
-    CONF_INVERTER_LOSS: 100,  # W
     CONF_BATTERY_MINIMUM_SOC: 15,  # %
     CONF_USE_CONSUMPTION_HISTORY: True,
     CONF_HISTORY_DAYS: 7,
@@ -96,11 +91,8 @@ DEFAULTS = {
     CONF_MINIMUM_DAILY_CONSUMPTION_KWH: 5,
     CONF_OPTIMISER_FREQUENCY: 10,
     CONF_SOLCAST_CONFIDENCE: 50,
-    CONF_POWER_RESOLUTION: 100,
-    CONF_SLEEP_SOC: 0,
     CONF_USE_SOLAR: True,
     CONF_READ_ONLY: True,
-    CONF_INCLUDE_EXPORT: True,
     CONF_OPTIMISE_DISCHARGING: True,
     CONF_WHOLE_HORIZON_BETA: False,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD: 10,
@@ -130,7 +122,6 @@ PV_SYSTEM_ENTITIES = [
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
     CONF_CHARGER_EFFICIENCY,
-    CONF_INVERTER_LOSS,
     CONF_BATTERY_MINIMUM_SOC,
 ]
 
@@ -234,7 +225,6 @@ SWITCH_ENTITIES = {
         CONF_SHAPE_CONSUMPTION,
         CONF_USE_SOLAR,
         CONF_READ_ONLY,
-        CONF_INCLUDE_EXPORT,
         CONF_OPTIMISE_DISCHARGING,
         CONF_WHOLE_HORIZON_BETA,
         CONF_VALUE_SURPLUS_SOC,
@@ -277,22 +267,6 @@ NUMBER_ENTITIES = {
         "default": DEFAULTS[CONF_WEEKDAY_WEIGHTING],
         "unit": PERCENTAGE,
     },
-    CONF_POWER_RESOLUTION: {
-        "min": 0,
-        "max": 500,
-        "step": 100,
-        "default": DEFAULTS[CONF_POWER_RESOLUTION],
-        "unit": UnitOfPower.WATT,
-        "device_class": SensorDeviceClass.POWER,
-    },
-    CONF_SLEEP_SOC: {
-        "min": 0,
-        "max": 20,
-        "step": 1,
-        "default": DEFAULTS[CONF_SLEEP_SOC],
-        "unit": PERCENTAGE,
-        "device_class": SensorDeviceClass.BATTERY,
-    },
     # Configurable battery/inverter parameters
     CONF_BATTERY_CAPACITY: {
         "min": 1000,
@@ -331,13 +305,6 @@ NUMBER_ENTITIES = {
         "step": 1,
         "default": DEFAULTS[CONF_CHARGER_EFFICIENCY],
         "unit": PERCENTAGE,
-    },
-    CONF_INVERTER_LOSS: {
-        "min": 0,
-        "max": 250,
-        "step": 10,
-        "default": DEFAULTS[CONF_INVERTER_LOSS],
-        "unit": UnitOfPower.WATT,
     },
     CONF_DAILY_CONSUMPTION_KWH: {
         "min": 1,

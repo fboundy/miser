@@ -15,7 +15,6 @@ from .const import (
     CONF_DAILY_CONSUMPTION_KWH,
     CONF_INVERTER_EFFICIENCY,
     CONF_INVERTER_POWER,
-    CONF_INVERTER_LOSS,
     DEFAULTS,
     DOMAIN,
     NAME,
@@ -26,7 +25,12 @@ from .const import (
 )
 from .entity_tariff import PRICE_UNIT_AUTO, PRICE_UNIT_GBP, PRICE_UNIT_PENCE, EntityTariff
 from .inverters import INVERTER_DEFS, get_inverter_controller_class
-from .utils import get_integration_entities, redact_sensitive
+from .utils import (
+    entity_template_candidates,
+    get_integration_entities,
+    infer_integration_device_name,
+    redact_sensitive,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,44 +117,16 @@ async def _discover_installed_integrations(hass: HomeAssistant, inverter_brand: 
         return []
 
 
-def _entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
-    if isinstance(templates, str):
-        templates = [templates]
-    return [template.replace("{device_name}", device_name) for template in templates]
-
-
-def _infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str | None:
-    candidates: dict[str, int] = {}
-
-    for entity_templates in entity_defs.get("model_entities", {}).values():
-        templates = [entity_templates] if isinstance(entity_templates, str) else entity_templates
-        for template in templates:
-            if "{device_name}" not in template:
-                continue
-            domain, object_template = template.split(".", 1)
-            suffix = object_template.split("{device_name}", 1)[1]
-            for entity_id in entity_ids:
-                entity_domain, entity_object_id = entity_id.split(".", 1)
-                if entity_domain == domain and entity_object_id.endswith(suffix):
-                    candidate = entity_object_id[: -len(suffix)]
-                    candidates[candidate] = candidates.get(candidate, 0) + 1
-
-    if not candidates:
-        return None
-
-    return max(candidates, key=candidates.get)
-
-
 def _has_required_model_entities(brand: str, integration: str, associated_entities: list) -> bool:
     entity_ids = [entity.entity_id for entity in associated_entities]
     controller = get_inverter_controller_class(brand, integration)
     entity_defs = controller.entity_defs
-    device_name = _infer_integration_device_name(entity_ids, entity_defs)
+    device_name = infer_integration_device_name(entity_ids, entity_defs)
     if device_name is None:
         return False
 
     for templates in entity_defs.get("model_entities", {}).values():
-        expected_entity_ids = _entity_template_candidates(templates, device_name)
+        expected_entity_ids = entity_template_candidates(templates, device_name)
         if not any(entity_id in entity_ids for entity_id in expected_entity_ids):
             return False
 
@@ -375,7 +351,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
             self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
             self._options["charger_efficiency"] = user_input.get(CONF_CHARGER_EFFICIENCY)
-            self._options["inverter_loss"] = user_input.get(CONF_INVERTER_LOSS)
             if all(
                 [
                     self._options[x]
@@ -385,7 +360,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "charger_power",
                         "inverter_efficiency",
                         "charger_efficiency",
-                        "inverter_loss",
                     ]
                 ]
             ):
@@ -405,7 +379,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS[CONF_CHARGER_EFFICIENCY]): vol.All(
                     vol.Coerce(float), vol.Range(min=0, max=100)
                 ),
-                vol.Optional(CONF_INVERTER_LOSS, default=DEFAULTS[CONF_INVERTER_LOSS]): int,
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)

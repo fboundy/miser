@@ -38,6 +38,39 @@ async def get_integration_entities(hass: HomeAssistant, integration: str) -> tup
     return {}, []
 
 
+def entity_template_candidates(templates: str | list[str], device_name: str) -> list[str]:
+    if isinstance(templates, str):
+        templates = [templates]
+    return [template.replace("{device_name}", device_name) for template in templates]
+
+
+def infer_integration_device_name(entity_ids: list[str], entity_defs: dict) -> str | None:
+    """Infer the inverter integration's entity prefix (e.g. `solis_s5_eh1p`).
+
+    Counts only the model entities: they are the ones setup requires, so the
+    config flow and setup agree on the prefix they check.
+    """
+    candidates: dict[str, int] = {}
+
+    for entity_templates in entity_defs.get("model_entities", {}).values():
+        templates = [entity_templates] if isinstance(entity_templates, str) else entity_templates
+        for template in templates:
+            if "{device_name}" not in template:
+                continue
+            domain, object_template = template.split(".", 1)
+            suffix = object_template.split("{device_name}", 1)[1]
+            for entity_id in entity_ids:
+                entity_domain, entity_object_id = entity_id.split(".", 1)
+                if entity_domain == domain and entity_object_id.endswith(suffix):
+                    candidate = entity_object_id[: -len(suffix)]
+                    candidates[candidate] = candidates.get(candidate, 0) + 1
+
+    if not candidates:
+        return None
+
+    return max(candidates, key=candidates.get)
+
+
 async def get_value(hass: HomeAssistant, key: str, default_value=None) -> bool | int | float:
     """
     Gets the value of a variable by looking up the entity_id for variable name in the DOMAIN data
