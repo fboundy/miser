@@ -2,7 +2,7 @@ from abc import abstractmethod
 import asyncio
 import logging
 from datetime import datetime
-from typing import Any, ClassVar
+from typing import ClassVar
 
 import homeassistant.util.dt as dt_util
 
@@ -11,9 +11,6 @@ from ..const import (
     CONTROL_BACKUP_MODE_SOC,
     CONTROL_BATTERY_VOLTAGE,
     CONTROL_INVERTER_MODE,
-    CONTROL_RTC,
-    CONTROL_SYNC_RTC,
-    CONTROL_SYNC_RTC_OFFSET,
     CONTROL_TIMED_CHARGE_BUTTON,
     CONTROL_TIMED_CHARGE_CURRENT,
     CONTROL_TIMED_CHARGE_END_HOURS,
@@ -60,12 +57,6 @@ SOLIS_CONNECT_MODES_BY_REGISTER = {
     64: "Feed-in priority - No Grid Charging",
     96: "Feed-in priority",
 }
-SOLIS_CONNECT_CLOCK_YEAR = "clock_year"
-SOLIS_CONNECT_CLOCK_MONTH = "clock_month"
-SOLIS_CONNECT_CLOCK_DAY = "clock_day"
-SOLIS_CONNECT_CLOCK_HOURS = "clock_hours"
-SOLIS_CONNECT_CLOCK_MINUTES = "clock_minutes"
-SOLIS_CONNECT_CLOCK_SECONDS = "clock_seconds"
 # SolisConnect sets its control entities on write, before the inverter takes the
 # value. These read-only register sensors show what the inverter actually holds.
 SOLIS_CONNECT_TOU_SWITCH = "tou_v2_switch"
@@ -158,37 +149,35 @@ class SolisInverter(InverterController):
             for entity_id in self._entity_ids("model_entities").values()
         )
 
-    async def get_time(self) -> datetime:
-        raise NotImplementedError
-
-    async def set_time(self, time: datetime) -> None:
-        raise NotImplementedError
-
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         raise NotImplementedError
 
     async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         raise NotImplementedError
 
-    async def get_status(self) -> dict[str, Any]:
-        status = {}
-        for entity_type in ENTITY_TYPES:
-            for key, entity_id in self._entity_ids(entity_type).items():
-                state = self._state(entity_id)
-                status[key] = None if state is None else state.state
-        return status
-
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
         raise NotImplementedError
 
     async def power_to_current(self, power: float) -> float | None:
-        return None
+        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
+        if voltage is None or voltage <= 0:
+            return None
+        return abs(float(power)) / voltage
 
     async def set_mode(self, mode: str) -> None:
-        raise NotImplementedError
+        await self.hass.services.async_call(
+            "select",
+            "select_option",
+            {
+                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
+                "option": mode,
+            },
+            blocking=True,
+        )
 
-    async def get_mode(self) -> str:
-        raise NotImplementedError
+    async def get_mode(self) -> str | None:
+        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
+        return None if state is None else state.state
 
     async def confirm_control(
         self,
@@ -471,40 +460,8 @@ class SolisSolaxModbusInverter(SolisInverter):
             CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON: "button.{device_name}_update_charge_discharge_times",
             CONTROL_INVERTER_MODE: "select.{device_name}_energy_storage_control_switch",
             CONTROL_BACKUP_MODE_SOC: "number.{device_name}_backup_mode_soc",
-            CONTROL_RTC: "sensor.{device_name}_rtc",
-            CONTROL_SYNC_RTC: "button.{device_name}_sync_rtc",
-            CONTROL_SYNC_RTC_OFFSET: "number.{device_name}_sync_rtc_offset",
         },
     }
-
-    async def get_time(self) -> datetime:
-        state = self._state(self._required_entity_id(CONTROL_RTC))
-        if not self._is_available(state):
-            raise RuntimeError("SolaX Modbus RTC sensor is unavailable")
-
-        parsed = self._parse_datetime_state(state.state)
-        if parsed is None:
-            raise RuntimeError(f"Unable to parse SolaX Modbus RTC state: {state.state!r}")
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
-        return dt_util.as_local(parsed)
-
-    async def set_time(self, time: datetime) -> None:
-        target = dt_util.as_local(time) if time.tzinfo is not None else time.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
-        target_naive = target.replace(tzinfo=None)
-        now_naive = dt_util.now().replace(tzinfo=None)
-        offset = round((target_naive - now_naive).total_seconds())
-        if abs(offset) > 3600:
-            raise RuntimeError(
-                "SolaX Modbus RTC sync only supports offsets within +/-3600 seconds; "
-                f"requested offset was {offset} seconds"
-            )
-
-        await self._set_number(CONTROL_SYNC_RTC_OFFSET, offset)
-        await self._press(CONTROL_SYNC_RTC)
-        if offset != 0:
-            await self._set_number(CONTROL_SYNC_RTC_OFFSET, 0)
 
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         await self._set_time_window(
@@ -550,55 +507,14 @@ class SolisSolaxModbusInverter(SolisInverter):
             await self._press(CONTROL_TIMED_DISCHARGE_BUTTON)
 
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
-        if state == "idle":
-            return (
-                self._entity_id(CONTROL_TIMED_CHARGE_ON) is None
-                or not self._switch_on(CONTROL_TIMED_CHARGE_ON)
-            ) and (
-                self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is None
-                or not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
-            )
-
-        if state == "charging":
-            enable_key = CONTROL_TIMED_CHARGE_ON
-            current_key = CONTROL_TIMED_CHARGE_CURRENT
-            soc_key = CONTROL_TIMED_CHARGE_SOC
-        elif state == "discharging":
-            enable_key = CONTROL_TIMED_DISCHARGE_ON
-            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
-            soc_key = CONTROL_TIMED_DISCHARGE_SOC
-        else:
+        """The optimiser only asks about "idle"."""
+        if state != "idle":
             return False
-
-        requested_current = await self._power_to_current(power)
-        actual_current = self._numeric_state(current_key)
-        actual_soc = self._numeric_state(soc_key)
-
-        controls_match = (
-            (self._entity_id(enable_key) is None or self._switch_on(enable_key))
-            and actual_current is not None
-            and actual_soc is not None
-            and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
+        return (
+            self._entity_id(CONTROL_TIMED_CHARGE_ON) is None or not self._switch_on(CONTROL_TIMED_CHARGE_ON)
+        ) and (
+            self._entity_id(CONTROL_TIMED_DISCHARGE_ON) is None or not self._switch_on(CONTROL_TIMED_DISCHARGE_ON)
         )
-        if controls_match:
-            _LOGGER.debug("Refreshing %s control despite matching Solax entity states", state)
-        return False
-
-    async def set_mode(self, mode: str) -> None:
-        await self.hass.services.async_call(
-            "select",
-            "select_option",
-            {
-                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
-                "option": mode,
-            },
-            blocking=True,
-        )
-
-    async def get_mode(self) -> str:
-        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
-        return None if state is None else state.state
 
     async def _set_time_window(
         self,
@@ -615,30 +531,6 @@ class SolisSolaxModbusInverter(SolisInverter):
         await self._set_number(start_minutes_key, start.minute)
         await self._set_number(end_hours_key, end.hour)
         await self._set_number(end_minutes_key, end.minute)
-
-    async def power_to_current(self, power: float) -> float | None:
-        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
-        if voltage is None or voltage <= 0:
-            return None
-        return abs(float(power)) / voltage
-
-    def _parse_datetime_state(self, value: str) -> datetime | None:
-        parsed = dt_util.parse_datetime(value)
-        if parsed is not None:
-            return parsed
-
-        for fmt in (
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-            "%d/%m/%y %H:%M:%S",
-            "%d/%m/%Y %H:%M:%S",
-        ):
-            try:
-                return datetime.strptime(value, fmt)
-            except ValueError:
-                continue
-        return None
-
 
 class SolisCloudInverter(SolisInverter):
     """Solis inverter controlled through the Solis integration."""
@@ -669,12 +561,6 @@ class SolisCloudInverter(SolisInverter):
         },
     }
 
-    async def get_time(self) -> datetime:
-        return dt_util.now()
-
-    async def set_time(self, time: datetime) -> None:
-        _LOGGER.debug("Solis integration inverter RTC control is not exposed; ignoring set_time(%s)", time)
-
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         await self._set_timed_mode()
         await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
@@ -695,49 +581,10 @@ class SolisCloudInverter(SolisInverter):
         await self.set_mode(SOLIS_CLOUD_IDLE_MODE)
 
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
-        if state == "idle":
-            return await self.get_mode() == SOLIS_CLOUD_IDLE_MODE
-
-        if state == "charging":
-            current_key = CONTROL_TIMED_CHARGE_CURRENT
-            soc_key = CONTROL_TIMED_CHARGE_SOC
-        elif state == "discharging":
-            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
-            soc_key = CONTROL_TIMED_DISCHARGE_SOC
-        else:
+        """The optimiser only asks about "idle"."""
+        if state != "idle":
             return False
-
-        requested_current = await self._power_to_current(power)
-        actual_current = self._numeric_state(current_key)
-        actual_soc = self._numeric_state(soc_key)
-        return (
-            await self.get_mode() == SOLIS_CLOUD_TIMED_MODE
-            and actual_current is not None
-            and actual_soc is not None
-            and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
-        )
-
-    async def set_mode(self, mode: str) -> None:
-        await self.hass.services.async_call(
-            "select",
-            "select_option",
-            {
-                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
-                "option": mode,
-            },
-            blocking=True,
-        )
-
-    async def get_mode(self) -> str:
-        state = self._state(self._required_entity_id(CONTROL_INVERTER_MODE))
-        return None if state is None else state.state
-
-    async def power_to_current(self, power: float) -> float | None:
-        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
-        if voltage is None or voltage <= 0:
-            return None
-        return abs(float(power)) / voltage
+        return await self.get_mode() == SOLIS_CLOUD_IDLE_MODE
 
     async def _set_timed_mode(self) -> None:
         if await self.get_mode() != SOLIS_CLOUD_TIMED_MODE:
@@ -808,12 +655,6 @@ class SolisConnectInverter(SolisInverter):
                 "number.{device_name}_backup_mode_soc",
                 "number.{device_name}_backup_soc",
             ],
-            SOLIS_CONNECT_CLOCK_YEAR: "sensor.{device_name}_clock_year",
-            SOLIS_CONNECT_CLOCK_MONTH: "sensor.{device_name}_clock_month",
-            SOLIS_CONNECT_CLOCK_DAY: "sensor.{device_name}_clock_day",
-            SOLIS_CONNECT_CLOCK_HOURS: "sensor.{device_name}_clock_hours",
-            SOLIS_CONNECT_CLOCK_MINUTES: "sensor.{device_name}_clock_minutes",
-            SOLIS_CONNECT_CLOCK_SECONDS: "sensor.{device_name}_clock_seconds",
             SOLIS_CONNECT_STORAGE_CONTROL: "sensor.{device_name}_storage_control_switching_value",
             SOLIS_CONNECT_TOU_SWITCH: "sensor.{device_name}_time_of_use_v2_switch",
             **{
@@ -837,38 +678,6 @@ class SolisConnectInverter(SolisInverter):
         if name is not None and self._entity_id(f"tou_{name}_hour") is not None:
             return super()._programmed_time(f"tou_{name}_hour", f"tou_{name}_minute")
         return super()._programmed_time(hours_key, minutes_key)
-
-    async def get_time(self) -> datetime:
-        values = {
-            key: self._numeric_state(key)
-            for key in (
-                SOLIS_CONNECT_CLOCK_YEAR,
-                SOLIS_CONNECT_CLOCK_MONTH,
-                SOLIS_CONNECT_CLOCK_DAY,
-                SOLIS_CONNECT_CLOCK_HOURS,
-                SOLIS_CONNECT_CLOCK_MINUTES,
-                SOLIS_CONNECT_CLOCK_SECONDS,
-            )
-        }
-        if any(value is None for value in values.values()):
-            raise RuntimeError("SolisConnect inverter clock sensors are unavailable")
-
-        year = int(values[SOLIS_CONNECT_CLOCK_YEAR])
-        if year < 100:
-            year += 2000
-
-        return datetime(
-            year,
-            int(values[SOLIS_CONNECT_CLOCK_MONTH]),
-            int(values[SOLIS_CONNECT_CLOCK_DAY]),
-            int(values[SOLIS_CONNECT_CLOCK_HOURS]),
-            int(values[SOLIS_CONNECT_CLOCK_MINUTES]),
-            int(values[SOLIS_CONNECT_CLOCK_SECONDS]),
-            tzinfo=dt_util.DEFAULT_TIME_ZONE,
-        )
-
-    async def set_time(self, time: datetime) -> None:
-        _LOGGER.debug("SolisConnect inverter RTC write is not exposed; ignoring set_time(%s)", time)
 
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         await self._set_base_mode()
@@ -894,51 +703,14 @@ class SolisConnectInverter(SolisInverter):
         await self.set_mode(self.active_control_mode)
 
     async def control_matches(self, state: str, target_soc: float | None, power: float) -> bool:
-        if state == "idle":
-            return (
-                await self.get_mode() == self.active_control_mode
-                and not self._slot_enabled(CONTROL_TIMED_CHARGE_ON)
-                and not self._slot_enabled(CONTROL_TIMED_DISCHARGE_ON)
-            )
-
-        if state == "charging":
-            enable_key = CONTROL_TIMED_CHARGE_ON
-            current_key = CONTROL_TIMED_CHARGE_CURRENT
-            soc_key = CONTROL_TIMED_CHARGE_SOC
-        elif state == "discharging":
-            enable_key = CONTROL_TIMED_DISCHARGE_ON
-            current_key = CONTROL_TIMED_DISCHARGE_CURRENT
-            soc_key = CONTROL_TIMED_DISCHARGE_SOC
-        else:
+        """The optimiser only asks about "idle"."""
+        if state != "idle":
             return False
-
-        requested_current = await self._power_to_current(power)
-        actual_current = self._numeric_state(current_key)
-        actual_soc = self._numeric_state(soc_key)
         return (
-            self._slot_enabled(enable_key)
-            and actual_current is not None
-            and actual_soc is not None
-            and abs(actual_current - requested_current) <= 0.1
-            and (target_soc is None or abs(actual_soc - self._programmed_target_soc(state, target_soc)) <= 1)
+            await self.get_mode() == self.active_control_mode
+            and not self._slot_enabled(CONTROL_TIMED_CHARGE_ON)
+            and not self._slot_enabled(CONTROL_TIMED_DISCHARGE_ON)
         )
-
-    async def set_mode(self, mode: str) -> None:
-        await self.hass.services.async_call(
-            "select",
-            "select_option",
-            {
-                "entity_id": self._required_entity_id(CONTROL_INVERTER_MODE),
-                "option": mode,
-            },
-            blocking=True,
-        )
-
-    async def power_to_current(self, power: float) -> float | None:
-        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
-        if voltage is None or voltage <= 0:
-            return None
-        return abs(float(power)) / voltage
 
     async def get_mode(self) -> str | None:
         """Current work mode, read from the storage-control register.
