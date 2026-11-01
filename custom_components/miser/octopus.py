@@ -322,11 +322,6 @@ class Tariff:
             period_from = pd.Timestamp.now(tz="UTC").normalize() - RATE_LOOKBACK
         params = OCTOPUS_PRODUCT_PARAMS | {"period_from": _utc(period_from).strftime("%Y-%m-%dT%H:%M:%SZ")}
 
-        if not self._export:
-            url = OCTOPUS_RATE_URLS["fixed"].format(product=self.product, code=self.tariff_code)
-            data = await fetch_api_data(url=url, params=params)
-            self.fixed = _usable_rates(data["results"])
-
         if self.is_eco7:
             url = OCTOPUS_RATE_URLS["day"].format(product=self.product, code=self.tariff_code)
             data = await fetch_api_data(url=url, params=params)
@@ -393,15 +388,7 @@ class Tariff:
 
         # Slots after the last published rate repeat the previous 24 hours.
         unit = extend_daily_pattern(unit).ffill().bfill()
-        df = pd.DataFrame({"unit": unit})
-
-        if not self._export:
-            fixed = rates_to_series(self.fixed, index).ffill().bfill().fillna(0)
-            # Standing charge (p/day) is booked once a day, at midnight UTC.
-            fixed[index.time != pd.Timestamp("00:00").time()] = 0
-            df["fixed"] = fixed
-
-        return df
+        return pd.DataFrame({"unit": unit})
 
     async def _get_agile_predict(self) -> pd.Series | None:
         """Agile Predict forecast, re-fetched at most every RATE_REFRESH_INTERVAL.

@@ -24,7 +24,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 7 | Big plan attributes saved to the HA database every run | Fixed `f0ce538` |
 | 8 | Battery model loop is slow | Fixed (see below) |
 | 9 | Device-name helper exists twice and the copies disagree | Fixed (see below) |
-| 10 | Standing charge downloaded hourly, never used | Open |
+| 10 | Standing charge downloaded hourly, never used | Fixed (see below) |
 | 11 | Three Solis controllers copy the same methods | Open |
 | 12 | Controller code nothing calls | Open |
 | 13 | Commented-out code and broken leftover methods | Open |
@@ -48,12 +48,6 @@ one process at once. These are the timer, a settings change and Axle events.
     - **Fix:** Not known yet. First, turn on SolisConnect debug logging to see whether the time-register writes reach
       the inverter or are refused. Then check whether the Solis refuses new times for a slot while that slot is active.
     - **If we skip it:** Some planned charges silently don't happen. Now they at least show as "Control failed".
-
-10. **The standing charge is downloaded every hour and never used** (`octopus.py:326, 402`; `entity_tariff.py:94`)
-    - **What this is:** The `fixed` column holds the daily standing charge.
-    - **Problem:** No cost calculation reads it. It costs one extra Octopus API call per hour.
-    - **Fix:** Delete the fetch and the `fixed` column.
-    - **If we skip it:** Wasted API calls, and one more way for a refresh to fail.
 
 11. **The three Solis controllers copy the same methods** (`inverters/solis.py`: `set_mode`, `get_mode`, `power_to_current` in each subclass)
     - **Problem:** The copies match word for word. A fix that lands in one copy is missed in the other two.
@@ -92,6 +86,10 @@ one process at once. These are the timer, a settings change and Axle events.
     - **Fix:** Take `time_of_day` from `index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time`.
 
 ## Fixed
+
+10. **The standing charge was downloaded every hour and never used**
+    - **Fix:** Deleted the standing-charge download, the `fixed` price column and its URL. One fewer Octopus call per
+      refresh, and one fewer way for a refresh to fail.
 
 19. **A planned charge blocked export in a high-export slot** (`pv_model.py`, `discharging`)
     - **What happened:** On 2026-11-01 Axle paid 100p/kWh for export from 06:00 to 07:00. At 06:00, low-cost charging
