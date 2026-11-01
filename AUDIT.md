@@ -27,7 +27,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 10 | Standing charge downloaded hourly, never used | Fixed (see below) |
 | 11 | Three Solis controllers copy the same methods | Fixed (see below) |
 | 12 | Controller code nothing calls | Fixed (see below) |
-| 13 | Commented-out code and broken leftover methods | Open |
+| 13 | Commented-out code and broken leftover methods | Fixed (see below) |
 | 14 | `_write_status` defined twice | Open |
 | 15 | Schedule "alignment" code does nothing | Open |
 | 16 | Fallback load shape matched against UTC times | Open |
@@ -51,14 +51,6 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ### Nice to have
 
-13. **Commented-out code and broken leftover methods** (`pv_model.py` tail, `octopus.py:294-317`, `octopus.py:361, 368`)
-    - **Problem:**
-      - There are about 80 lines of old optimiser code in comments.
-      - `Tariff.__init__` ignores seven of its arguments.
-      - `Tariff.start` and `Tariff.end` use `self.tz`, which doesn't exist, so they would crash.
-      - Three `__str__` methods return `None`, so `str(model)` raises `TypeError`.
-    - **Fix:** Delete all of it.
-
 14. **`_write_status` is defined twice** (`__init__.py:491`, `optimiser.py:404`)
     - **Fix:** Import the optimiser version in `__init__.py`.
 
@@ -73,6 +65,11 @@ one process at once. These are the timer, a settings change and Axle events.
     - **Fix:** Take `time_of_day` from `index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time`.
 
 ## Fixed
+
+13. **Commented-out code and broken leftover methods**
+    - **Fix:** Deleted the old optimiser code in comments at the end of `pv_model.py`, the three `__str__` methods
+      that returned `None`, `Tariff.start`/`end`, `manual`, `is_intelligent` and the commented Intelligent block.
+      `Tariff.__init__` now takes only the two arguments callers pass. About 170 lines removed.
 
 11. **The three Solis controllers copied the same methods**
     - **Fix:** `set_mode`, `get_mode` and `power_to_current` now live once, in `SolisInverter`. SolisConnect keeps its

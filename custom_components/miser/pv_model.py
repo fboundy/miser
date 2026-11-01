@@ -6,7 +6,6 @@ from numpy import isnan
 
 from .const import (
     TIME_FORMAT,
-    OPTIMISER_MAX_ITERS,
     OPTIMISER_HIGH_COST_MAX_ITERS,
     CONTROL_PASS_THREHOLD,
     CONTROL_SLOT_THRESHOLD,
@@ -14,7 +13,6 @@ from .const import (
     MODEL_MIN_SLOT_POWER,
     MODEL_MAX_SEARCH_WINDOW_SOC,
 )
-from .utils import get_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,9 +52,6 @@ class InverterModel:
         self.inverter_power = inverter_power
         self.charger_power = charger_power
 
-    def __str__(self):
-        pass
-
 
 class BatteryModel:
     """Describes the battery system attached to the inverter
@@ -79,9 +74,6 @@ class BatteryModel:
         self.max_dod = battery_minimum_soc / 100
         self.current_limit_amps = battery_current_limit
         self.voltage = voltage
-
-    def __str__(self):
-        pass
 
     @property
     def max_charge_power(self) -> int:
@@ -116,9 +108,6 @@ class PVsystemModel:
         self.consumption: pd.Series | None = None
         self.prices: pd.DataFrame | None = None
         self.initial_soc = battery.max_dod
-
-    def __str__(self):
-        pass
 
     @property
     def tz(self):
@@ -467,10 +456,6 @@ class PVsystemModel:
 
             min_price = low_cost_import_slots["import"].min()
 
-            # # Add rounding to ensure matching (may not be needed)
-            # x["import"] = x["import"].round(2)
-            # min_price = min_price.round(2)
-
             if len(low_cost_import_slots[low_cost_import_slots["import"] == min_price]) > 0:
                 start_window = low_cost_import_slots[low_cost_import_slots["import"] == min_price].index[0]
                 available.loc[start_window] = False
@@ -508,7 +493,6 @@ class PVsystemModel:
                     slots_added += 1
 
                 else:
-                    # done = True
                     slots = slots[:-1]
                     flows = await self.flows(slots=slots)
 
@@ -695,7 +679,6 @@ class PVsystemModel:
                     best_cost = net_cost
                     slots_added += 1
                 else:
-                    # done = True
                     slots = kept_slots
                     flows = await self.flows(slots=slots)
 
@@ -1107,83 +1090,3 @@ class PVsystemModel:
         dt_hours = -prices.index.to_series().diff(-1) / pd.Timedelta("60min")
         return dt_hours.ffill().fillna(0.5)
 
-
-#     async def optimised_force(
-#         self,
-#         discharge=False,
-#         use_export=True,
-#     ):
-
-#         self.calculate_flows()
-#         self.base_cost = self.net_cost
-#         self.best_cost = self.base_cost
-#         self.net_costs = [self.base_cost]
-
-#         if log:
-#             _LOGGER.info(f"Base cost:  {self.base_cost}")
-
-#         self._high_cost_swaps(log=log)
-
-#         if self.prices["export"].sum() > 0:
-#             j = 0
-#         else:
-#             j = max_iters
-
-#         self.slots_added = 999
-
-#         while (self.slots_added > 0) and (j < max_iters):
-#             j += 1
-#             # No need to iterate if this is charge only
-#             if not discharge:
-#                 j += max_iters
-
-#             self._low_cost_charging(log=log)
-
-#             if log:
-#                 _LOGGER.info(f"Iteration {j:2d}: Slots added: {self.slots_added:3d}")
-
-#             if discharge:
-#                 self._discharging(log=log)
-
-#         self.calculate_flows(slots=self.slots)
-
-#         # df.index = pd.to_datetime(df.index)
-
-#         if (not self._get_config("allow_cyclic")) and (len(self.slots) > 0) and discharge:
-#             if log:
-#                 _LOGGER.info("")
-#                 _LOGGER.info("Removing cyclic charge/discharge")
-#             a = self.flows["forced"][self.flows["forced"] != 0].to_dict()
-#             new_slots = [(k, a[k]) for k in a]
-
-#             revised_slots = []
-#             skip_flag = False
-#             for i, x in enumerate(zip(new_slots[:-1], new_slots[1:])):
-
-#                 if (
-#                     (int(x[0][1]) == self.charge_power_limit)
-#                     & (int(-x[1][1]) == self.charge_power_limit)
-#                     & (x[1][0] - x[0][0] == pd.Timedelta("30min"))
-#                 ):
-#                     skip_flag = True
-#                     if log:
-#                         _LOGGER.info(
-#                             f"  Skipping slots at {x[0][0].strftime(TIME_FORMAT)} ({x[0][1]}W) and {x[1][0].strftime(TIME_FORMAT)} ({x[1][1]}W)"
-#                         )
-#                 elif skip_flag:
-#                     skip_flag = False
-#                 else:
-#                     revised_slots.append(x[0])
-#                     if i == len(new_slots) - 2:
-#                         revised_slots.append(x[1])
-
-#             self.calculate_flows(slots=revised_slots)
-
-#             best_cost_new = self.net_cost
-#             if log:
-#                 _LOGGER.info(f"  Net cost revised from {self.best_cost:0.1f}p to {best_cost_new:0.1f}p")
-#             slots = revised_slots
-#             # self.flows.index = pd.to_datetime(df.index)
-#         return self.flows
-
-# # %%
