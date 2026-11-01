@@ -25,8 +25,6 @@ from .const import (
     CONF_INVERTER_POWER,
     CONF_OPTIMISER_FREQUENCY,
     MODEL_ENTITIES_AVAILABLE_WAIT,
-    COST_ENTITY_OBJECTS,
-    CONTROL_STATE,
     TARIFF_SOURCE_ACCOUNT,
     TARIFF_SOURCE_CODES,
     TARIFF_SOURCE_ENTITIES,
@@ -50,6 +48,7 @@ from .optimiser import (
     AXLE_VPP_DOMAIN,
     AXLE_VPP_END_ENTITIES,
     AXLE_VPP_START_ENTITIES,
+    _write_status,
     axle_vpp_control_window,
     optimise,
 )
@@ -390,14 +389,6 @@ async def _schedule_optimiser(hass):
                 hass.data[DOMAIN].pop(handle_key)()
                 _LOGGER.debug("Previous %s cancelled.", handle_key)
 
-        # Get the current time
-        now = dt_util.utcnow()
-
-        # Calculate the next aligned run time
-        aligned_next_run = now.replace(second=0, microsecond=0) + (
-            optimiser_interval - timedelta(minutes=now.minute % (optimiser_interval.total_seconds() // 60))
-        )
-
         # Add a delay for the initial run (2 minutes from now)
         initial_delay = MODEL_ENTITIES_AVAILABLE_WAIT  # 2 minutes in seconds
         _LOGGER.debug(f"Initial run of _optimise scheduled in {initial_delay} seconds.")
@@ -415,16 +406,6 @@ async def _schedule_optimiser(hass):
                 return
 
             _LOGGER.debug("Initial run of _optimise completed.")
-
-            # Calculate the next aligned run time after the initial run
-            now = dt_util.utcnow()
-            next_run = aligned_next_run
-            if now >= aligned_next_run:
-                next_run += (
-                    optimiser_interval  # Align to the next interval if the initial run is past the aligned time
-                )
-
-            _LOGGER.debug(f"Next aligned run of _optimise scheduled at {next_run}.")
 
             # Schedule the recurring runs
             hass.data[DOMAIN]["optimiser_schedule"] = async_track_time_interval(
@@ -454,12 +435,6 @@ async def _wait_for_initial_entities(hass: HomeAssistant) -> None:
         await _write_status(hass, "Awaiting Sensors")
         _LOGGER.debug("Initial optimiser run waiting for inverter sensor entities")
         await asyncio.sleep(5)
-
-
-async def _write_status(hass: HomeAssistant, state: str) -> None:
-    entity = hass.data.get(DOMAIN, {}).get(COST_ENTITY_OBJECTS, {}).get(CONTROL_STATE)
-    if entity is not None:
-        await entity.async_set_native_value(state)
 
 
 async def _setup_config_callbacks(hass):
