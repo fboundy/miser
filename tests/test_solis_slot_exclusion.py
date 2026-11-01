@@ -3,6 +3,7 @@
 from datetime import datetime, timezone
 
 import pytest
+from homeassistant.util import dt as dt_util
 
 from custom_components.miser.const import (
     CONTROL_BATTERY_VOLTAGE,
@@ -134,18 +135,21 @@ def _with_registers(hass: _Hass, switch: str, charge_start: tuple[str, str]) -> 
 @pytest.mark.asyncio
 async def test_confirmation_reads_inverter_registers_not_optimistic_switches() -> None:
     # Overnight 2026-10-31: SolisConnect showed the charge slot on while the inverter held it off.
+    local = dt_util.as_local(NOW)  # the HA test harness runs in US/Pacific
     hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch="64", charge_start=("0", "30"))
-    hass.states.states["time.cs"] = _State("01:00:00")
+    # The optimistic entity agrees with the request; only the register shows 00:30.
+    hass.states.states["time.cs"] = _State(local.strftime("%H:%M:00"))
     mismatches = await SolisConnectInverter(hass)._control_mismatches("charging", NOW, NOW, 100, 3000)
 
     assert "charging enable switch is off" in mismatches
     assert "the opposite timed slot is still enabled" in mismatches
-    assert "start is 00:30, expected 01:00" in mismatches
+    assert f"start is 00:30, expected {local:%H:%M}" in mismatches
 
 
 @pytest.mark.asyncio
 async def test_confirmation_passes_when_registers_match() -> None:
-    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch="1", charge_start=("1", "0"))
+    local = dt_util.as_local(NOW)
+    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch="1", charge_start=(str(local.hour), str(local.minute)))
     mismatches = await SolisConnectInverter(hass)._control_mismatches("charging", NOW, NOW, 100, 3000)
 
     assert "charging enable switch is off" not in mismatches

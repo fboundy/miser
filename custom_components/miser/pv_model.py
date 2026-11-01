@@ -223,10 +223,8 @@ class PVsystemModel:
 
         chg = [self.initial_soc / 100 * self.battery.capacity]
 
-        for idx in df.index:
-            flow = df["battery_temp"].loc[idx]
-            dt_hours = df["dt_hours"].loc[idx]
-
+        # Plain floats: a per-row .loc lookup made this loop most of a run's time.
+        for flow, dt_hours in zip(df["battery_temp"].tolist(), df["dt_hours"].tolist()):
             if flow > 0:
                 flow = flow / self.inverter.inverter_efficiency
             else:

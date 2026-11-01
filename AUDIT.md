@@ -22,7 +22,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 5 | Five settings appear in HA but do nothing | Fixed (see below) |
 | 6 | Setup fails for good instead of retrying | Fixed `f0ce538` |
 | 7 | Big plan attributes saved to the HA database every run | Fixed `f0ce538` |
-| 8 | Battery model loop is slow | Open |
+| 8 | Battery model loop is slow | Fixed (see below) |
 | 9 | Device-name helper exists twice and the copies disagree | Fixed (see below) |
 | 10 | Standing charge downloaded hourly, never used | Open |
 | 11 | Three Solis controllers copy the same methods | Open |
@@ -32,17 +32,21 @@ one process at once. These are the timer, a settings change and Axle events.
 | 15 | Schedule "alignment" code does nothing | Open |
 | 16 | Fallback load shape matched against UTC times | Open |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
+| 18 | Inverter keeps an old charge window when a new one is written mid-slot | Open |
 
 ## Open
 
 ### Should fix
 
-8. **The battery model loop is slow** (`pv_model.py:228-252`)
-   - **What this is:** `flows()` simulates the battery one half-hour at a time. It is called hundreds of times per run.
-   - **Problem:** Each step reads `df["battery_temp"].loc[idx]` and `df["dt_hours"].loc[idx]`. These are slow pandas
-     lookups. A run takes up to a minute, and that is how long the optimiser lock is held.
-   - **Fix:** Before the loop, take `.to_numpy()` of both columns and loop over plain floats. The results stay the same.
-   - **If we skip it:** Runs stay long, and the background thread and CPU stay busy.
+18. **The inverter keeps an old charge window when a new one is written mid-slot** (seen 2026-11-01 06:00; cause not yet known)
+    - **What this is:** At 06:00 Miser wrote a charge window of 06:00–06:30 with a 100% target.
+    - **Problem:** The inverter kept its previous window, 05:43–06:00. SolisConnect's time sensors showed the new times
+      right after each write, then read 05:43–06:00 back on every poll until at least 06:14. The battery stopped
+      charging at 06:00 and fell from 96% to 91% by 06:40. Item 17's check caught this ("Control failed" at 06:02:49),
+      but three retries didn't fix it. The missed charge from 00:00 to 00:38 on 2026-10-31 may have the same cause.
+    - **Fix:** Not known yet. First, turn on SolisConnect debug logging to see whether the time-register writes reach
+      the inverter or are refused. Then check whether the Solis refuses new times for a slot while that slot is active.
+    - **If we skip it:** Some planned charges silently don't happen. Now they at least show as "Control failed".
 
 10. **The standing charge is downloaded every hour and never used** (`octopus.py:326, 402`; `entity_tariff.py:94`)
     - **What this is:** The `fixed` column holds the daily standing charge.
@@ -88,6 +92,12 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Fixed
 
+8. **The battery model loop was slow**
+   - **Fix:** `flows()` now loops over the two columns as plain Python floats instead of a `.loc` lookup per row. On a
+     96-slot test day the three main passes took 42 s instead of 68 s, with the same cost and slots. Battery charge
+     figures can differ by rounding (at most 0.1 Wh per slot). On the live system, the first run took 31 s, against a
+     median of 64 s over the day before.
+
 5. **Five settings appeared in HA but did nothing**
    - **Fix:** "Use Solar" now works: when it is off, `_get_solcast` uses a zero solar forecast. "Include Export",
      "Power Resolution", "Sleep SOC" and "Inverter Loss" are deleted. Tested in `tests/test_use_solar.py`.
@@ -112,9 +122,7 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Not checked
 
-- I didn't measure the speed of item 8.
-- On Windows, `tests/test_config_flow.py` can't run, because the HA test harness needs `fcntl`.
-  The other 160 tests pass.
+- All 169 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
