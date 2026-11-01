@@ -1915,8 +1915,9 @@ async def _fallback_consumption(hass: HomeAssistant, consumption: pd.DataFrame) 
         )
         daily["fallback"] = daily["consumption"] * daily_consumption / (daily["consumption"].sum() / 2000)
         daily.index = pd.to_datetime(daily.index, unit="h").time
-        fallback = consumption[["time_of_day"]].merge(daily["fallback"], "left", left_on="time_of_day", right_index=True)
-        return fallback["fallback"].set_axis(consumption.index)
+        # The shape is in local clock time; the index is UTC.
+        local_times = consumption.index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time
+        return daily["fallback"].reindex(local_times).set_axis(consumption.index)
 
     return pd.Series(index=consumption.index, data=daily_consumption * 1000 / 24)
 
