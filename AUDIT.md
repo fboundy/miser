@@ -30,7 +30,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 13 | Commented-out code and broken leftover methods | Fixed (see below) |
 | 14 | `_write_status` defined twice | Fixed (see below) |
 | 15 | Schedule "alignment" code does nothing | Fixed (see below) |
-| 16 | Fallback load shape matched against UTC times | Open |
+| 16 | Fallback load shape matched against UTC times | Fixed (see below) |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
 | 18 | Inverter keeps an old charge window when a new one is written mid-slot | Open |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
@@ -45,18 +45,15 @@ one process at once. These are the timer, a settings change and Axle events.
       right after each write, then read 05:43–06:00 back on every poll until at least 06:14. The battery stopped
       charging at 06:00 and fell from 96% to 91% by 06:40. Item 17's check caught this ("Control failed" at 06:02:49),
       but three retries didn't fix it. The missed charge from 00:00 to 00:38 on 2026-10-31 may have the same cause.
-    - **Fix:** Not known yet. First, turn on SolisConnect debug logging to see whether the time-register writes reach
-      the inverter or are refused. Then check whether the Solis refuses new times for a slot while that slot is active.
+    - **Fix:** Not known yet. SolisConnect debug logging is on (since 2026-11-01 13:39), so the next failure will show
+      whether the time-register writes reach the inverter or are refused. Then check whether the Solis refuses new times for a slot while that slot is active.
     - **If we skip it:** Some planned charges silently don't happen. Now they at least show as "Control failed".
 
-### Nice to have
-
-16. **The fallback load shape is matched against UTC times** (`optimiser.py:1787, 1909-1918`)
-    - **Problem:** `CONSUMPTION_SHAPE` hours are local clock time, but `time_of_day` comes from the UTC index. In
-      summer time the modelled evening peak lands an hour late. This only matters when there is no usage history.
-    - **Fix:** Take `time_of_day` from `index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time`.
-
 ## Fixed
+
+16. **The fallback load shape was matched against UTC times**
+    - **Fix:** `_fallback_consumption` looks up the shape by local clock time. In summer time the evening peak now
+      starts at 17:00 local, not 18:00. Tested in `tests/test_fallback_consumption_local_time.py`.
 
 14. **`_write_status` was defined twice**
     - **Fix:** `__init__.py` imports the optimiser's copy.
@@ -123,7 +120,7 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Not checked
 
-- All 170 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 171 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
