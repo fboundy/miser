@@ -1,6 +1,6 @@
 # Miser code audit
 
-Last updated: 2026-10-31. When you fix an item, move it to **Fixed** with the commit.
+Last updated: 2026-11-01. When you fix an item, move it to **Fixed** with the commit.
 Numbers stay the same across updates, so "fix 9" always means the same item.
 
 **What this repo does:** Miser is a Home Assistant integration for one home. Every 10 minutes it plans when the
@@ -33,6 +33,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 16 | Fallback load shape matched against UTC times | Open |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
 | 18 | Inverter keeps an old charge window when a new one is written mid-slot | Open |
+| 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 
 ## Open
 
@@ -92,6 +93,17 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Fixed
 
+19. **A planned charge blocked export in a high-export slot** (`pv_model.py`, `discharging`)
+    - **What happened:** On 2026-11-01 Axle paid 100p/kWh for export from 06:00 to 07:00. At 06:00, low-cost charging
+      put a top-up charge in that slot, because its import price was below the highest export price. The discharge pass
+      skipped any slot with a planned charge, so the house imported 2.2 kW at the start of the event and exported
+      under 1 kWh over the hour.
+    - **Fix:** The discharge pass now also tries slots with a planned charge. It drops that charge, tries an export,
+      and keeps the swap only if the plan gets cheaper. The fix isn't specific to Axle; any slot with a high export
+      price is handled the same way. Tested in `tests/test_pv_model_discharge_over_charge.py`.
+    - **Possible link:** Item 18's failed charge window was written during this event, so Axle may have been
+      controlling the inverter at the time. Not proven.
+
 8. **The battery model loop was slow**
    - **Fix:** `flows()` now loops over the two columns as plain Python floats instead of a `.loc` lookup per row. On a
      96-slot test day the three main passes took 42 s instead of 68 s, with the same cost and slots. Battery charge
@@ -122,7 +134,7 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Not checked
 
-- All 169 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 170 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
