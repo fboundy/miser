@@ -74,7 +74,6 @@ async def test_octopus_energy_rates_are_converted_to_pence() -> None:
     assert round(df.loc[pd.Timestamp("2026-10-19 15:30", tz="UTC"), "unit"], 2) == 37.23
     assert round(df.loc[pd.Timestamp("2026-10-20 02:00", tz="UTC"), "unit"], 2) == 16.10
     assert round(df.loc[pd.Timestamp("2026-10-20 10:00", tz="UTC"), "unit"], 2) == 26.67
-    assert "fixed" in df.columns and (df["fixed"] == 0).all()
 
 
 @pytest.mark.asyncio

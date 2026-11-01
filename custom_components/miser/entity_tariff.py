@@ -2,7 +2,7 @@
 
 Drop-in alternative to octopus.Tariff: exposes `tariff_code` (used to detect
 configuration changes) and `to_df(start, end)` returning 30-minute slots with a
-`unit` column in p/kWh (plus a zero `fixed` column for import), read fresh from
+`unit` column in p/kWh, read fresh from
 the entities on every call.
 
 Supported entity shapes, in order of preference:
@@ -89,10 +89,7 @@ class EntityTariff:
         else:
             series[:] = flat
 
-        df = pd.DataFrame({"unit": series})
-        if not self._export:
-            df["fixed"] = 0.0
-        return df
+        return pd.DataFrame({"unit": series})
 
     def _scale(self, attributes: dict[str, Any], values: list[float | None]) -> float:
         """Multiplier to convert this entity's prices to pence."""

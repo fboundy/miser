@@ -48,7 +48,6 @@ def _flux_day(day: str, cheap: float, normal: float, peak: float) -> list[dict]:
 async def test_flux_prices_follow_published_rows_then_repeat() -> None:
     tariff = Tariff("E-1R-FLUX-IMPORT-23-02-14-G")
     tariff.unit = _flux_day("2026-10-18", 14.45, 24.07, 33.70) + _flux_day("2026-10-19", 16.10, 26.67, 37.23)
-    tariff.fixed = [_rate(44.85, "2026-10-01T00:00:00Z")]
     tariff._fetched_at = pd.Timestamp.now(tz="UTC")  # skip the network
 
     df = await tariff.to_df(start=pd.Timestamp("2026-10-18 12:00", tz="UTC"), end=pd.Timestamp("2026-10-20 23:30", tz="UTC"))
@@ -59,9 +58,6 @@ async def test_flux_prices_follow_published_rows_then_repeat() -> None:
     assert df.loc[pd.Timestamp("2026-10-20 02:00", tz="UTC"), "unit"] == 16.10
     assert df.loc[pd.Timestamp("2026-10-20 16:00", tz="UTC"), "unit"] == 37.23
     assert not df["unit"].isna().any()
-    # Standing charge only at midnight.
-    assert df.loc[pd.Timestamp("2026-10-19 00:00", tz="UTC"), "fixed"] == 44.85
-    assert df.loc[pd.Timestamp("2026-10-19 12:00", tz="UTC"), "fixed"] == 0
 
 
 @pytest.mark.asyncio
@@ -70,7 +66,6 @@ async def test_economy7_uses_night_rate_in_night_window() -> None:
     tariff.day = [_rate(30.0, "2026-01-01T00:00:00Z")]
     tariff.night = [_rate(12.0, "2026-01-01T00:00:00Z")]
     tariff.unit = tariff.day
-    tariff.fixed = [_rate(50.0, "2026-01-01T00:00:00Z")]
     tariff._fetched_at = pd.Timestamp.now(tz="UTC")
 
     df = await tariff.to_df(start=pd.Timestamp("2026-10-19 00:00", tz="UTC"), end=pd.Timestamp("2026-10-19 12:00", tz="UTC"))
@@ -118,7 +113,6 @@ async def test_agile_predict_failure_falls_back_and_is_not_retried_every_run(mon
     """Regression: an Agile Predict outage aborted the whole optimiser run."""
     tariff = Tariff("E-1R-AGILE-24-10-01-C")
     tariff.unit = [_rate(20.0, "2026-10-19T00:00:00Z", "2026-10-20T00:00:00Z")]
-    tariff.fixed = [_rate(50.0, "2026-01-01T00:00:00Z")]
     tariff._fetched_at = pd.Timestamp.now(tz="UTC")
     fetch = AsyncMock(side_effect=OSError("Agile Predict down"))
     monkeypatch.setattr(octopus, "fetch_api_data", fetch)

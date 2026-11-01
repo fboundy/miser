@@ -170,7 +170,6 @@ IMPORT_EXPORT = ["import", "export"]
 OCTOPUS_ACCOUNT_URL = "https://api.octopus.energy/v1/accounts/"
 OCTOPUS_PRODUCT_URL = r"https://api.octopus.energy/v1/products/"
 OCTOPUS_RATE_URLS = {
-    "fixed": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/standing-charges/",
     "day": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/day-unit-rates/",
     "night": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/night-unit-rates/",
     "unit": OCTOPUS_PRODUCT_URL + "{product}/electricity-tariffs/{code}/standard-unit-rates/",
