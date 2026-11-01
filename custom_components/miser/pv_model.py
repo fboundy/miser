@@ -633,7 +633,6 @@ class PVsystemModel:
         available = (
             (flows["export"] > min_import_price)
             & (-flows["forced"] < self.discharge_power_limit)
-            & (flows["forced"] <= 0)
             & (flows["solar"] <= flows["consumption"])
         )
 
@@ -657,6 +656,12 @@ class PVsystemModel:
 
                 factor = 1
                 str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
+
+                kept_slots = slots
+                if flows.loc[start_window, "forced"] > 0:
+                    # An earlier pass planned a charge here; try exporting instead.
+                    slots = [s for s in slots if s[0] != start_window]
+                    flows = await self.flows(slots=slots)
 
                 forced_discharge = min(
                     self.discharge_power_limit
@@ -691,7 +696,7 @@ class PVsystemModel:
                     slots_added += 1
                 else:
                     # done = True
-                    slots = slots[:-1]
+                    slots = kept_slots
                     flows = await self.flows(slots=slots)
 
                 _LOGGER.info(str_log)
