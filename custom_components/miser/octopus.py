@@ -228,27 +228,11 @@ async def get_octopus_info_from_account(hass: HomeAssistant, account_id: str, ap
 
 
 class Tariff:
-    def __init__(
-        self,
-        tariff_code,
-        export=False,
-        fixed=0,
-        unit=0,
-        valid_from=pd.Timestamp.now(tz="UTC").normalize() - pd.Timedelta(hours=24),
-        day=None,
-        night=None,
-        eco7_start="01:00",
-        tz="GB",
-        manual=False,
-        **kwargs,
-    ) -> None:
-
+    def __init__(self, tariff_code, export=False) -> None:
         self._tariff_code = tariff_code
-        self._tz = "GB"
         self._export = export
-        self._area = kwargs.get("area", None)
-        self._eco7_start = pd.Timestamp(eco7_start, tz="UTC")
-        self._manual = manual
+        # Economy 7 night (UTC): 01:00 for 7 hours.
+        self._eco7_start = pd.Timestamp("01:00", tz="UTC")
         self._fetched_at: pd.Timestamp | None = None
         self.agile_predict = None
         self._agile_predict_at: pd.Timestamp | None = None
@@ -261,8 +245,6 @@ class Tariff:
         instance = cls(tariff_code, **kwargs)
         await instance._get_from_api()  # Call the async method
         return instance
-
-        # self.host.io_prices = {}
 
     @property
     def tariff_code(self):
@@ -281,41 +263,8 @@ class Tariff:
         return "AGILE" in self._tariff_code
 
     @property
-    def is_intelligent(self):
-        return "INTELLI" in self._tariff_code and not self._export
-
-    @property
-    def manual(self):
-        return self._manual
-
-    @property
     def dno_region(self):
         return self._tariff_code[-1]
-
-        # if "INTELLI" in name and not self._export:
-        #     if self.host.get_config("octopus_auto"):
-        #         try:
-        #             self.log(f"    Trying to find Octopus Intelligent Entities from Octopus Energy Integration:")
-        #             self.host.octopus_import_entity = [
-        #                 name
-        #                 for name in self.host.get_state_retry(BOTTLECAP_DAVE["domain"]).keys()
-        #                 if (
-        #                     "octopus_energy_electricity" in name
-        #                     and BOTTLECAP_DAVE["rates"] in name
-        #                     and not "export" in name
-        #                 )
-        #             ]
-        #             self.rlog(f"      Octopus Intelligent Import Entity found: {self.host.octopus_import_entity}")
-
-        #             self.host.io_prices = self.host.get_io_tariffs(self.host.octopus_import_entity[0])
-        #             # self.host.io_prices = self.host.get_io_tariffs(self.host.octopus_import_entity)        # Error forcing: failure to load prices
-
-        #         except Exception as e:
-        #             self.log(f"{e.__traceback__.tb_lineno}: {e}", level="ERROR")
-        #             self.log(
-        #                 "Failed to find Octopus Intellgient tariffs from Octopus Energy Integration, extra IO slots will not be loaded",
-        #                 level="WARNING",
-        #             )
 
     async def _get_from_api(self, period_from: pd.Timestamp | None = None, **kwargs) -> None:
         if period_from is None:
@@ -349,20 +298,6 @@ class Tariff:
             if self._fetched_at is None:
                 raise
             _LOGGER.warning("Unable to refresh %s rates; using rates from %s: %s", self.tariff_code, self._fetched_at, err)
-
-    @property
-    def start(self):
-        if self.manual:
-            return pd.Timestamp("2020-01-01", tz=self.tz)
-        else:
-            return min([pd.Timestamp(x["valid_from"]) for x in self.unit])
-
-    @property
-    def end(self):
-        if self.manual:
-            return pd.Timestamp.now(tz=self.tz)
-        else:
-            return max([pd.Timestamp(x["valid_to"]) for x in self.unit])
 
     async def to_df(self, start=None, end=None, **kwargs):
         await self._refresh_if_due()
