@@ -28,8 +28,8 @@ one process at once. These are the timer, a settings change and Axle events.
 | 11 | Three Solis controllers copy the same methods | Fixed (see below) |
 | 12 | Controller code nothing calls | Fixed (see below) |
 | 13 | Commented-out code and broken leftover methods | Fixed (see below) |
-| 14 | `_write_status` defined twice | Open |
-| 15 | Schedule "alignment" code does nothing | Open |
+| 14 | `_write_status` defined twice | Fixed (see below) |
+| 15 | Schedule "alignment" code does nothing | Fixed (see below) |
 | 16 | Fallback load shape matched against UTC times | Open |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
 | 18 | Inverter keeps an old charge window when a new one is written mid-slot | Open |
@@ -51,20 +51,18 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ### Nice to have
 
-14. **`_write_status` is defined twice** (`__init__.py:491`, `optimiser.py:404`)
-    - **Fix:** Import the optimiser version in `__init__.py`.
-
-15. **The schedule's "alignment" code does nothing** (`__init__.py:428-465`)
-    - **Problem:** It computes `next_run` but only logs it. `async_track_time_interval` counts from "now", so runs
-      are not lined up to :00, :10, and so on.
-    - **Fix:** Use `async_track_utc_time_change(minute=range(0, 60, n), second=5)`, or delete the alignment code.
-
 16. **The fallback load shape is matched against UTC times** (`optimiser.py:1787, 1909-1918`)
     - **Problem:** `CONSUMPTION_SHAPE` hours are local clock time, but `time_of_day` comes from the UTC index. In
       summer time the modelled evening peak lands an hour late. This only matters when there is no usage history.
     - **Fix:** Take `time_of_day` from `index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time`.
 
 ## Fixed
+
+14. **`_write_status` was defined twice**
+    - **Fix:** `__init__.py` imports the optimiser's copy.
+
+15. **The schedule's "alignment" code did nothing**
+    - **Fix:** Deleted it. Runs still start 2 minutes after setup and repeat every interval from then, exactly as before.
 
 13. **Commented-out code and broken leftover methods**
     - **Fix:** Deleted the old optimiser code in comments at the end of `pv_model.py`, the three `__str__` methods
