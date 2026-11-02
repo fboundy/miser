@@ -158,18 +158,26 @@ async def test_confirmation_passes_when_registers_match() -> None:
 
 
 @pytest.mark.asyncio
-async def test_slot_times_written_after_soc_and_current_then_register_saved() -> None:
-    # Overnight 2026-11-02: an SOC/current write after the times put them back to the saved
-    # window, and with the slot already on nothing wrote 43707 to make new times take effect.
-    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch=str(1 | 64 | 2), charge_start=("6", "13"))
+async def test_charge_clears_discharge_times_before_writing_its_own() -> None:
+    # 2026-11-02: the Solis reverted charge times that overlapped the (disabled) discharge slot's times.
+    hass = _Hass(charge_on="off", discharge_on="on")
     await SolisConnectInverter(hass).control_charge(NOW, NOW, 100, 3000)
 
-    order = [data.get("entity_id", service) for _domain, service, data in hass.services.calls]
-    assert order.index("number.csoc") < order.index("time.cs")
-    assert order.index("number.ccur") < order.index("time.cs")
-    domain, service, data = hass.services.calls[-1]
-    # Charge bit set, discharge bit cleared, slot-2 bit (2) untouched.
-    assert (domain, service, data) == ("solisconnect", "solis_write_holding_register", {"address": 43707, "value": 1 | 2})
+    times = [(d["entity_id"], d["time"]) for dom, _s, d in hass.services.calls if dom == "time"]
+    assert times[:2] == [("time.ds", "00:00:00"), ("time.de", "00:00:00")]
+    assert [e for e, _t in times[2:]] == ["time.cs", "time.ce"]
+    assert not any(dom == "solisconnect" for dom, _s, _d in hass.services.calls)
+
+
+@pytest.mark.asyncio
+async def test_discharge_skips_clearing_charge_times_already_at_midnight() -> None:
+    hass = _Hass(charge_on="off", discharge_on="off")
+    hass.states.states["time.cs"] = _State("00:00:00")
+    hass.states.states["time.ce"] = _State("00:00:00")
+    await SolisConnectInverter(hass).control_discharge(NOW, NOW, 15, 3000)
+
+    times = [d["entity_id"] for dom, _s, d in hass.services.calls if dom == "time"]
+    assert times == ["time.ds", "time.de"]
 
 
 @pytest.mark.asyncio
