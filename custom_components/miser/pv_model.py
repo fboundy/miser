@@ -641,7 +641,7 @@ class PVsystemModel:
                 factor = 1
                 str_log += f"SOC: {flows.loc[start_window]['soc']:5.1f}%->{flows.loc[start_window]['soc_end']:5.1f}% "
 
-                kept_slots = slots
+                kept_slots = list(slots)  # slots.append below must not change the copy we revert to
                 if flows.loc[start_window, "forced"] > 0:
                     # An earlier pass planned a charge here; try exporting instead.
                     slots = [s for s in slots if s[0] != start_window]
