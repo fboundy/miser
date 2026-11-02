@@ -18,7 +18,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 1 | Two planning runs at once corrupt each other | Fixed `40ff3a7` |
 | 2 | High-cost pass crashes when no slot can take a charge | Fixed `40ff3a7` |
 | 3 | Agile Predict fetched every run; a failure kills the run | Fixed `40ff3a7` |
-| 4 | Discharge capped by charger power | Won't fix: the Solis rejects >~62.5 A (`af684f7`) |
+| 4 | Discharge capped by charger power | Won't fix: the Solis rejects >~62.5 A (`af684f7`); retested 2026-11-02, 70 A reverted with no slot overlap |
 | 5 | Five settings appear in HA but do nothing | Fixed (see below) |
 | 6 | Setup fails for good instead of retrying | Fixed `f0ce538` |
 | 7 | Big plan attributes saved to the HA database every run | Fixed `f0ce538` |
