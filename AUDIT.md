@@ -32,44 +32,30 @@ one process at once. These are the timer, a settings change and Axle events.
 | 15 | Schedule "alignment" code does nothing | Fixed (see below) |
 | 16 | Fallback load shape matched against UTC times | Fixed (see below) |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
-| 18 | Inverter keeps an old charge window | Fix deployed; live test 2026-11-02 failed, cause still open |
+| 18 | Inverter keeps an old charge window | Fixed (see below); first overnight charge not yet seen |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 
 ## Open
 
 ### Should fix
 
-18. **The inverter keeps an old charge window** (seen 2026-11-01 06:00 and all night 2026-11-02; cause found, not fixed)
-    - **What happened:** From 00:00 to 07:00 on 2026-11-02 Miser planned a charge to 100%, but the inverter held
-      06:13–06:30 and charged only then. The battery went from 14% to 16.5%. "Control failed" fired 9 times.
-    - **Cause (from SolisConnect debug logs):** Every write succeeds at the Modbus level, but:
-      - Writing the slot's SOC or current (43708/43709) after the times puts the times (43711–43714) back to the
-        inverter's saved window. Seen on every first write of a run, and on retries that also changed the current.
-      - Writing only the times shows the new times on read-back, but the inverter doesn't charge on them.
-      - The saved window changes when the enable register 43707 is written. 06:13–06:30 was saved at 06:24 on
-        2026-11-01, when the switch flipped to discharge. SolisConnect writes 43707 only when a bit changes, so while
-        Miser stays in "Charging" the times are never saved.
-      - `control_charge` writes times, then SOC and current, then the switch, so the switch saves the reverted times.
-    - **Fix (deployed 2026-11-02, not yet seen working on the inverter):** `SolisConnectInverter` now writes SOC and
-      current first, then the times, then writes 43707 directly through `solisconnect.solis_write_holding_register`, even
-      when the bit is already set. Tested in `tests/test_solis_slot_exclusion.py`. If an unchanged 43707 write does
-      not save the times, the fallback is to turn the slot off and back on.
-    - **Live test 2026-11-02 09:09–09:46 (Read Only on, 20 A, 3–4 min windows): the fix is not confirmed.**
-      - Every window read back correctly (43711–43714 and 43707), but the inverter did not follow them:
-        - A (slot off → on, 09:11–09:15): it charged from the grid at the start time, then ignored the end and
-          kept going through the next window's end too. It stopped only when 43707 changed to discharge at 09:22:43.
-        - A2 (the same write sequence, slot off → on, 09:33–09:36) and B2 (slot already on, 09:40–09:43): no charge at all.
-        - The discharge window (09:23–09:27) gave no forced export; the battery only covered the house load, as in Self-Use.
-      - So the cause above is incomplete. The same writes gave different results, and read-back alone can't show
-        what the inverter will do.
-      - Other findings:
-        - The inverter clock runs 53 s fast.
-        - SolisConnect wrote 43707 on every switch turn-on, even when the bit was already set. My direct write
-          wasn't always sent.
-      - Not ruled out: writes from Solis Cloud or Axle through the datalogger, which SolisConnect can't see.
-    - **If we skip it:** Charges and discharges run at old times, often not at all.
+None.
 
 ## Fixed
+
+18. **The inverter kept an old charge window** (2026-11-01 06:00 and all night 2026-11-02)
+    - **What happened:** Miser planned a charge from 00:00 to 07:00 on 2026-11-02, but the inverter held 06:13–06:30
+      and charged only then. "Control failed" fired 9 times.
+    - **Cause (confirmed on the inverter 2026-11-02):** the Solis rejects slot times that overlap another slot's
+      times, even when that slot is disabled in 43707. About 30 s after the write it restores the last valid times
+      for both slots. Miser left the discharge slot's old times in place when it switched to charging.
+    - **Wrong first theory:** that SOC/current writes reverted the times and that only a 43707 write saved them
+      (`4464f65`, and SolisConnect issue #42 as first written). Those writes merely came just before the revert. The
+      issue now has a correction; `4464f65`'s write order and direct 43707 write are removed.
+    - **Fix:** before writing a charge window, `SolisConnectInverter` turns the discharge slot off and sets its times to
+      00:00–00:00 (and the other way round for a discharge). It skips that when the registers already read 00:00.
+      Tested in `tests/test_solis_slot_exclusion.py`.
+    - **Still unchecked:** whether a window that spans midnight (e.g. 23:30–01:00) counts as overlapping 00:00–00:00.
 
 16. **The fallback load shape was matched against UTC times**
     - **Fix:** `_fallback_consumption` looks up the shape by local clock time. In summer time the evening peak now
