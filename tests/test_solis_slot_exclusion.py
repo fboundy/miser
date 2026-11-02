@@ -155,3 +155,18 @@ async def test_confirmation_passes_when_registers_match() -> None:
     assert "charging enable switch is off" not in mismatches
     assert "the opposite timed slot is still enabled" not in mismatches
     assert not any(m.startswith("start is") for m in mismatches)
+
+
+@pytest.mark.asyncio
+async def test_slot_times_written_after_soc_and_current_then_register_saved() -> None:
+    # Overnight 2026-11-02: an SOC/current write after the times put them back to the saved
+    # window, and with the slot already on nothing wrote 43707 to make new times take effect.
+    hass = _with_registers(_Hass(charge_on="on", discharge_on="off"), switch=str(1 | 64 | 2), charge_start=("6", "13"))
+    await SolisConnectInverter(hass).control_charge(NOW, NOW, 100, 3000)
+
+    order = [data.get("entity_id", service) for _domain, service, data in hass.services.calls]
+    assert order.index("number.csoc") < order.index("time.cs")
+    assert order.index("number.ccur") < order.index("time.cs")
+    domain, service, data = hass.services.calls[-1]
+    # Charge bit set, discharge bit cleared, slot-2 bit (2) untouched.
+    assert (domain, service, data) == ("solisconnect", "solis_write_holding_register", {"address": 43707, "value": 1 | 2})

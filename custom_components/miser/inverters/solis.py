@@ -61,6 +61,7 @@ SOLIS_CONNECT_MODES_BY_REGISTER = {
 # value. These read-only register sensors show what the inverter actually holds.
 SOLIS_CONNECT_TOU_SWITCH = "tou_v2_switch"
 # Register 43707 bits for slot 1.
+SOLIS_CONNECT_TOU_SWITCH_REGISTER = 43707
 SOLIS_CONNECT_TOU_SWITCH_BITS = {CONTROL_TIMED_CHARGE_ON: 0, CONTROL_TIMED_DISCHARGE_ON: 6}
 SOLIS_CONNECT_TOU_TIMES = {
     CONTROL_TIMED_CHARGE_START_HOURS: "charge_start",
@@ -680,22 +681,47 @@ class SolisConnectInverter(SolisInverter):
         return super()._programmed_time(hours_key, minutes_key)
 
     async def control_charge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
+        # Order matters on the Solis (audit 18): an SOC/current write puts the slot times back to the
+        # inverter's saved window, and the times only take effect when register 43707 is written.
         await self._set_base_mode()
-        await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
-        await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_CHARGE_SOC, self._target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_CHARGE_CURRENT, await self._power_to_current(power))
+        await self._set_time(CONTROL_TIMED_CHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_CHARGE_END_HOURS, end)
         await self._turn_off_if_on(CONTROL_TIMED_DISCHARGE_ON)
         await self._turn_on(CONTROL_TIMED_CHARGE_ON)
+        await self._save_tou_slot(CONTROL_TIMED_CHARGE_ON)
 
     async def control_discharge(self, start: datetime, end: datetime, target_soc: float, power: float) -> None:
         await self._set_base_mode()
-        await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
-        await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
         await self._set_number(CONTROL_TIMED_DISCHARGE_SOC, self._discharge_target_soc(target_soc))
         await self._set_current(CONTROL_TIMED_DISCHARGE_CURRENT, await self._power_to_current(power))
+        await self._set_time(CONTROL_TIMED_DISCHARGE_START_HOURS, start)
+        await self._set_time(CONTROL_TIMED_DISCHARGE_END_HOURS, end)
         await self._turn_off_if_on(CONTROL_TIMED_CHARGE_ON)
         await self._turn_on(CONTROL_TIMED_DISCHARGE_ON)
+        await self._save_tou_slot(CONTROL_TIMED_DISCHARGE_ON)
+
+    async def _save_tou_slot(self, enable_key: str) -> None:
+        """Write register 43707 so the inverter takes the slot times just written.
+
+        SolisConnect's switch skips the write when the bit is already set, so write the
+        register directly: enable this slot, clear the other slot-1 bit, keep all other bits.
+        """
+        current = self._numeric_state(SOLIS_CONNECT_TOU_SWITCH) if self._entity_id(SOLIS_CONNECT_TOU_SWITCH) else None
+        if current is None:
+            _LOGGER.warning("Time-of-use switch register unavailable; slot times may not take effect")
+            return
+        value = int(current)
+        for key, bit in SOLIS_CONNECT_TOU_SWITCH_BITS.items():
+            value = value | (1 << bit) if key == enable_key else value & ~(1 << bit)
+        # shortcut: no serial passed, so this fails with more than one SolisConnect inverter; pass it if that's ever needed.
+        await self.hass.services.async_call(
+            "solisconnect",
+            "solis_write_holding_register",
+            {"address": SOLIS_CONNECT_TOU_SWITCH_REGISTER, "value": value},
+            blocking=True,
+        )
 
     async def control_idle(self) -> None:
         await self._turn_off(CONTROL_TIMED_CHARGE_ON)
