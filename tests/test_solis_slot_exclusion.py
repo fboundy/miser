@@ -170,3 +170,18 @@ async def test_slot_times_written_after_soc_and_current_then_register_saved() ->
     domain, service, data = hass.services.calls[-1]
     # Charge bit set, discharge bit cleared, slot-2 bit (2) untouched.
     assert (domain, service, data) == ("solisconnect", "solis_write_holding_register", {"address": 43707, "value": 1 | 2})
+
+
+@pytest.mark.asyncio
+async def test_current_capped_at_the_datasheet_limit_at_low_voltage() -> None:
+    # RHI-3.6K-48ES-5G: 3 kW / 62.5 A; on 2026-11-02 a 70 A write reverted within 15 s.
+    from custom_components.miser.pv_model import InverterModel
+
+    hass = _Hass(charge_on="off", discharge_on="off")
+    hass.data[DOMAIN]["inverter_model"] = InverterModel(97, 91, 3600, 3000)
+    controller = SolisConnectInverter(hass)
+
+    hass.states.states["sensor.v"] = _State("44")
+    assert await controller.power_to_current(3000) == pytest.approx(62.5)
+    hass.states.states["sensor.v"] = _State("51.5")
+    assert await controller.power_to_current(3000) == pytest.approx(3000 / 51.5)

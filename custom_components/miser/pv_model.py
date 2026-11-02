@@ -135,7 +135,7 @@ class PVsystemModel:
     @property
     def battery_discharge_limit(self) -> float:
         """Maximum power out of the battery (DC)."""
-        # Not the inverter's AC rating: a Solis S5-EH1P 3.6 kW rejects timed-discharge currents above ~62.5 A.
+        # Not the inverter's AC rating: the RHI-3.6K-48ES-5G battery side is 3 kW / 62.5 A (datasheet).
         return self.battery.max_discharge_power
 
     @property
