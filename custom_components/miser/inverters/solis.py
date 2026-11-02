@@ -7,6 +7,8 @@ from typing import ClassVar
 import homeassistant.util.dt as dt_util
 
 from .controller import InverterController
+
+SOLIS_NOMINAL_BATTERY_VOLTAGE = 48  # V
 from ..const import (
     CONTROL_BACKUP_MODE_SOC,
     CONTROL_BATTERY_VOLTAGE,
@@ -163,7 +165,14 @@ class SolisInverter(InverterController):
         voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
         if voltage is None or voltage <= 0:
             return None
-        return abs(float(power)) / voltage
+        current = abs(float(power)) / voltage
+        # Solis specs the battery current at 48 V nominal (RHI-3.6K-48ES-5G: 3 kW, 62.5 A) and reverts any
+        # write above it, so below 48 V the full power can't be reached.
+        # shortcut: assumes the charger power setting is the datasheet battery power; read the model's limit if one is exposed.
+        inverter_model = self.hass.data[DOMAIN].get("inverter_model")
+        if inverter_model is not None and inverter_model.charger_power:
+            current = min(current, inverter_model.charger_power / SOLIS_NOMINAL_BATTERY_VOLTAGE)
+        return current
 
     async def set_mode(self, mode: str) -> None:
         await self.hass.services.async_call(
