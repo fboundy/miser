@@ -32,7 +32,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 15 | Schedule "alignment" code does nothing | Fixed (see below) |
 | 16 | Fallback load shape matched against UTC times | Fixed (see below) |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
-| 18 | Inverter keeps an old charge window | Fix deployed, awaiting live check |
+| 18 | Inverter keeps an old charge window | Fix deployed; live test 2026-11-02 failed, cause still open |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 
 ## Open
@@ -54,6 +54,19 @@ one process at once. These are the timer, a settings change and Axle events.
       current first, then the times, then writes 43707 directly through `solisconnect.solis_write_holding_register`, even
       when the bit is already set. Tested in `tests/test_solis_slot_exclusion.py`. If an unchanged 43707 write does
       not save the times, the fallback is to turn the slot off and back on.
+    - **Live test 2026-11-02 09:09–09:46 (Read Only on, 20 A, 3–4 min windows): the fix is not confirmed.**
+      - Every window read back correctly (43711–43714 and 43707), but the inverter did not follow them:
+        - A (slot off → on, 09:11–09:15): it charged from the grid at the start time, then ignored the end and
+          kept going through the next window's end too. It stopped only when 43707 changed to discharge at 09:22:43.
+        - A2 (the same write sequence, slot off → on, 09:33–09:36) and B2 (slot already on, 09:40–09:43): no charge at all.
+        - The discharge window (09:23–09:27) gave no forced export; the battery only covered the house load, as in Self-Use.
+      - So the cause above is incomplete. The same writes gave different results, and read-back alone can't show
+        what the inverter will do.
+      - Other findings:
+        - The inverter clock runs 53 s fast.
+        - SolisConnect wrote 43707 on every switch turn-on, even when the bit was already set. My direct write
+          wasn't always sent.
+      - Not ruled out: writes from Solis Cloud or Axle through the datalogger, which SolisConnect can't see.
     - **If we skip it:** Charges and discharges run at old times, often not at all.
 
 ## Fixed
