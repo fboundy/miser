@@ -661,6 +661,27 @@ class PVsystemModel:
                 )
                 forced_discharge = max(forced_discharge, 0)
 
+                # Not enough stored energy for a full-power export: try filling from cheaper earlier slots.
+                power_room = self.discharge_power_limit + flows["forced"].loc[start_window] - flows["solar"].loc[start_window]
+                if power_room - forced_discharge >= MODEL_MIN_SLOT_POWER:
+                    slots_before = len(slots)
+                    slots = await self._precharge_before(
+                        slots,
+                        start_window,
+                        self.battery.max_dod * self.battery.capacity + power_room * flows["dt_hours"].loc[start_window],
+                        flows["export"].loc[start_window],
+                    )
+                    flows = await self.flows(slots=slots)
+                    forced_discharge = max(
+                        min(
+                            power_room,
+                            (flows["soc_end"].loc[start_window] - self.battery.max_dod * 100) / 100 * self.battery.capacity * 2 * factor,
+                        ),
+                        0,
+                    )
+                    if len(slots) > slots_before:
+                        str_log += f"Pre-charged to {flows.loc[start_window]['soc_end']:5.1f}% "
+
                 slot = (
                     start_window,
                     -forced_discharge,
@@ -709,6 +730,38 @@ class PVsystemModel:
             _LOGGER.info("")
             _LOGGER.info(str_log)
 
+        return slots
+
+    async def _precharge_before(self, slots: list, discharge_slot, target_wh: float, export_price: float) -> list:
+        """Add charge in the cheapest slots before discharge_slot until the battery holds target_wh
+        at the end of that slot (before its discharge), allowing for the load it covers on the way.
+
+        Only slots whose import price, after round-trip losses, is below the export price are used,
+        and never more than fits under 100% between the charge and the discharge.
+        """
+        round_trip = self.inverter.charger_efficiency * self.inverter.inverter_efficiency
+        slots = list(slots)
+        flows = await self.flows(slots=slots)
+        candidates = flows[
+            (flows.index < discharge_slot)
+            & (flows["forced"] >= 0)
+            & (flows["import"] / round_trip < export_price)
+        ]
+        for start in candidates.sort_values("import", kind="stable").index:
+            shortfall = target_wh - flows.at[discharge_slot, "chg_end"]
+            if shortfall < 1:
+                break
+            dt_hours = flows.at[start, "dt_hours"]
+            headroom = self.battery.capacity - flows.loc[start:discharge_slot, "chg_end"].iloc[:-1].max()
+            power = min(
+                self.charge_power_limit - flows.at[start, "forced"] - flows.at[start, "solar"],
+                shortfall / self.inverter.charger_efficiency / dt_hours,
+                headroom / self.inverter.charger_efficiency / dt_hours,
+            )
+            if power < MODEL_MIN_SLOT_POWER:
+                continue
+            slots.append((start, round(power, 0)))
+            flows = await self.flows(slots=slots)
         return slots
 
     async def _paired_discharge_refill(self, slots: list, best_cost: float) -> tuple[list, float, int]:
@@ -779,12 +832,13 @@ class PVsystemModel:
         # read - no hass, no shared mutation - so it is safe in a worker thread.
         flows = await self.flows(slots=[])
         write_cost = getattr(self, "whole_horizon_write_cost", 0) or 0
-        return self._whole_horizon_compute(
+        path = self._whole_horizon_compute(
             flows,
             soc_step_percent,
             state_resolution_wh,
             write_cost,
         )
+        return await self._average_same_price_runs(flows, path)
 
     def _whole_horizon_compute(
         self,
@@ -817,10 +871,12 @@ class PVsystemModel:
         )
         initial_energy = round(initial_energy, 1)
 
+        # A state is (energy, control in force); the control is "idle" or a rounded forced power,
+        # so the write cost can price every change the inverter would have to be sent.
         initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), "idle")
-        costs: dict[tuple[float, str], float] = {initial_key: 0.0}
-        energies: dict[tuple[float, str], float] = {initial_key: initial_energy}
-        paths: dict[tuple[float, str], list[tuple[pd.Timestamp, float]]] = {initial_key: []}
+        costs: dict[tuple[float, object], float] = {initial_key: 0.0}
+        energies: dict[tuple[float, object], float] = {initial_key: initial_energy}
+        paths: dict[tuple[float, object], list[tuple[pd.Timestamp, float]]] = {initial_key: []}
 
         _LOGGER.info("")
         _LOGGER.info("Whole Horizon Optimisation (Beta)")
@@ -842,7 +898,7 @@ class PVsystemModel:
                 continue
 
             for state_key, cost in costs.items():
-                previous_mode = state_key[1]
+                previous_control = state_key[1]
                 energy = energies[state_key]
                 for next_energy, forced_power, grid in self._whole_horizon_actions(
                     energy=energy,
@@ -854,17 +910,13 @@ class PVsystemModel:
                         max(grid, 0) * dt_hours * float(row["import"])
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
-                    mode = self._whole_horizon_control_mode(forced_power)
-                    candidate_cost = cost + slot_cost + self._whole_horizon_write_penalty(
-                        previous_mode=previous_mode,
-                        mode=mode,
-                        write_cost=write_cost,
-                    )
+                    control = self._whole_horizon_control(forced_power)
+                    candidate_cost = cost + slot_cost + (write_cost if control != previous_control else 0.0)
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
                         continue
                     next_key = (
                         self._whole_horizon_state_key(next_energy, state_resolution_wh),
-                        mode,
+                        control,
                     )
                     if candidate_cost >= next_costs.get(next_key, float("inf")):
                         continue
@@ -876,9 +928,18 @@ class PVsystemModel:
                         path.append((start, round(forced_power, 0)))
                     next_paths[next_key] = path
 
-            costs = next_costs
-            energies = next_energies
-            paths = next_paths
+            # Prune: a state that costs at least write_cost more than the cheapest state at the same
+            # energy can never win, because that cheapest state can switch to its control for write_cost.
+            best_at_energy: dict[float, float] = {}
+            for (energy_key, _control), cost in next_costs.items():
+                best_at_energy[energy_key] = min(cost, best_at_energy.get(energy_key, float("inf")))
+            keep = [
+                key for key, cost in next_costs.items()
+                if cost == best_at_energy[key[0]] or cost < best_at_energy[key[0]] + write_cost
+            ]
+            costs = {key: next_costs[key] for key in keep}
+            energies = {key: next_energies[key] for key in keep}
+            paths = {key: next_paths[key] for key in keep}
 
             if not costs:
                 _LOGGER.warning("Whole-horizon found no valid states at %s", start)
@@ -900,15 +961,44 @@ class PVsystemModel:
     def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
         return round(energy / state_resolution_wh) * state_resolution_wh
 
-    def _whole_horizon_control_mode(self, forced_power: float | None) -> str:
+    def _whole_horizon_control(self, forced_power: float | None) -> object:
+        """What the inverter is told to do: "idle" or a forced power to the watt."""
         if forced_power is None or abs(forced_power) < MODEL_MIN_SLOT_POWER:
             return "idle"
-        return "charging" if forced_power > 0 else "discharging"
+        return round(forced_power)
 
-    def _whole_horizon_write_penalty(self, previous_mode: str, mode: str, write_cost: float) -> float:
-        if write_cost <= 0 or previous_mode == mode:
-            return 0.0
-        return write_cost
+    async def _average_same_price_runs(self, flows: pd.DataFrame, path: list) -> list:
+        """Spread each run of adjacent same-direction, same-price slots at one constant power.
+
+        Same energy at the same price costs the same, and one power needs one inverter write.
+        """
+        if not path:
+            return path
+        position = {start: i for i, start in enumerate(flows.index)}
+        runs: list[list[tuple[pd.Timestamp, float]]] = []
+        for start, power in path:
+            if runs:
+                prev_start, prev_power = runs[-1][-1]
+                price_col = "import" if power > 0 else "export"
+                if (
+                    position[start] == position[prev_start] + 1
+                    and (power > 0) == (prev_power > 0)
+                    and flows.at[start, price_col] == flows.at[prev_start, price_col]
+                ):
+                    runs[-1].append((start, power))
+                    continue
+            runs.append([(start, power)])
+
+        averaged = []
+        for run in runs:
+            hours = sum(flows.at[start, "dt_hours"] for start, _ in run)
+            power = round(sum(p * flows.at[start, "dt_hours"] for start, p in run) / hours, 0)
+            averaged.extend((start, power) for start, _ in run)
+
+        # Solar or load can still make a slot cost differ; keep the original if averaging costs more.
+        if (await self.net_cost(slots=averaged)).sum() > (await self.net_cost(slots=path)).sum() + 0.1:
+            return path
+        return averaged
 
     def _whole_horizon_actions(
         self,
