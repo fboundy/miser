@@ -32,7 +32,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 15 | Schedule "alignment" code does nothing | Fixed (see below) |
 | 16 | Fallback load shape matched against UTC times | Fixed (see below) |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
-| 18 | Inverter keeps an old charge window when a new one is written mid-slot | Open |
+| 18 | Inverter keeps an old charge window | Fix deployed, awaiting live check |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 
 ## Open
@@ -50,8 +50,10 @@ one process at once. These are the timer, a settings change and Axle events.
         2026-11-01, when the switch flipped to discharge. SolisConnect writes 43707 only when a bit changes, so while
         Miser stays in "Charging" the times are never saved.
       - `control_charge` writes times, then SOC and current, then the switch, so the switch saves the reverted times.
-    - **Fix (proposed, untested):** In `SolisConnectInverter`, write SOC and current first, then the times, then force
-      a 43707 write even when the bit is already set.
+    - **Fix (deployed 2026-11-02, not yet seen working on the inverter):** `SolisConnectInverter` now writes SOC and
+      current first, then the times, then writes 43707 directly through `solisconnect.solis_write_holding_register`, even
+      when the bit is already set. Tested in `tests/test_solis_slot_exclusion.py`. If an unchanged 43707 write does
+      not save the times, the fallback is to turn the slot off and back on.
     - **If we skip it:** Charges and discharges run at old times, often not at all.
 
 ## Fixed
@@ -125,7 +127,7 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Not checked
 
-- All 171 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 172 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
