@@ -39,15 +39,20 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ### Should fix
 
-18. **The inverter keeps an old charge window when a new one is written mid-slot** (seen 2026-11-01 06:00; cause not yet known)
-    - **What this is:** At 06:00 Miser wrote a charge window of 06:00–06:30 with a 100% target.
-    - **Problem:** The inverter kept its previous window, 05:43–06:00. SolisConnect's time sensors showed the new times
-      right after each write, then read 05:43–06:00 back on every poll until at least 06:14. The battery stopped
-      charging at 06:00 and fell from 96% to 91% by 06:40. Item 17's check caught this ("Control failed" at 06:02:49),
-      but three retries didn't fix it. The missed charge from 00:00 to 00:38 on 2026-10-31 may have the same cause.
-    - **Fix:** Not known yet. SolisConnect debug logging is on (since 2026-11-01 13:39), so the next failure will show
-      whether the time-register writes reach the inverter or are refused. Then check whether the Solis refuses new times for a slot while that slot is active.
-    - **If we skip it:** Some planned charges silently don't happen. Now they at least show as "Control failed".
+18. **The inverter keeps an old charge window** (seen 2026-11-01 06:00 and all night 2026-11-02; cause found, not fixed)
+    - **What happened:** From 00:00 to 07:00 on 2026-11-02 Miser planned a charge to 100%, but the inverter held
+      06:13–06:30 and charged only then. The battery went from 14% to 16.5%. "Control failed" fired 9 times.
+    - **Cause (from SolisConnect debug logs):** Every write succeeds at the Modbus level, but:
+      - Writing the slot's SOC or current (43708/43709) after the times puts the times (43711–43714) back to the
+        inverter's saved window. Seen on every first write of a run, and on retries that also changed the current.
+      - Writing only the times shows the new times on read-back, but the inverter doesn't charge on them.
+      - The saved window changes when the enable register 43707 is written. 06:13–06:30 was saved at 06:24 on
+        2026-11-01, when the switch flipped to discharge. SolisConnect writes 43707 only when a bit changes, so while
+        Miser stays in "Charging" the times are never saved.
+      - `control_charge` writes times, then SOC and current, then the switch, so the switch saves the reverted times.
+    - **Fix (proposed, untested):** In `SolisConnectInverter`, write SOC and current first, then the times, then force
+      a 43707 write even when the bit is already set.
+    - **If we skip it:** Charges and discharges run at old times, often not at all.
 
 ## Fixed
 
