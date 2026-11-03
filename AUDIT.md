@@ -33,7 +33,7 @@ back to check that it took.
 | 12 | Whole Horizon or the heuristic passes: pick one | Fixed, PR from `fix/20-one-planner` | [#20](https://github.com/fboundy/miser/issues/20) |
 | 13 | Tuning numbers that should be hidden or merged | Fixed, PR from `fix/21-hide-tuning` | [#21](https://github.com/fboundy/miser/issues/21) |
 | 14 | "Tariff codes" price source duplicates "Octopus account" | Not substantiated: the only Octopus source that needs no API key | — |
-| 15 | Intelligent Octopus Go slots and export limits not modelled | Open | [#22](https://github.com/fboundy/miser/issues/22) |
+| 15 | Intelligent Octopus Go slots and export limits not modelled | Fixed, PR from `fix/22-export-limit` | [#22](https://github.com/fboundy/miser/issues/22) |
 
 ## Open
 
@@ -47,11 +47,12 @@ None.
     - Checked 2026-11-03: the codes source reads Octopus' public rate endpoints with no API key, so it is the only
       Octopus source for a user without one. Keep it; no issue raised.
 
+## Fixed
+
 15. **Intelligent Octopus Go slots and export limits not modelled** — [#22](https://github.com/fboundy/miser/issues/22)
     - IOG's extra cheap dispatch slots aren't seen unless the price entities include them. A G99 export cap is
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
-
-## Fixed
+    - **Fixed** (`fix/22-export-limit`): Optional "Grid export limit" (W, 0 = none) in setup and in Miser's options caps forced export (`discharge_power_limit`); Miser now reloads when its options change so the limit takes effect. Solar export above the cap isn't modelled. The README explains the export limit and that Intelligent Octopus Go dispatch slots are seen only through price entities that include them. Tested in `tests/test_pv_model_power_limits.py`.
 
 12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
     - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole

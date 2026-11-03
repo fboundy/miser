@@ -56,7 +56,8 @@
           "data": {
             "battery_capacity": "Battery Capacity (Wh)",
             "inverter_power": "Inverter Power (W)",
-            "charger_power": "Charger Power (W)"
+            "charger_power": "Charger Power (W)",
+            "export_limit": "Grid export limit (W, 0 = none)"
           }
         }
       },
@@ -78,7 +79,8 @@
           "title": "Configure Options",
           "description": "Update the configuration options for this integration.",
           "data": {
-            "name": "Integration Name"
+            "name": "Integration Name",
+            "export_limit": "Grid export limit (W, 0 = none)"
           }
         }
       }

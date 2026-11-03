@@ -140,7 +140,7 @@ async def test_options_flow_merges_into_existing_options(hass):
     result = await hass.config_entries.options.async_configure(result["flow_id"], user_input={"name": "House"})
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert entry.options == {**original, "name": "House"}
+    assert entry.options == {**original, "name": "House", "export_limit": 0}
 
 
 async def test_default_price_entities_suggest_octopus_energy_day_rates(hass):

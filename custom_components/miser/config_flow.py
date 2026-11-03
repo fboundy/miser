@@ -11,6 +11,7 @@ from homeassistant.loader import async_get_custom_components, async_get_integrat
 from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_CHARGER_POWER,
+    CONF_EXPORT_LIMIT,
     CONF_INVERTER_POWER,
     DEFAULTS,
     DOMAIN,
@@ -358,6 +359,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["battery_capacity"] = user_input.get(CONF_BATTERY_CAPACITY)
             self._options["inverter_power"] = user_input.get(CONF_INVERTER_POWER)
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
+            self._options[CONF_EXPORT_LIMIT] = user_input.get(CONF_EXPORT_LIMIT) or 0
             if all(
                 [
                     self._options[x]
@@ -378,6 +380,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
                 vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
                 vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
+                vol.Optional(CONF_EXPORT_LIMIT, default=0): vol.All(vol.Coerce(int), vol.Range(min=0)),
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)
@@ -408,5 +411,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data={**self.config_entry.options, **user_input})
 
         current_name = self.config_entry.options.get(CONF_NAME, self.config_entry.data.get(CONF_NAME, ""))
-        schema = vol.Schema({vol.Optional(CONF_NAME, default=current_name): str})
+        schema = vol.Schema(
+            {
+                vol.Optional(CONF_NAME, default=current_name): str,
+                vol.Optional(CONF_EXPORT_LIMIT, default=self.config_entry.options.get(CONF_EXPORT_LIMIT, 0)): vol.All(
+                    vol.Coerce(int), vol.Range(min=0)
+                ),
+            }
+        )
         return self.async_show_form(step_id="init", data_schema=schema)

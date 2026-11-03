@@ -103,6 +103,7 @@ class PVsystemModel:
         self.consumption: pd.Series | None = None
         self.prices: pd.DataFrame | None = None
         self.initial_soc = battery.max_dod
+        self.export_limit: float | None = None  # W at the grid; None = no cap
 
     @property
     def tz(self):
@@ -143,7 +144,9 @@ class PVsystemModel:
     def discharge_power_limit(self) -> float:
         """Grid-side forced discharge power at the battery limit, capped by the inverter's AC rating."""
         efficiency = self.inverter.inverter_efficiency or 1
-        return min(self.battery_discharge_limit * efficiency, self.inverter.inverter_power)
+        limit = min(self.battery_discharge_limit * efficiency, self.inverter.inverter_power)
+        # Capping forced export at the grid limit is conservative: house load uses some of it first.
+        return min(limit, self.export_limit) if self.export_limit else limit
 
     def set_start(self, start: pd.Timestamp) -> bool:
         self._index = [start.floor("1min")] + list(self.consumption.index[1:])
