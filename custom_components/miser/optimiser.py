@@ -433,14 +433,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         return
 
     now = pd.Timestamp.now(tz="UTC")
-    optimiser_minutes = float(
-        await get_value(
-            hass,
-            CONF_OPTIMISER_FREQUENCY,
-            default_value=DEFAULTS[CONF_OPTIMISER_FREQUENCY],
-        )
-        or DEFAULTS[CONF_OPTIMISER_FREQUENCY]
-    )
+    optimiser_minutes = float(DEFAULTS[CONF_OPTIMISER_FREQUENCY])
     apply_window = pd.Timedelta(minutes=optimiser_minutes)
 
     control_slots = _control_slots(model.optimised_flows)
@@ -1767,9 +1760,9 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
     # History when the inverter reports house load; otherwise the shaped fallback.
     entity_id = get_entity_for_key(hass, MODEL_CONSUMPTION_TODAY)
     if entity_id is not None:
-        history_days = await get_value(hass, CONF_HISTORY_DAYS)
-        load_margin = await get_value(hass, CONF_LOAD_MARGIN)
-        weekday_weighting = await get_value(hass, CONF_WEEKDAY_WEIGHTING)
+        history_days = DEFAULTS[CONF_HISTORY_DAYS]
+        load_margin = DEFAULTS[CONF_LOAD_MARGIN]
+        weekday_weighting = DEFAULTS[CONF_WEEKDAY_WEIGHTING]
         if entity_id is not None:
             _LOGGER.debug(f"Loading {history_days} days consumption history from {entity_id}")
             consumption_history = await _get_hass_power_from_daily_kwh(hass, entity_id, history_days, freq=freq)
@@ -1865,9 +1858,7 @@ async def _apply_minimum_consumption(hass: HomeAssistant, consumption: pd.Series
 
 
 async def _minimum_consumption_watts(hass: HomeAssistant) -> float:
-    minimum_daily_consumption = await get_value(hass, CONF_MINIMUM_DAILY_CONSUMPTION_KWH)
-    if minimum_daily_consumption is None or not _is_finite(minimum_daily_consumption):
-        minimum_daily_consumption = DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH]
+    minimum_daily_consumption = DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH]
     return max(float(minimum_daily_consumption), 0) * 1000 / 24
 
 
