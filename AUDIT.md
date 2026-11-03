@@ -20,7 +20,7 @@ back to check that it took.
 | # | Item | Status | Issue |
 |---|------|--------|-------|
 | 1 | Negative prices are mis-costed: import and export costs cross over | Fixed, PR from `fix/10-negative-prices` | [#10](https://github.com/fboundy/miser/issues/10) |
-| 2 | Setup's system parameters never reach the model | Open | [#11](https://github.com/fboundy/miser/issues/11) |
+| 2 | Setup's system parameters never reach the model | Fixed, PR from `fix/11-setup-parameters` | [#11](https://github.com/fboundy/miser/issues/11) |
 | 3 | A low export price in pence can be read as pounds | Fixed, PR from `fix/12-price-unit` | [#12](https://github.com/fboundy/miser/issues/12) |
 | 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
 | 5 | Setup's consumption questions do nothing | Open | [#23](https://github.com/fboundy/miser/issues/23) |
@@ -38,13 +38,6 @@ back to check that it took.
 ## Open
 
 ### Should fix
-
-2. **Setup's system parameters never reach the model** (`config_flow.py:341`, `number.py:88`) — [#11](https://github.com/fboundy/miser/issues/11)
-   - **What happens:** Setup asks for battery capacity, inverter power, charger power and both efficiencies and
-     saves them in the entry's options, but nothing reads them. The number entities start from `DEFAULTS`, so a new
-     user who enters 20 kWh is planned as 10 kWh until they change `number.miser_battery_capacity` by hand.
-   - **Fix:** seed each number entity's first value from the options (restored state still wins), or drop the step.
-     Where the inverter reports a figure (Solis model → charger power), use that.
 
 4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
    - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"
@@ -118,6 +111,14 @@ back to check that it took.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+2. **Setup's system parameters never reach the model** (`config_flow.py:341`, `number.py:88`) — [#11](https://github.com/fboundy/miser/issues/11)
+   - **What happens:** Setup asks for battery capacity, inverter power, charger power and both efficiencies and
+     saves them in the entry's options, but nothing reads them. The number entities start from `DEFAULTS`, so a new
+     user who enters 20 kWh is planned as 10 kWh until they change `number.miser_battery_capacity` by hand.
+   - **Fix:** seed each number entity's first value from the options (restored state still wins), or drop the step.
+     Where the inverter reports a figure (Solis model → charger power), use that.
+   - **Fixed** (`fix/11-setup-parameters`): Each number entity's first value comes from the setup option of the same key (battery capacity, inverter and charger power, both efficiencies, and the daily consumption amount); a restored state still wins. Reading charger power from the inverter model is left for #15/#16. Tested in `tests/test_number_initial_value.py`.
 
 3. **A low export price in pence can be read as pounds** (`entity_tariff.py:109`, `_scale`) — [#12](https://github.com/fboundy/miser/issues/12)
    - **What happens:** With the price unit on "auto", an entity with no unit whose prices are all below 2 is
