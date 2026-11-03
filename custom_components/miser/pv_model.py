@@ -249,8 +249,9 @@ class PVsystemModel:
         df["soc"] = (df["chg"] / self.battery.capacity) * 100
         df["soc_end"] = (df["chg_end"] / self.battery.capacity) * 100
         # _LOGGER.debug(f"Model flows\n{df.to_string()}")
-        df["import_cost"] = ((df["grid"] * df["dt_hours"] * df["import"]).clip(lower=0)) / 1000
-        df["export_cost"] = ((df["grid"] * df["dt_hours"] * df["export"]).clip(upper=0)) / 1000
+        # Split by the direction of flow, not the sign of the cost: prices can be negative.
+        df["import_cost"] = df["grid"].clip(lower=0) * df["dt_hours"] * df["import"] / 1000
+        df["export_cost"] = df["grid"].clip(upper=0) * df["dt_hours"] * df["export"] / 1000
         df["net_cost"] = df["import_cost"] + df["export_cost"]
         return df
 
