@@ -92,3 +92,15 @@ async def test_rejected_export_is_dropped_from_the_plan() -> None:
 
     assert (await model.net_cost(slots=slots)).sum() == pytest.approx(model.best_cost)
     assert all(start.hour == 17 for start, power in slots if power < 0)
+
+
+@pytest.mark.asyncio
+async def test_averaging_fills_idle_slots_in_a_same_price_period() -> None:
+    # 2026-11-03: Whole Horizon charged 00:06-01:06, idled to 02:00, then charged on, all at 7.43p.
+    idx = pd.date_range("2026-11-03 00:00", periods=4, freq="30min", tz="UTC")
+    model = _model(idx, pd.Series(7.43, index=idx), 0.0, initial_soc=50, consumption=0.0)
+    flows = await model.flows(slots=[])
+
+    averaged = await model._average_same_price_runs(flows, [(idx[0], 3000.0), (idx[2], 3000.0)])
+
+    assert averaged == [(start, 1500.0) for start in idx]

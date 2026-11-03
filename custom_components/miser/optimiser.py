@@ -1251,8 +1251,8 @@ async def _drop_small_cycles(hass: HomeAssistant, model) -> None:
             ]
             if len(candidate) == len(slots):
                 continue
-            candidate_cost, candidate_flows = await _run_compute(
-                hass, lambda candidate=candidate: _calculate_cost_and_flows(model, candidate)
+            candidate, candidate_cost, candidate_flows = await _run_compute(
+                hass, lambda candidate=candidate: _respread_and_cost(model, flows, candidate)
             )
             if not _is_finite(candidate_cost):
                 continue
@@ -1277,6 +1277,13 @@ async def _drop_small_cycles(hass: HomeAssistant, model) -> None:
         model.optimised_cost = cost
         model.optimised_flows = flows
         model.best_cost = cost
+
+
+async def _respread_and_cost(model, flows: pd.DataFrame, slots: list) -> tuple[list, float, pd.DataFrame]:
+    """Re-average a plan with an export dropped, so its slot doesn't stay an idle gap in a charge period."""
+    slots = await model._average_same_price_runs(flows, slots)
+    cost, new_flows = await _calculate_cost_and_flows(model, slots)
+    return slots, cost, new_flows
 
 
 async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:

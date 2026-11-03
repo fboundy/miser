@@ -123,3 +123,15 @@ async def test_premium_export_survives_any_sensible_threshold() -> None:
     await _drop_small_cycles(_Hass("50"), model)
 
     assert {_at(t, 25) for t in ("20:00", "20:30", "21:00", "21:30")} <= _exports(model.optimised_slots)
+
+
+@pytest.mark.asyncio
+async def test_dropped_dip_is_filled_by_the_charge_around_it() -> None:
+    # 2026-11-03: a dropped 01:30 export left 01:06-02:00 idle inside the 7.43p charge period.
+    model = await _optimised(_model())
+
+    await _drop_small_cycles(_Hass("20"), model)
+
+    charges = {start: power for start, power in model.optimised_slots if power > 0}
+    assert _at("03:00") in charges
+    assert len(set(charges.values())) == 1
