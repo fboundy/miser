@@ -86,7 +86,8 @@
         "missing_controller_entities": "The selected inverter integration does not expose the required entities.",
         "missing_parameters": "All system parameters must be provided.",
         "missing_fields": "All required fields must be completed.",
-        "no_prices": "No usable prices found on the selected entities."
+        "no_prices": "No usable prices found on the selected entities.",
+        "price_unit_unknown": "These price entities don't say whether they are in pounds or pence. Choose the price units."
       }
     },
     "options": {
