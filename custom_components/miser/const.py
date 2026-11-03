@@ -31,8 +31,6 @@ ENTITY_TYPES = [
 
 PLATFORMS = ["number", "switch", "sensor"]
 
-OPTIMISER_MAX_ITERS = 3
-OPTIMISER_HIGH_COST_MAX_ITERS = 200
 
 UNAVAILABLE_UNKNOWN = ["unavailable", "unknown"]
 DEFAULT_BATTERY_VOLTAGE = 50  # V
@@ -53,7 +51,6 @@ CONF_MINIMUM_DAILY_CONSUMPTION_KWH = "minimum_daily_consumption_kwh"
 CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
 CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
 CONF_READ_ONLY = "read_only"
-CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_BACKUP_MODE = "backup_mode"
 CONF_BACKUP_SOC = "backup_soc"
 
@@ -82,7 +79,6 @@ DEFAULTS = {
     CONF_OPTIMISER_FREQUENCY: 10,
     CONF_SOLCAST_CONFIDENCE: 50,
     CONF_READ_ONLY: True,
-    CONF_WHOLE_HORIZON_BETA: False,
     # Hold the inverter's Backup SOC (e.g. when power cuts are likely): plan with
     # it as the battery floor and run the inverter in its backup/reserve mode.
     CONF_BACKUP_MODE: False,
@@ -107,18 +103,14 @@ MODEL_DURATION_HOURS = 48
 MODEL_PERIOD_MINUTES = 30
 MODEL_ENTITIES_AVAILABLE_WAIT = 60
 MODEL_MIN_SLOT_POWER = 10  # W
-MODEL_MAX_SEARCH_WINDOW_SOC = 97  # %
 
-CONTROL_PASS_THREHOLD = 4
 # Pence thresholds for inverter churn, fixed at the values tuned on the first live install (#18).
 WRITE_MINIMISATION_COST = 4  # a plan with fewer inverter writes may cost this much more
 WHOLE_HORIZON_WRITE_COST = 5  # Whole Horizon charges this for each control change
 ALTERNATION_COST_THRESHOLD = 7  # a plan without rapid charge/discharge reversal may cost this much more
 CYCLING_THRESHOLD = 16  # a forced export must be worth this much to stay in the plan
-CONTROL_SLOT_THRESHOLD = 1
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
-TIME_FORMAT = "%d/%m %H:%M %Z"
 
 IMPORT_EXPORT = ["import", "export"]
 
@@ -176,7 +168,6 @@ SWITCH_ENTITIES = {
     conf: {"default": DEFAULTS[conf]}
     for conf in [
         CONF_READ_ONLY,
-        CONF_WHOLE_HORIZON_BETA,
         CONF_BACKUP_MODE,
     ]
 }
@@ -236,18 +227,6 @@ NUMBER_ENTITIES = {
 # Sensor entities
 SENSOR_ENTITIES = {
     "base_cost": {"name": "Cost - Base", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "swap_cost": {"name": "Cost - Swap", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "lcc_cost": {
-        "name": "Cost - Low Cost Charging",
-        "unit": "p",
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
-    "discharge_cost": {"name": "Cost - Discharge", "unit": "p", "state_class": SensorStateClass.MEASUREMENT},
-    "fill_first_cost": {
-        "name": "Cost - Fill First",
-        "unit": "p",
-        "state_class": SensorStateClass.MEASUREMENT,
-    },
     "whole_horizon_cost": {
         "name": "Cost - Whole Horizon",
         "unit": "p",

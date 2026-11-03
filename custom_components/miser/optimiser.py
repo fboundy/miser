@@ -32,7 +32,6 @@ from .const import (
     CONF_WEEKDAY_WEIGHTING,
     CONF_SOLCAST_CONFIDENCE,
     CONF_OPTIMISER_FREQUENCY,
-    CONF_WHOLE_HORIZON_BETA,
     CONF_READ_ONLY,
     CONF_BACKUP_MODE,
     CONF_BACKUP_SOC,
@@ -54,7 +53,6 @@ from .const import (
     MODEL_BATTERY_SOC,
     MODEL_ENTITIES_AVAILABLE_WAIT,
     MODEL_MIN_SLOT_POWER,
-    OPTIMISER_MAX_ITERS,
 )
 from .utils import get_value, get_entity_for_key, redact_sensitive
 
@@ -210,56 +208,15 @@ async def _optimise(hass: HomeAssistant) -> None:
     model.base_cost, model.base_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.base_slots))
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
-    high_cost_swaps = await _run_compute(hass, lambda: model.high_cost_swaps())
-    model.swap_slots = high_cost_swaps
-    model.swap_cost, model.swap_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.swap_slots))
-    _LOGGER.debug(f"Swap cost: {model.swap_cost:6.1f}")
-
-    lcc_slots = await _run_compute(hass, lambda: model.low_cost_charging(base_slots=model.swap_slots))
-    model.lcc_slots = lcc_slots
-    model.lcc_cost, model.lcc_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.lcc_slots))
-    _LOGGER.debug(f"LCC cost: {model.lcc_cost:6.1f}")
-
-    lcc_raw_cost = model.best_cost
-    model.discharge_slots, model.discharge_cost, model.discharge_flows = await _run_compute(
+    model.whole_horizon_write_cost = WHOLE_HORIZON_WRITE_COST
+    model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
+    model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
         hass,
-        lambda: _optimise_discharge(
-            model,
-            base_slots=model.lcc_slots,
-            base_cost=model.lcc_cost,
-            base_raw_cost=lcc_raw_cost,
-            fill_first=False,
-        ),
+        lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
     )
-    _LOGGER.debug(f"Discharge cost: {model.discharge_cost:6.1f}")
-
-    model.fill_first_slots, model.fill_first_cost, model.fill_first_flows = await _run_compute(
-        hass,
-        lambda: _optimise_discharge(
-            model,
-            base_slots=model.lcc_slots,
-            base_cost=model.lcc_cost,
-            base_raw_cost=lcc_raw_cost,
-            fill_first=True,
-        ),
-    )
-    _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
-
-    cost_keys = ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "fill_first_cost"]
-
-    model.whole_horizon_slots = []
-    model.whole_horizon_cost = None
-    model.whole_horizon_flows = None
-    whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
-    if whole_horizon_beta:
-        model.whole_horizon_write_cost = WHOLE_HORIZON_WRITE_COST
-        model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
-        model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
-            hass,
-            lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
-        )
-        _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
-        cost_keys.append("whole_horizon_cost")
+    _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
+    # Doing nothing (base) stays a candidate, so a failed or alternating plan falls back to it.
+    cost_keys = ["base_cost", "whole_horizon_cost"]
 
     finite_cost_keys = [key for key in cost_keys if _is_finite(getattr(model, key, None))]
     if not finite_cost_keys:
@@ -389,15 +346,7 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
         _LOGGER.warning("No Miser sensor entity objects are available; optimiser attributes were not written")
         return
 
-    for key in [
-        "base_cost",
-        "swap_cost",
-        "lcc_cost",
-        "discharge_cost",
-        "fill_first_cost",
-        "whole_horizon_cost",
-        "optimised_cost",
-    ]:
+    for key in ["base_cost", "whole_horizon_cost", "optimised_cost"]:
         entity = cost_entities.get(key)
         if entity is not None:
             flows = getattr(model, key.replace("_cost", "_flows"), None)
@@ -1573,60 +1522,6 @@ def _spread_discharge_across_rows(
 
     for start in rows.index:
         final_forced.loc[start] = -power
-
-
-async def _optimise_discharge(
-    model,
-    base_slots: list,
-    base_cost: float,
-    base_raw_cost: float,
-    fill_first: bool,
-) -> tuple:
-    best_slots = list(base_slots)
-    best_cost = base_cost
-    best_flows = await model.flows(slots=best_slots)
-    iteration_base_slots = list(base_slots)
-    iteration_base_raw_cost = base_raw_cost
-    label = "Fill-first discharge" if fill_first else "Discharge"
-
-    model.best_cost = base_raw_cost
-
-    for iteration in range(OPTIMISER_MAX_ITERS):
-        previous_best_raw_cost = model.best_cost
-        _LOGGER.debug(f"{label} iteration {iteration + 1}")
-
-        discharge_base_slots = iteration_base_slots
-        discharge_base_raw_cost = iteration_base_raw_cost
-        if fill_first:
-            model.best_cost = iteration_base_raw_cost
-            discharge_base_slots = await model.fill_first_charging(base_slots=iteration_base_slots)
-            local_lcc_cost, _local_lcc_flows = await _calculate_cost_and_flows(model, discharge_base_slots)
-            discharge_base_raw_cost = (await model.net_cost(slots=discharge_base_slots)).sum()
-            model.best_cost = discharge_base_raw_cost
-            _LOGGER.debug(f"{label} local fill cost: {local_lcc_cost:6.1f}")
-            if _is_finite(local_lcc_cost) and _is_finite(best_cost) and local_lcc_cost < best_cost:
-                best_slots = discharge_base_slots
-                best_cost = local_lcc_cost
-                best_flows = _local_lcc_flows
-
-        discharge_slots = await model.discharging(base_slots=discharge_base_slots)
-        discharge_cost, discharge_flows = await _calculate_cost_and_flows(model, discharge_slots)
-        _LOGGER.debug(f"{label} cost: {discharge_cost:6.1f}")
-
-        if not _is_finite(discharge_cost) or not _is_finite(best_cost) or discharge_cost >= best_cost:
-            model.best_cost = previous_best_raw_cost
-            _LOGGER.debug(f"No {label.lower()} improvement in iteration {iteration + 1}; stopping optimisation loop")
-            break
-
-        best_slots = discharge_slots
-        best_cost = discharge_cost
-        best_flows = discharge_flows
-        iteration_base_slots = best_slots
-        iteration_base_raw_cost = (await model.net_cost(slots=best_slots)).sum()
-        model.best_cost = iteration_base_raw_cost
-
-    model.best_cost = best_cost
-    return best_slots, best_cost, best_flows
 
 
 async def _calculate_cost_and_flows(model, slots: list) -> tuple[float, pd.DataFrame]:

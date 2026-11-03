@@ -30,7 +30,7 @@ back to check that it took.
 | 9 | Solis quirks live in the shared optimiser | Fixed, PR from `fix/17-solis-quirks` | [#17](https://github.com/fboundy/miser/issues/17) |
 | 10 | Four overlapping pence thresholds for inverter churn | Fixed, PR from `fix/18-fixed-thresholds` | [#18](https://github.com/fboundy/miser/issues/18) |
 | 11 | Switches that should be automatic | Fixed, PR from `fix/19-automatic-switches` | [#19](https://github.com/fboundy/miser/issues/19) |
-| 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
+| 12 | Whole Horizon or the heuristic passes: pick one | Fixed, PR from `fix/20-one-planner` | [#20](https://github.com/fboundy/miser/issues/20) |
 | 13 | Tuning numbers that should be hidden or merged | Fixed, PR from `fix/21-hide-tuning` | [#21](https://github.com/fboundy/miser/issues/21) |
 | 14 | "Tariff codes" price source duplicates "Octopus account" | Not substantiated: the only Octopus source that needs no API key | — |
 | 15 | Intelligent Octopus Go slots and export limits not modelled | Open | [#22](https://github.com/fboundy/miser/issues/22) |
@@ -43,10 +43,6 @@ None.
 
 ### Nice to have
 
-12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
-    - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
-      Horizon, delete the swap, low-cost charging, discharge and fill-first passes (about 600 lines) and the switch.
-
 14. **"Tariff codes" price source duplicates "Octopus account"** — not substantiated
     - Checked 2026-11-03: the codes source reads Octopus' public rate endpoints with no API key, so it is the only
       Octopus source for a user without one. Keep it; no issue raised.
@@ -56,6 +52,11 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
+    - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
+      Horizon, delete the swap, low-cost charging, discharge and fill-first passes (about 600 lines) and the switch.
+    - **Fixed** (`fix/20-one-planner`): Compared on 710 runs (2026-10-27 to 2026-11-03): Whole Horizon was cheaper than the best heuristic plan in 91% of runs (median 6.7p, mean 25p) and worse in 8% by at most 6.1p. Whole Horizon is now the only planner; the high-cost swap, low-cost charging, fill-first and discharge passes (560 lines of `pv_model.py` plus the optimiser wrapper), their four cost sensors and the Whole Horizon (beta) switch are deleted. Base (do nothing) stays a candidate as the fallback. The Axle precharge case is now tested against Whole Horizon in `tests/test_pv_model_write_cost_and_precharge.py`.
 
 13. **Tuning numbers that should be hidden or merged** — [#21](https://github.com/fboundy/miser/issues/21)
     - Hide with fixed defaults: inverter and charger efficiency, history days, weekday weighting, load margin,
