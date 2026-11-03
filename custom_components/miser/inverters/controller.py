@@ -21,6 +21,10 @@ class InverterController(ABC):
         self.hass = hass
         self.integration_data = integration_data or {}
 
+    # True if a window must stay within one local day and avoid 00:00 edges; the optimiser then writes a
+    # window that crosses midnight as 00:01-23:59 halves.
+    day_bounded_windows: bool = False
+
     # True if the controller can put the inverter into a backup/reserve mode itself.
     supports_backup_mode: bool = False
     backup_mode: bool = False

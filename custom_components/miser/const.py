@@ -136,26 +136,6 @@ MODEL_ENTITIES_AVAILABLE_WAIT = 60
 MODEL_MIN_SLOT_POWER = 10  # W
 MODEL_MAX_SEARCH_WINDOW_SOC = 97  # %
 
-CONTROL_BATTERY_VOLTAGE = "battery_voltage"
-CONTROL_TIMED_CHARGE_ON = "timed_charge_enable"
-CONTROL_TIMED_CHARGE_START_HOURS = "timed_charge_start_hours"
-CONTROL_TIMED_CHARGE_START_MINUTES = "timed_charge_start_minutes"
-CONTROL_TIMED_CHARGE_END_HOURS = "timed_charge_end_hours"
-CONTROL_TIMED_CHARGE_END_MINUTES = "timed_charge_end_minutes"
-CONTROL_TIMED_CHARGE_CURRENT = "timed_charge_current"
-CONTROL_TIMED_CHARGE_SOC = "timed_charge_soc"
-CONTROL_TIMED_DISCHARGE_ON = "timed_discharge_slot_enable"
-CONTROL_TIMED_DISCHARGE_START_HOURS = "timed_discharge_start_hours"
-CONTROL_TIMED_DISCHARGE_START_MINUTES = "timed_discharge_start_minutes"
-CONTROL_TIMED_DISCHARGE_END_HOURS = "timed_discharge_end_hours"
-CONTROL_TIMED_DISCHARGE_END_MINUTES = "timed_discharge_end_minutes"
-CONTROL_TIMED_DISCHARGE_CURRENT = "timed_discharge_current"
-CONTROL_TIMED_DISCHARGE_SOC = "timed_discharge_soc"
-CONTROL_TIMED_CHARGE_BUTTON = "update_charge_times"
-CONTROL_TIMED_DISCHARGE_BUTTON = "update_discharge_times"
-CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON = "update_charge_discharge_times"
-CONTROL_INVERTER_MODE = "energy_storage_control_switch"
-CONTROL_BACKUP_MODE_SOC = "backup_mode_soc"
 CONTROL_PASS_THREHOLD = 4
 CONTROL_SLOT_THRESHOLD = 1
 

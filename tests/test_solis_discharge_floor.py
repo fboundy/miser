@@ -6,7 +6,12 @@ keeps the old target: on 23 Oct a 15% target left the slot at 54%.
 
 import pytest
 
-from custom_components.miser.const import CONTROL_TIMED_DISCHARGE_SOC, MODEL_BATTERY_MINIMUM_SOC
+from custom_components.miser.const import (
+    MODEL_BATTERY_MINIMUM_SOC,
+)
+from custom_components.miser.inverters.solis import (
+    CONTROL_TIMED_DISCHARGE_SOC,
+)
 from custom_components.miser.inverters.solis import SolisConnectInverter
 from tests.test_solis_slot_exclusion import NOW, _Hass, _State
 

@@ -27,7 +27,7 @@ back to check that it took.
 | 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Fixed, PR from `fix/14-size-caps` | [#14](https://github.com/fboundy/miser/issues/14) |
 | 7 | `InverterController` doesn't describe what Miser needs | Fixed, PR from `fix/15-controller-contract` | [#15](https://github.com/fboundy/miser/issues/15) |
 | 8 | Entity discovery and controller lookup are Solis-only | Fixed, PR from `fix/16-brand-registry` | [#16](https://github.com/fboundy/miser/issues/16) |
-| 9 | Solis quirks live in the shared optimiser | Open | [#17](https://github.com/fboundy/miser/issues/17) |
+| 9 | Solis quirks live in the shared optimiser | Fixed, PR from `fix/17-solis-quirks` | [#17](https://github.com/fboundy/miser/issues/17) |
 | 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
 | 11 | Switches that should be automatic | Open | [#19](https://github.com/fboundy/miser/issues/19) |
 | 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
@@ -42,13 +42,6 @@ back to check that it took.
 None.
 
 ### Nice to have
-
-9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`) — [#17](https://github.com/fboundy/miser/issues/17)
-   - **What happens:** The midnight split and 00:01/23:59 edges (`_inverter_window`), programming only one slot at a
-     time, and the `CONTROL_TIMED_*` / "update times" keys are Solis behaviour in shared code. Battery power is
-     turned into a current through battery voltage, which other inverters don't need.
-   - **Fix:** controller properties the optimiser reads, e.g. `max_window_days`, `allows_midnight_edges`,
-     `max_slots`; move the Solis entity keys into `solis.py`.
 
 10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
     - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
@@ -82,6 +75,14 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`) — [#17](https://github.com/fboundy/miser/issues/17)
+   - **What happens:** The midnight split and 00:01/23:59 edges (`_inverter_window`), programming only one slot at a
+     time, and the `CONTROL_TIMED_*` / "update times" keys are Solis behaviour in shared code. Battery power is
+     turned into a current through battery voltage, which other inverters don't need.
+   - **Fix:** controller properties the optimiser reads, e.g. `max_window_days`, `allows_midnight_edges`,
+     `max_slots`; move the Solis entity keys into `solis.py`.
+   - **Fixed** (`fix/17-solis-quirks`): The midnight split is gated by a controller property, `day_bounded_windows` (True for Solis, False by default). The `CONTROL_TIMED_*`, button, mode, voltage and backup-SOC keys moved from `const.py` to `solis.py`. Programming one slot at a time stays shared, since it is safe for any inverter; power-to-current was already optional (#15). Also undid the midnight clip that commit 9582c64 had applied by mistake to the reported next-slot attributes (`_serialise_control_slot`). Tested in `tests/test_inverter_window_midnight.py`.
 
 8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`) — [#16](https://github.com/fboundy/miser/issues/16)
    - **What happens:** `brand`, `integration`, `entity_defs` and the model/control/config entity maps are defined on

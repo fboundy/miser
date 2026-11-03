@@ -6,6 +6,9 @@ import pytest
 from homeassistant.util import dt as dt_util
 
 from custom_components.miser.const import (
+    DOMAIN,
+)
+from custom_components.miser.inverters.solis import (
     CONTROL_BATTERY_VOLTAGE,
     CONTROL_INVERTER_MODE,
     CONTROL_TIMED_CHARGE_CURRENT,
@@ -18,7 +21,6 @@ from custom_components.miser.const import (
     CONTROL_TIMED_DISCHARGE_ON,
     CONTROL_TIMED_DISCHARGE_SOC,
     CONTROL_TIMED_DISCHARGE_START_HOURS,
-    DOMAIN,
 )
 from custom_components.miser.inverters.solis import SOLIS_CONNECT_TOU_SWITCH, SolisConnectInverter
 

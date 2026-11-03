@@ -9,26 +9,6 @@ from .controller import InverterController
 
 SOLIS_NOMINAL_BATTERY_VOLTAGE = 48  # V
 from ..const import (
-    CONTROL_BACKUP_MODE_SOC,
-    CONTROL_BATTERY_VOLTAGE,
-    CONTROL_INVERTER_MODE,
-    CONTROL_TIMED_CHARGE_BUTTON,
-    CONTROL_TIMED_CHARGE_CURRENT,
-    CONTROL_TIMED_CHARGE_END_HOURS,
-    CONTROL_TIMED_CHARGE_END_MINUTES,
-    CONTROL_TIMED_CHARGE_ON,
-    CONTROL_TIMED_CHARGE_SOC,
-    CONTROL_TIMED_CHARGE_START_HOURS,
-    CONTROL_TIMED_CHARGE_START_MINUTES,
-    CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON,
-    CONTROL_TIMED_DISCHARGE_BUTTON,
-    CONTROL_TIMED_DISCHARGE_CURRENT,
-    CONTROL_TIMED_DISCHARGE_END_HOURS,
-    CONTROL_TIMED_DISCHARGE_END_MINUTES,
-    CONTROL_TIMED_DISCHARGE_ON,
-    CONTROL_TIMED_DISCHARGE_SOC,
-    CONTROL_TIMED_DISCHARGE_START_HOURS,
-    CONTROL_TIMED_DISCHARGE_START_MINUTES,
     ENTITY_TYPES,
     MODEL_BATTERY_MINIMUM_SOC,
     MODEL_BATTERY_SOC,
@@ -40,6 +20,28 @@ from ..const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Miser keys for the Solis entities a controller drives; entity_defs maps them to entity names.
+CONTROL_BATTERY_VOLTAGE = "battery_voltage"
+CONTROL_TIMED_CHARGE_ON = "timed_charge_enable"
+CONTROL_TIMED_CHARGE_START_HOURS = "timed_charge_start_hours"
+CONTROL_TIMED_CHARGE_START_MINUTES = "timed_charge_start_minutes"
+CONTROL_TIMED_CHARGE_END_HOURS = "timed_charge_end_hours"
+CONTROL_TIMED_CHARGE_END_MINUTES = "timed_charge_end_minutes"
+CONTROL_TIMED_CHARGE_CURRENT = "timed_charge_current"
+CONTROL_TIMED_CHARGE_SOC = "timed_charge_soc"
+CONTROL_TIMED_DISCHARGE_ON = "timed_discharge_slot_enable"
+CONTROL_TIMED_DISCHARGE_START_HOURS = "timed_discharge_start_hours"
+CONTROL_TIMED_DISCHARGE_START_MINUTES = "timed_discharge_start_minutes"
+CONTROL_TIMED_DISCHARGE_END_HOURS = "timed_discharge_end_hours"
+CONTROL_TIMED_DISCHARGE_END_MINUTES = "timed_discharge_end_minutes"
+CONTROL_TIMED_DISCHARGE_CURRENT = "timed_discharge_current"
+CONTROL_TIMED_DISCHARGE_SOC = "timed_discharge_soc"
+CONTROL_TIMED_CHARGE_BUTTON = "update_charge_times"
+CONTROL_TIMED_DISCHARGE_BUTTON = "update_discharge_times"
+CONTROL_TIMED_CHARGE_DISCHARGE_BUTTON = "update_charge_discharge_times"
+CONTROL_INVERTER_MODE = "energy_storage_control_switch"
+CONTROL_BACKUP_MODE_SOC = "backup_mode_soc"
 
 SOLIS_CLOUD_TIMED_MODE = "Self-Use Mode - Allow Grid Charging"
 SOLIS_CLOUD_IDLE_MODE = "Self-Use Mode - No Grid Charging"
@@ -83,6 +85,8 @@ class SolisInverter(InverterController):
     """Base class for Solis inverter controller integrations."""
 
     brand: ClassVar[str] = "solis"
+    # The Solis rejects a timed window that crosses midnight or starts/ends at 00:00 (old audit 20).
+    day_bounded_windows = True
     # Inverter mode that a timed charge/discharge requires, or None when the
     # controller does not set one.
     control_mode: ClassVar[str | None] = None
