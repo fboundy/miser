@@ -32,7 +32,7 @@ one process at once. These are the timer, a settings change and Axle events.
 | 15 | Schedule "alignment" code does nothing | Fixed (see below) |
 | 16 | Fallback load shape matched against UTC times | Fixed (see below) |
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
-| 18 | Inverter keeps an old charge window | Fixed (see below); first overnight charge not yet seen |
+| 18 | Inverter keeps an old charge window | Fixed `1e3e5f1` |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 
 ## Open
@@ -55,6 +55,8 @@ None.
     - **Fix:** before writing a charge window, `SolisConnectInverter` turns the discharge slot off and sets its times to
       00:00–00:00 (and the other way round for a discharge). It skips that when the registers already read 00:00.
       Tested in `tests/test_solis_slot_exclusion.py`.
+    - **Seen working 2026-11-03:** Miser wrote 00:06–07:00 with the discharge slot at 00:00–00:00. The times held, a
+      rewrite at 00:16 held too, and the battery charged at about 2.4 kW from the grid.
     - **Still unchecked:** whether a window that spans midnight (e.g. 23:30–01:00) counts as overlapping 00:00–00:00.
 
 16. **The fallback load shape was matched against UTC times**
@@ -126,7 +128,7 @@ None.
 
 ## Not checked
 
-- All 172 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 179 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
