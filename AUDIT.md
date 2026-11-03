@@ -24,7 +24,7 @@ back to check that it took.
 | 3 | A low export price in pence can be read as pounds | Fixed, PR from `fix/12-price-unit` | [#12](https://github.com/fboundy/miser/issues/12) |
 | 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
 | 5 | Setup's consumption questions do nothing | Fixed, PR from `fix/23-consumption-steps` | [#23](https://github.com/fboundy/miser/issues/23) |
-| 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Open | [#14](https://github.com/fboundy/miser/issues/14) |
+| 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Fixed, PR from `fix/14-size-caps` | [#14](https://github.com/fboundy/miser/issues/14) |
 | 7 | `InverterController` doesn't describe what Miser needs | Open | [#15](https://github.com/fboundy/miser/issues/15) |
 | 8 | Entity discovery and controller lookup are Solis-only | Open | [#16](https://github.com/fboundy/miser/issues/16) |
 | 9 | Solis quirks live in the shared optimiser | Open | [#17](https://github.com/fboundy/miser/issues/17) |
@@ -44,10 +44,6 @@ back to check that it took.
      and "tariff codes" price sources; the Octopus Energy integration's entities carry the real times.
    - **Fix:** take the night hours from the meter's registers if the account API gives them; otherwise make the
      window a setup input shown only for E7 tariffs, or point E7 users at the entities source.
-
-6. **Battery capacity capped at 20 kWh, inverter power at 10 kW** (`const.py`, `NUMBER_ENTITIES`) — [#14](https://github.com/fboundy/miser/issues/14)
-   - **What happens:** Larger and three-phase systems can't be entered. Charger power is capped at 5 kW.
-   - **Fix:** raise the maxima (e.g. 100 kWh, 30 kW, 30 kW).
 
 ### Nice to have
 
@@ -106,6 +102,11 @@ back to check that it took.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+6. **Battery capacity capped at 20 kWh, inverter power at 10 kW** (`const.py`, `NUMBER_ENTITIES`) — [#14](https://github.com/fboundy/miser/issues/14)
+   - **What happens:** Larger and three-phase systems can't be entered. Charger power is capped at 5 kW.
+   - **Fix:** raise the maxima (e.g. 100 kWh, 30 kW, 30 kW).
+   - **Fixed** (`fix/14-size-caps`): Maxima raised to 100 kWh battery, 30 kW inverter and 30 kW charger.
 
 5. **Setup's consumption questions do nothing** (`config_flow.py:386-442`) — [#23](https://github.com/fboundy/miser/issues/23)
    - **What happens:** "Consumption source", "daily amount" and "scaling option" are saved and never read. The

@@ -266,7 +266,7 @@ NUMBER_ENTITIES = {
     # Configurable battery/inverter parameters
     CONF_BATTERY_CAPACITY: {
         "min": 1000,
-        "max": 20000,
+        "max": 100000,
         "step": 100,
         "default": DEFAULTS[CONF_BATTERY_CAPACITY],
         "unit": UnitOfEnergy.WATT_HOUR,
@@ -274,7 +274,7 @@ NUMBER_ENTITIES = {
     },
     CONF_INVERTER_POWER: {
         "min": 1000,
-        "max": 10000,
+        "max": 30000,
         "step": 100,
         "default": DEFAULTS[CONF_INVERTER_POWER],
         "unit": UnitOfPower.WATT,
@@ -282,7 +282,7 @@ NUMBER_ENTITIES = {
     },
     CONF_CHARGER_POWER: {
         "min": 1000,
-        "max": 5000,
+        "max": 30000,
         "step": 100,
         "default": DEFAULTS[CONF_CHARGER_POWER],
         "unit": UnitOfPower.WATT,
