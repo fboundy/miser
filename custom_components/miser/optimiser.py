@@ -531,9 +531,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
         try:
             if not await inverter_controller.control_matches("idle", None, 0):
                 _LOGGER.debug("Setting inverter forced control state to idle")
-                control_idle = getattr(inverter_controller, "control_idle", None)
-                if control_idle is not None:
-                    await control_idle()
+                await inverter_controller.control_idle()
         except (RuntimeError, HomeAssistantError) as err:
             _LOGGER.warning("Unable to verify or set inverter idle control: %s", err)
         await _ensure_backup_reserve(inverter_controller)
@@ -554,11 +552,8 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
 
 async def _ensure_backup_reserve(inverter_controller) -> None:
     """After any mode change, put the inverter's Backup SOC back to Miser's reserve."""
-    ensure = getattr(inverter_controller, "ensure_backup_soc", None)
-    if ensure is None:
-        return
     try:
-        await ensure()
+        await inverter_controller.ensure_backup_soc()
     except (RuntimeError, HomeAssistantError) as err:
         _LOGGER.warning("Unable to set the inverter's Backup SOC: %s", err)
 
@@ -619,12 +614,12 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
         f"{slot['power']:.1f}W grid / {power:.1f}W battery target {window_target_soc:.1f}%"
     )
 
-    method_name = {"charging": "control_charge", "discharging": "control_discharge"}.get(slot["state"])
-    control = getattr(inverter_controller, method_name, None) if method_name else None
+    control = {"charging": inverter_controller.control_charge, "discharging": inverter_controller.control_discharge}.get(
+        slot["state"]
+    )
     if control is None:
         _LOGGER.warning("Inverter controller cannot apply %s", description)
         return False
-    confirm = getattr(inverter_controller, "confirm_control", None)
 
     mismatches: list[str] = []
     for attempt in range(1, CONTROL_CONFIRM_ATTEMPTS + 1):
@@ -634,9 +629,7 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
         try:
             _LOGGER.debug("Applying inverter control (attempt %d/%d): %s", attempt, CONTROL_CONFIRM_ATTEMPTS, description)
             await control(window_start.to_pydatetime(), window_end.to_pydatetime(), window_target_soc, power)
-            if confirm is None:
-                return True
-            mismatches = await confirm(
+            mismatches = await inverter_controller.confirm_control(
                 slot["state"],
                 window_start.to_pydatetime(),
                 window_end.to_pydatetime(),
@@ -841,10 +834,8 @@ def _set_controller_backup_mode(
     hass: HomeAssistant, inverter_controller, backup: bool, backup_soc: float | None = None
 ) -> None:
     """Tell the controller which base mode and reserve to hold; warn once if it can't do backup."""
-    if hasattr(inverter_controller, "backup_mode"):
-        inverter_controller.backup_mode = backup
-        inverter_controller.backup_soc = backup_soc if backup else None
-    if backup and not getattr(inverter_controller, "supports_backup_mode", False):
+    inverter_controller.set_backup(backup, backup_soc)
+    if backup and not inverter_controller.supports_backup_mode:
         data = hass.data.get(DOMAIN, {})
         if not data.get("backup_mode_unsupported_warned"):
             data["backup_mode_unsupported_warned"] = True
@@ -1173,10 +1164,7 @@ def _same_force_direction(power: float, other_power: float) -> bool:
 
 
 async def _power_to_current(inverter_controller, power: float) -> float | None:
-    power_to_current = getattr(inverter_controller, "power_to_current", None)
-    if power_to_current is None:
-        return None
-    return await power_to_current(power)
+    return await inverter_controller.power_to_current(power)
 
 
 def _serialise_control_slot(slot: dict | None) -> dict | None:
