@@ -16,6 +16,7 @@ from custom_components.miser.optimiser import (
     CONTROL_FAILED_STATE,
     CONTROL_MIN_FORCE_POWER,
     _apply_inverter_control,
+    _inverter_window,
     _control_slots,
     _find_current_control_slot,
     _find_next_control_slot,
@@ -428,8 +429,10 @@ async def test_apply_programmes_charge_with_window_bounds_and_segment_power() ->
     assert len(controller.charge_calls) == 1
     start, end, target_soc, power = controller.charge_calls[0]
 
-    expected_start = flows.index[0]
-    expected_end = flows.index[-1] + pd.Timedelta(minutes=30)
+    # Clipped at local midnight when the window around now crosses it (tests/test_inverter_window_midnight.py).
+    expected_start, expected_end = _inverter_window(
+        flows.index[0], flows.index[-1] + pd.Timedelta(minutes=30), pd.Timestamp.now(tz="UTC")
+    )
 
     assert pd.Timestamp(start) == expected_start
     assert pd.Timestamp(end) == expected_end
@@ -451,8 +454,10 @@ async def test_apply_programmes_discharge_with_window_bounds_and_segment_power()
     assert len(controller.discharge_calls) == 1
     start, end, target_soc, power = controller.discharge_calls[0]
 
-    expected_start = flows.index[0]
-    expected_end = flows.index[-1] + pd.Timedelta(minutes=30)
+    # Clipped at local midnight when the window around now crosses it (tests/test_inverter_window_midnight.py).
+    expected_start, expected_end = _inverter_window(
+        flows.index[0], flows.index[-1] + pd.Timedelta(minutes=30), pd.Timestamp.now(tz="UTC")
+    )
 
     assert pd.Timestamp(start) == expected_start
     assert pd.Timestamp(end) == expected_end
@@ -476,7 +481,7 @@ async def test_apply_does_not_shorten_window_on_repeated_runs() -> None:
     targets = {call[2] for call in controller.charge_calls}
 
     assert len(controller.charge_calls) == 3
-    assert ends == {flows.index[-1] + pd.Timedelta(minutes=30)}
+    assert ends == {_inverter_window(flows.index[0], flows.index[-1] + pd.Timedelta(minutes=30), pd.Timestamp.now(tz="UTC"))[1]}
     assert targets == {83.0}
 
 
