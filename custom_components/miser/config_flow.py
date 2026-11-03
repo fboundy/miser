@@ -12,7 +12,6 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
-    CONF_DAILY_CONSUMPTION_KWH,
     CONF_INVERTER_EFFICIENCY,
     CONF_INVERTER_POWER,
     DEFAULTS,
@@ -375,7 +374,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ]
                 ]
             ):
-                return await self.async_step_consumption_source()
+                return self.async_create_entry(title=NAME, data=self._data, options=self._options)
             else:
                 errors["base"] = "missing_parameters"
 
@@ -394,64 +393,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)
-
-    async def async_step_consumption_source(self, user_input=None):
-        """
-        Step 6: Confirm the source of consumption data.
-        """
-        errors = {}
-
-        if user_input is not None:
-            # Validate consumption source
-            self._options["consumption_source"] = user_input.get("consumption_source")
-            if self._options["consumption_source"] == "Enter a daily amount":
-                return await self.async_step_daily_amount()
-            elif self._options["consumption_source"] in [
-                "Custom scaling profile via configuration.yaml",
-                "Use historical data",
-            ]:
-                return self.async_create_entry(title=NAME, data=self._data, options=self._options)
-            else:
-                errors["base"] = "invalid_selection"
-
-        # Provide consumption source options
-        options = [
-            "Use historical data",
-            "Enter a daily amount",
-            "Custom scaling profile via configuration.yaml",
-        ]
-
-        schema = vol.Schema({vol.Required("consumption_source", default="Use historical data"): vol.In(options)})
-        return self.async_show_form(step_id="consumption_source", data_schema=schema, errors=errors)
-
-    async def async_step_daily_amount(self, user_input=None):
-        """
-        Step 7: Enter a daily consumption amount and scaling option.
-        """
-        errors = {}
-
-        if user_input is not None:
-            self._options[CONF_DAILY_CONSUMPTION_KWH] = user_input.get("daily_amount")
-            self._options["scaling_option"] = user_input.get("scaling_option")
-            if self._options[CONF_DAILY_CONSUMPTION_KWH] is not None and self._options["scaling_option"] is not None:
-                return self.async_create_entry(
-                    title=NAME,
-                    data=self._data,
-                    options=self._options,
-                )
-            else:
-                errors["base"] = "missing_fields"
-
-        # Display a form for entering daily consumption data
-        schema = vol.Schema(
-            {
-                vol.Required("daily_amount"): int,
-                vol.Required("scaling_option", default="Constant"): vol.In(
-                    ["Constant", "Scaled to typical usage profile"]
-                ),
-            }
-        )
-        return self.async_show_form(step_id="daily_amount", data_schema=schema, errors=errors)
 
     @staticmethod
     @callback
