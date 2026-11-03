@@ -1125,8 +1125,7 @@ class PVsystemModel:
         cost of buying the shortfall back at the cheapest forward-window prices
         (its replacement cost). Ending above it is symmetrically credited with
         the replacement cost of that surplus - the cheapest a rational operator
-        could rebuy it - but only when `value_surplus_soc` is enabled; with the
-        toggle off the behaviour is the original deficit-only penalty.
+        could rebuy it.
 
         Positive = penalty (added to cost); negative = credit (reduces cost).
         Both directions price |terminal - target| with the same cheapest-forward
@@ -1148,8 +1147,6 @@ class PVsystemModel:
         if delta_wh < 0:
             return self._terminal_fill_cost(-delta_wh)
 
-        if not getattr(self, "value_surplus_soc", False):
-            return 0.0
         return -self._terminal_fill_cost(delta_wh)
 
     def _terminal_fill_cost(self, energy_wh: float) -> float:
