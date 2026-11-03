@@ -20,6 +20,7 @@ from .const import (
     MODEL_BATTERY_MINIMUM_SOC,
     DEFAULT_BATTERY_VOLTAGE,
     DEFAULTS,
+    CONF_EXPORT_LIMIT,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
@@ -125,6 +126,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         _LOGGER.debug(redact_sensitive(hass.data[DOMAIN].get("octopus_info")))
         hass.data[DOMAIN]["tariff_refresher"] = partial(_refresh_octopus_tariffs, hass, entry)
+
+        # Reload when options change (e.g. the export limit) so they take effect.
+        entry.async_on_unload(entry.add_update_listener(_reload_on_options_change))
 
         # Set up the schedule for the optimise
         await _schedule_optimiser(hass)
@@ -339,6 +343,10 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return success
 
 
+async def _reload_on_options_change(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    await hass.config_entries.async_reload(entry.entry_id)
+
+
 async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Read the inverter model parameters from the relevant config entities
     _LOGGER.debug("Loading PV system model")
@@ -363,6 +371,9 @@ async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     hass.data[DOMAIN]["model"] = PVsystemModel(
         inverter=hass.data[DOMAIN]["inverter_model"], battery=hass.data[DOMAIN]["battery_model"]
     )
+    entry = hass.config_entries.async_get_entry(hass.data[DOMAIN].get("entry_id", ""))
+    export_limit = entry.options.get(CONF_EXPORT_LIMIT) if entry is not None else None
+    hass.data[DOMAIN]["model"].export_limit = float(export_limit) if export_limit else None
 
     return True
 

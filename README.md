@@ -81,6 +81,12 @@ Switches:
 - `Miser Read Only`: on by default, so a new install plans but writes nothing to the inverter until you turn it off.
 - `Miser Backup Mode`
 
+If your connection has a grid export limit (G98/G99), enter it as "Grid export limit" in setup or in Miser's
+options; forced exports are capped at it. Solar export above the limit isn't modelled.
+
+Intelligent Octopus Go's extra cheap dispatch slots are only seen if your price entities include them (the Octopus
+Energy integration's rate entities do); the Octopus account and tariff-code sources use the published rates only.
+
 Solar comes from Solcast when it's installed, consumption from the inverter's house-load history when it has some
 (otherwise a typical daily shape scaled to `Miser Daily Consumption kWh`), and exports are planned whenever the export
 price makes them worthwhile.
