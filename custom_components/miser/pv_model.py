@@ -968,31 +968,42 @@ class PVsystemModel:
         return round(forced_power)
 
     async def _average_same_price_runs(self, flows: pd.DataFrame, path: list) -> list:
-        """Spread each run of adjacent same-direction, same-price slots at one constant power.
+        """Spread each charge over its whole same-price period, idle slots included, and each run of
+        adjacent same-price exports over that run, at one constant power.
 
-        Same energy at the same price costs the same, and one power needs one inverter write.
+        Same energy at the same price costs the same, and one power needs one inverter write. Whole
+        Horizon charges only at full power, so without the idle slots a flat cheap period kept gaps
+        that moved each run (2026-11-03: 00:06-01:06, idle, 02:00-06:06).
         """
         if not path:
             return path
-        position = {start: i for i, start in enumerate(flows.index)}
+        forced = dict(path)
         runs: list[list[tuple[pd.Timestamp, float]]] = []
-        for start, power in path:
+        for start in flows.index:
+            power = forced.get(start, 0.0)
             if runs:
                 prev_start, prev_power = runs[-1][-1]
-                price_col = "import" if power > 0 else "export"
-                if (
-                    position[start] == position[prev_start] + 1
-                    and (power > 0) == (prev_power > 0)
-                    and flows.at[start, price_col] == flows.at[prev_start, price_col]
-                ):
+                charge = power >= 0
+                price_col = "import" if charge else "export"
+                if (prev_power >= 0) == charge and flows.at[start, price_col] == flows.at[prev_start, price_col]:
                     runs[-1].append((start, power))
                     continue
             runs.append([(start, power)])
 
+        # An idle slot that becomes a charge serves the house from the grid, not the battery, so take
+        # that battery energy off the charge; otherwise the averaged plan ends fuller and buys more.
+        path_flows = await self.flows(slots=path)
+        drained = ((path_flows["soc"] - path_flows["soc_end"]).clip(lower=0) * self.battery.capacity / 100)
         averaged = []
         for run in runs:
+            if not any(power for _start, power in run):
+                continue
             hours = sum(flows.at[start, "dt_hours"] for start, _ in run)
-            power = round(sum(p * flows.at[start, "dt_hours"] for start, p in run) / hours, 0)
+            energy = sum(p * flows.at[start, "dt_hours"] for start, p in run)
+            if run[0][1] >= 0:
+                idle_drain = sum(drained[start] for start, p in run if p == 0) / self.inverter.charger_efficiency
+                energy = max(energy - idle_drain, 0)
+            power = round(energy / hours, 0)
             averaged.extend((start, power) for start, _ in run)
 
         # Solar or load can still make a slot cost differ; keep the original if averaging costs more.

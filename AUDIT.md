@@ -35,13 +35,17 @@ one process at once. These are the timer, a settings change and Axle events.
 | 18 | Inverter keeps an old charge window | Fixed `1e3e5f1` |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 | 20 | Windows that cross midnight or touch 00:00 are written as-is | Fixed (see below) |
-| 21 | Whole Horizon leaves idle gaps in a flat-price charge period | Open |
+| 21 | Whole Horizon leaves idle gaps in a flat-price charge period | Fixed (see below) |
 
 ## Open
 
 ### Should fix
 
-21. **Whole Horizon leaves idle gaps in a flat-price charge period** (`pv_model.py`, `_average_same_price_runs`)
+None.
+
+## Fixed
+
+21. **Whole Horizon left idle gaps in a flat-price charge period** (`pv_model.py`, `_average_same_price_runs`)
     - **What happened:** On the night of 2026-11-03 (7.43p from 00:00 to 07:00) Miser charged 00:06–01:06, sat idle
       01:06–02:00, charged 02:00–06:06, idled 10 min and charged 06:16–06:26. At 23:30 the plan was 01:30–07:00.
     - **Cause:** Whole Horizon only charges at full power or not at all. When the battery needs less than the whole
@@ -50,10 +54,12 @@ one process at once. These are the timer, a settings change and Axle events.
       other, so it never fills an idle slot inside the period. Reproduced offline: from 15% at 00:00 it idles to 01:30.
     - **Cost:** small. The house runs from the battery in the gaps and is refilled at the same price, losing the
       charge and discharge efficiency on that energy. A later start also leaves less time if something goes wrong.
-    - **Fix:** spread each charge over the whole same-price period it falls in, idle slots included, keeping the
-      existing check that the averaged plan costs no more.
-
-## Fixed
+    - **Fix:** `_average_same_price_runs` spreads each charge over its whole same-price period, idle slots included.
+      It takes off the battery energy those idle slots would have supplied to the house, so the plan ends at the
+      same SOC, and keeps the check that the averaged plan costs no more. `_drop_small_cycles` re-averages after
+      dropping an export, because a dropped export inside the charge period caused the 01:06–02:00 gap. Tested in
+      `tests/test_pv_model_write_cost_and_precharge.py` and `tests/test_cycling_threshold.py`.
+    - **Still unchecked:** a whole night on the live system.
 
 20. **Windows that crossed midnight or touched 00:00 were written as-is** (`optimiser.py`, `_inverter_window`)
     - **What happened:** The Solis doesn't take a charge window that crosses midnight, and 00:00 as a start or end is
@@ -148,7 +154,7 @@ one process at once. These are the timer, a settings change and Axle events.
 
 ## Not checked
 
-- All 182 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 184 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.
