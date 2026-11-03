@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
+from typing import ClassVar
 
 
 class InverterController(ABC):
@@ -8,6 +9,17 @@ class InverterController(ABC):
     The abstract methods are required. The rest have working defaults: override them only if the
     inverter can do more (read a write back, take a current instead of a power, hold a backup reserve).
     """
+
+    # Identity, used by setup and the config flow. Add a new controller to CONTROLLERS in inverters/__init__.py.
+    brand: ClassVar[str]  # e.g. "solis"
+    integration: ClassVar[str]  # the Home Assistant integration domain it drives, e.g. "solisconnect"
+    # Entity name templates per entity type ("model_entities", "control_entities", "config_entities") keyed by
+    # Miser's key. Setup maps them to the integration's entities; model_entities must include battery_soc.
+    entity_defs: ClassVar[dict[str, dict[str, str]]] = {}
+
+    def __init__(self, hass, integration_data: dict | None = None) -> None:
+        self.hass = hass
+        self.integration_data = integration_data or {}
 
     # True if the controller can put the inverter into a backup/reserve mode itself.
     supports_backup_mode: bool = False

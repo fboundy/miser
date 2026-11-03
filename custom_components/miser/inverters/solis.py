@@ -1,4 +1,3 @@
-from abc import abstractmethod
 import asyncio
 import logging
 from datetime import datetime
@@ -84,7 +83,6 @@ class SolisInverter(InverterController):
     """Base class for Solis inverter controller integrations."""
 
     brand: ClassVar[str] = "solis"
-    entity_defs: ClassVar[dict[str, dict[str, str]]] = {}
     # Inverter mode that a timed charge/discharge requires, or None when the
     # controller does not set one.
     control_mode: ClassVar[str | None] = None
@@ -94,8 +92,7 @@ class SolisInverter(InverterController):
     backup_control_mode: ClassVar[str | None] = None
 
     def __init__(self, hass, integration_data: dict | None = None) -> None:
-        self.hass = hass
-        self.integration_data = integration_data or {}
+        super().__init__(hass, integration_data)
         # Set by the optimiser on every run from Miser's Backup Mode switch and
         # Backup SOC number.
         self.backup_mode = False
@@ -127,23 +124,6 @@ class SolisInverter(InverterController):
         if self.backup_mode and self.backup_control_mode is not None:
             return self.backup_control_mode
         return self.control_mode
-
-    @property
-    @abstractmethod
-    def integration(self) -> str:
-        """Return the Home Assistant integration domain used by this controller."""
-
-    @property
-    def model_entities(self) -> dict[str, str]:
-        return self.entity_defs.get("model_entities", {})
-
-    @property
-    def control_entities(self) -> dict[str, str]:
-        return self.entity_defs.get("control_entities", {})
-
-    @property
-    def config_entities(self) -> dict[str, str]:
-        return self.entity_defs.get("config_entities", {})
 
     async def is_online(self) -> bool:
         return all(
@@ -758,27 +738,3 @@ class SolisConnectInverter(SolisInverter):
         mode = self.active_control_mode
         if await self.get_mode() != mode:
             await self.set_mode(mode)
-
-
-SOLIS_INVERTER_CLASSES = {
-    controller.integration: controller
-    for controller in [
-        SolisSolaxModbusInverter,
-        SolisCloudInverter,
-        SolisConnectInverter,
-    ]
-}
-
-
-def get_solis_inverter_class(integration: str) -> type[SolisInverter]:
-    return SOLIS_INVERTER_CLASSES[integration]
-
-
-def get_solis_inverter_defs() -> dict[str, dict[str, dict[str, str]]]:
-    return {
-        integration: {
-            entity_type: controller.entity_defs.get(entity_type, {})
-            for entity_type in ENTITY_TYPES
-        }
-        for integration, controller in SOLIS_INVERTER_CLASSES.items()
-    }
