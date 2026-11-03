@@ -45,23 +45,18 @@ CONF_CHARGER_POWER = "charger_power"
 CONF_INVERTER_EFFICIENCY = "inverter_efficiency"
 CONF_CHARGER_EFFICIENCY = "charger_efficiency"
 CONF_BATTERY_MINIMUM_SOC = "battery_minimum_soc"
-CONF_USE_CONSUMPTION_HISTORY = "use_consumption_history"
 CONF_HISTORY_DAYS = "history_days"
 CONF_WEEKDAY_WEIGHTING = "weekday_weighting"
 CONF_LOAD_MARGIN = "load_margin"
-CONF_SHAPE_CONSUMPTION = "shape_consumption"
 CONF_DAILY_CONSUMPTION_KWH = "daily_consumption_kwh"
 CONF_MINIMUM_DAILY_CONSUMPTION_KWH = "minimum_daily_consumption_kwh"
 CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
 CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
-CONF_USE_SOLAR = "use_solar"
 CONF_READ_ONLY = "read_only"
-CONF_OPTIMISE_DISCHARGING = "optimise_discharging"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
 CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
 CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
 CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
-CONF_VALUE_SURPLUS_SOC = "value_surplus_soc"
 CONF_CYCLING_THRESHOLD = "cycling_threshold"
 CONF_BACKUP_MODE = "backup_mode"
 CONF_BACKUP_SOC = "backup_soc"
@@ -82,28 +77,20 @@ DEFAULTS = {
     CONF_INVERTER_EFFICIENCY: 97,  # Percent
     CONF_CHARGER_EFFICIENCY: 91,  # Percent
     CONF_BATTERY_MINIMUM_SOC: 15,  # %
-    CONF_USE_CONSUMPTION_HISTORY: True,
     CONF_HISTORY_DAYS: 7,
     CONF_WEEKDAY_WEIGHTING: 50,
     CONF_LOAD_MARGIN: 10,
-    CONF_SHAPE_CONSUMPTION: True,
     CONF_DAILY_CONSUMPTION_KWH: 17,
     CONF_MINIMUM_DAILY_CONSUMPTION_KWH: 5,
     CONF_OPTIMISER_FREQUENCY: 10,
     CONF_SOLCAST_CONFIDENCE: 50,
-    CONF_USE_SOLAR: True,
     CONF_READ_ONLY: True,
-    CONF_OPTIMISE_DISCHARGING: True,
     CONF_WHOLE_HORIZON_BETA: False,
     CONF_WRITE_MINIMISATION_COST_THRESHOLD: 10,
     CONF_WHOLE_HORIZON_WRITE_COST: 0,
     # Maximum raw financial regression, in pence across the whole optimisation
     # horizon, that may be accepted to avoid a rapidly alternating plan.
     CONF_ALTERNATION_COST_THRESHOLD: 10,
-    # Credit end-of-horizon battery energy above the run-start SoC at its
-    # cheapest forward replacement cost (symmetric with the deficit penalty),
-    # so plans that leave the battery usefully charged are valued for it.
-    CONF_VALUE_SURPLUS_SOC: True,
     # Minimum a forced export (one charge/discharge cycle) must be worth, in
     # pence over the horizon, to stay in the plan. Drops small or alternating
     # cycles that wear the battery for pennies; 0 allows all cycling.
@@ -197,13 +184,8 @@ EMPTY_ATTR: dict[str, Any] = {
 SWITCH_ENTITIES = {
     conf: {"default": DEFAULTS[conf]}
     for conf in [
-        CONF_USE_CONSUMPTION_HISTORY,
-        CONF_SHAPE_CONSUMPTION,
-        CONF_USE_SOLAR,
         CONF_READ_ONLY,
-        CONF_OPTIMISE_DISCHARGING,
         CONF_WHOLE_HORIZON_BETA,
-        CONF_VALUE_SURPLUS_SOC,
         CONF_BACKUP_MODE,
     ]
 }
