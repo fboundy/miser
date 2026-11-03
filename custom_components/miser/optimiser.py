@@ -13,7 +13,6 @@ from homeassistant.helpers.event import async_track_point_in_utc_time
 import homeassistant.util.dt as dt_util
 
 from .const import (
-    CONF_ALTERNATION_COST_THRESHOLD,
     DOMAIN,
     IMPORT_EXPORT,
     DATETIME_FORMAT_LONG,
@@ -34,12 +33,9 @@ from .const import (
     CONF_SOLCAST_CONFIDENCE,
     CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
-    CONF_WHOLE_HORIZON_WRITE_COST,
     CONF_READ_ONLY,
-    CONF_CYCLING_THRESHOLD,
     CONF_BACKUP_MODE,
     CONF_BACKUP_SOC,
-    CONF_WRITE_MINIMISATION_COST_THRESHOLD,
     COST_ENTITY_OBJECTS,
     CONTROL_FORCE_CURRENT,
     CONTROL_FORCE_POWER,
@@ -49,7 +45,10 @@ from .const import (
     CONTROL_NEXT_SLOT_TARGET_SOC,
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
-    CONTROL_PASS_THREHOLD,
+    ALTERNATION_COST_THRESHOLD,
+    CYCLING_THRESHOLD,
+    WHOLE_HORIZON_WRITE_COST,
+    WRITE_MINIMISATION_COST,
     MODEL_CONSUMPTION_TODAY,
     MODEL_BATTERY_MINIMUM_SOC,
     MODEL_BATTERY_SOC,
@@ -253,11 +252,7 @@ async def _optimise(hass: HomeAssistant) -> None:
     model.whole_horizon_flows = None
     whole_horizon_beta = await get_value(hass, CONF_WHOLE_HORIZON_BETA)
     if whole_horizon_beta:
-        model.whole_horizon_write_cost = await get_value(
-            hass,
-            CONF_WHOLE_HORIZON_WRITE_COST,
-            default_value=DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
-        )
+        model.whole_horizon_write_cost = WHOLE_HORIZON_WRITE_COST
         model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
         model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
             hass,
@@ -294,7 +289,9 @@ async def _optimise(hass: HomeAssistant) -> None:
     await _apply_inverter_control(hass, model)
 
 
-async def _select_optimised_key(hass: HomeAssistant, model, finite_cost_keys: list[str]) -> str:
+async def _select_optimised_key(
+    hass: HomeAssistant, model, finite_cost_keys: list[str], threshold: float = ALTERNATION_COST_THRESHOLD
+) -> str:
     """Choose the plan to apply, bounding how much a rapid-alternation swap may cost.
 
     The cheapest plan wins unless it alternates rapidly. If it does, the
@@ -332,15 +329,6 @@ async def _select_optimised_key(hass: HomeAssistant, model, finite_cost_keys: li
     winner_cost = float(getattr(model, winner))
     safe_cost = float(getattr(model, best_safe))
     delta = safe_cost - winner_cost
-
-    threshold = await get_value(
-        hass,
-        CONF_ALTERNATION_COST_THRESHOLD,
-        default_value=DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
-    )
-    if threshold is None or not _is_finite(threshold):
-        threshold = DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD]
-    threshold = float(threshold)
 
     if delta <= threshold:
         _LOGGER.warning(
@@ -1187,7 +1175,7 @@ def _slot_value(slot: dict | None, key: str, local_time: bool = False):
 CYCLE_PRUNE_MAX_PASSES = 20
 
 
-async def _drop_small_cycles(hass: HomeAssistant, model) -> None:
+async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCLING_THRESHOLD) -> None:
     """Drop forced-export windows worth less than the Cycling Threshold.
 
     Each forced export is one battery cycle: energy pushed to the grid that is
@@ -1199,10 +1187,8 @@ async def _drop_small_cycles(hass: HomeAssistant, model) -> None:
     """
     if model.optimised_flows is None or not model.optimised_slots:
         return
-    threshold = await get_value(hass, CONF_CYCLING_THRESHOLD, default_value=DEFAULTS[CONF_CYCLING_THRESHOLD])
-    if not _is_finite(threshold) or float(threshold) <= 0:
+    if threshold <= 0:
         return
-    threshold = float(threshold)
 
     slots = list(model.optimised_slots)
     cost = model.optimised_cost
@@ -1262,13 +1248,7 @@ async def _finalise_optimised_output(hass: HomeAssistant, model) -> None:
         return
 
     original_control_slots = _control_slots(model.optimised_flows)
-    threshold = await get_value(
-        hass,
-        CONF_WRITE_MINIMISATION_COST_THRESHOLD,
-        default_value=DEFAULTS[CONF_WRITE_MINIMISATION_COST_THRESHOLD],
-    )
-    if threshold is None or not _is_finite(threshold):
-        threshold = CONTROL_PASS_THREHOLD
+    threshold = WRITE_MINIMISATION_COST
 
     best_candidate = None
     for label, final_slots in _minimise_inverter_write_slot_candidates(model.optimised_flows):
