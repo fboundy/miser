@@ -69,8 +69,11 @@ async def test_economy7_uses_night_rate_in_night_window() -> None:
     tariff._fetched_at = pd.Timestamp.now(tz="UTC")
 
     df = await tariff.to_df(start=pd.Timestamp("2026-10-19 00:00", tz="UTC"), end=pd.Timestamp("2026-10-19 12:00", tz="UTC"))
-    assert df.loc[pd.Timestamp("2026-10-19 02:00", tz="UTC"), "unit"] == 12.0  # 01:00-08:00 UTC
-    assert df.loc[pd.Timestamp("2026-10-19 09:00", tz="UTC"), "unit"] == 30.0
+    # Octopus' standard night, 00:30-07:30 UTC (#13).
+    assert df.loc[pd.Timestamp("2026-10-19 00:00", tz="UTC"), "unit"] == 30.0
+    assert df.loc[pd.Timestamp("2026-10-19 00:30", tz="UTC"), "unit"] == 12.0
+    assert df.loc[pd.Timestamp("2026-10-19 07:00", tz="UTC"), "unit"] == 12.0
+    assert df.loc[pd.Timestamp("2026-10-19 07:30", tz="UTC"), "unit"] == 30.0
 
 
 @pytest.mark.asyncio
