@@ -10,9 +10,7 @@ from homeassistant.loader import async_get_custom_components, async_get_integrat
 
 from .const import (
     CONF_BATTERY_CAPACITY,
-    CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
-    CONF_INVERTER_EFFICIENCY,
     CONF_INVERTER_POWER,
     DEFAULTS,
     DOMAIN,
@@ -360,8 +358,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._options["battery_capacity"] = user_input.get(CONF_BATTERY_CAPACITY)
             self._options["inverter_power"] = user_input.get(CONF_INVERTER_POWER)
             self._options["charger_power"] = user_input.get(CONF_CHARGER_POWER)
-            self._options["inverter_efficiency"] = user_input.get(CONF_INVERTER_EFFICIENCY)
-            self._options["charger_efficiency"] = user_input.get(CONF_CHARGER_EFFICIENCY)
             if all(
                 [
                     self._options[x]
@@ -369,8 +365,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         "battery_capacity",
                         "inverter_power",
                         "charger_power",
-                        "inverter_efficiency",
-                        "charger_efficiency",
                     ]
                 ]
             ):
@@ -384,12 +378,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_BATTERY_CAPACITY, default=DEFAULTS[CONF_BATTERY_CAPACITY]): int,
                 vol.Optional(CONF_INVERTER_POWER, default=DEFAULTS[CONF_INVERTER_POWER]): int,
                 vol.Optional(CONF_CHARGER_POWER, default=DEFAULTS[CONF_CHARGER_POWER]): int,
-                vol.Optional(CONF_INVERTER_EFFICIENCY, default=DEFAULTS[CONF_INVERTER_EFFICIENCY]): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=100)
-                ),
-                vol.Optional(CONF_CHARGER_EFFICIENCY, default=DEFAULTS[CONF_CHARGER_EFFICIENCY]): vol.All(
-                    vol.Coerce(float), vol.Range(min=0, max=100)
-                ),
             }
         )
         return self.async_show_form(step_id="system_parameters", data_schema=schema, errors=errors)

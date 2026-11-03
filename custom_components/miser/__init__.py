@@ -19,6 +19,7 @@ from .const import (
     CONF_BATTERY_CAPACITY,
     MODEL_BATTERY_MINIMUM_SOC,
     DEFAULT_BATTERY_VOLTAGE,
+    DEFAULTS,
     CONF_CHARGER_EFFICIENCY,
     CONF_CHARGER_POWER,
     CONF_INVERTER_EFFICIENCY,
@@ -341,15 +342,8 @@ async def _get_entities(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def _load_pv_system_model(hass: HomeAssistant) -> bool:
     # Read the inverter model parameters from the relevant config entities
     _LOGGER.debug("Loading PV system model")
-    kw_inverter = {
-        kw: await get_value(hass, kw)
-        for kw in [
-            CONF_INVERTER_EFFICIENCY,
-            CONF_CHARGER_EFFICIENCY,
-            CONF_INVERTER_POWER,
-            CONF_CHARGER_POWER,
-        ]
-    }
+    kw_inverter = {kw: await get_value(hass, kw) for kw in [CONF_INVERTER_POWER, CONF_CHARGER_POWER]}
+    kw_inverter |= {kw: DEFAULTS[kw] for kw in [CONF_INVERTER_EFFICIENCY, CONF_CHARGER_EFFICIENCY]}
 
     # Load the inverter model
     hass.data[DOMAIN]["inverter_model"] = InverterModel(**kw_inverter)
@@ -378,7 +372,7 @@ async def _schedule_optimiser(hass):
         _LOGGER.debug("Skipping optimiser schedule while Miser is unloading")
         return
 
-    optimiser_minutes = await get_value(hass=hass, key=CONF_OPTIMISER_FREQUENCY, default_value=10)
+    optimiser_minutes = DEFAULTS[CONF_OPTIMISER_FREQUENCY]
     _LOGGER.debug(f"Optimiser frequency: {optimiser_minutes} minutes")
     optimiser_interval = timedelta(minutes=optimiser_minutes)
 
@@ -608,11 +602,7 @@ async def _state_change_callback(hass, entity_id, old_state, new_state):
     )
 
     key = get_key_for_entity(hass=hass, entity_id=entity_id)
-    if key == CONF_OPTIMISER_FREQUENCY:
-        await optimise(hass=hass)
-        _LOGGER.debug("Reset optimiser frequency")
-        await _schedule_optimiser(hass)
-    elif key in PV_SYSTEM_ENTITIES:
+    if key in PV_SYSTEM_ENTITIES:
         _LOGGER.debug("Reinitialise PV sytem")
         await _load_pv_system_model(hass)
         await optimise(hass=hass)

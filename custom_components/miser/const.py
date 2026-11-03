@@ -63,7 +63,8 @@ TARIFF_SOURCE_ACCOUNT = "Specify Octopus Account ID and API Key"
 TARIFF_SOURCE_CODES = "Specify Octopus import and export tariff codes directly"
 TARIFF_SOURCE_ENTITIES = "Use Home Assistant entities for import and export prices"
 
-# Default values
+# Default values. Optimiser frequency, history days, weekday weighting, load margin, the efficiencies and the
+# minimum daily consumption are fixed at these values, not settings (#21).
 DEFAULT_CHARGER_POWER = 3000  # W
 DEFAULTS = {
     CONF_BATTERY_CAPACITY: 10000,  # Wh
@@ -94,8 +95,6 @@ PV_SYSTEM_ENTITIES = [
     CONF_BATTERY_CAPACITY,
     CONF_INVERTER_POWER,
     CONF_CHARGER_POWER,
-    CONF_INVERTER_EFFICIENCY,
-    CONF_CHARGER_EFFICIENCY,
     CONF_BATTERY_MINIMUM_SOC,
 ]
 
@@ -185,37 +184,11 @@ SWITCH_ENTITIES = {
 
 # Number entities
 NUMBER_ENTITIES = {
-    CONF_OPTIMISER_FREQUENCY: {
-        "min": 5,
-        "max": 30,
-        "step": 5,
-        "default": DEFAULTS[CONF_OPTIMISER_FREQUENCY],
-    },
     CONF_SOLCAST_CONFIDENCE: {
         "min": 10,
         "max": 90,
         "step": 10,
         "default": DEFAULTS[CONF_SOLCAST_CONFIDENCE],
-    },
-    CONF_HISTORY_DAYS: {
-        "min": 1,
-        "max": 14,
-        "step": 1,
-        "default": DEFAULTS[CONF_HISTORY_DAYS],
-    },
-    CONF_LOAD_MARGIN: {
-        "min": 0,
-        "max": 25,
-        "step": 5,
-        "default": DEFAULTS[CONF_LOAD_MARGIN],
-        "unit": PERCENTAGE,
-    },
-    CONF_WEEKDAY_WEIGHTING: {
-        "min": 0,
-        "max": 100,
-        "step": 10,
-        "default": DEFAULTS[CONF_WEEKDAY_WEIGHTING],
-        "unit": PERCENTAGE,
     },
     # Configurable battery/inverter parameters
     CONF_BATTERY_CAPACITY: {
@@ -242,32 +215,11 @@ NUMBER_ENTITIES = {
         "unit": UnitOfPower.WATT,
         "device_class": SensorDeviceClass.POWER,
     },
-    CONF_INVERTER_EFFICIENCY: {
-        "min": 50,
-        "max": 100,
-        "step": 1,
-        "default": DEFAULTS[CONF_INVERTER_EFFICIENCY],
-        "unit": PERCENTAGE,
-    },
-    CONF_CHARGER_EFFICIENCY: {
-        "min": 50,
-        "max": 100,
-        "step": 1,
-        "default": DEFAULTS[CONF_CHARGER_EFFICIENCY],
-        "unit": PERCENTAGE,
-    },
     CONF_DAILY_CONSUMPTION_KWH: {
         "min": 1,
         "max": 30,
         "step": 1,
         "default": DEFAULTS[CONF_DAILY_CONSUMPTION_KWH],
-        "unit": UnitOfEnergy.KILO_WATT_HOUR,
-    },
-    CONF_MINIMUM_DAILY_CONSUMPTION_KWH: {
-        "min": 1,
-        "max": 30,
-        "step": 1,
-        "default": DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
     },
     CONF_BACKUP_SOC: {
