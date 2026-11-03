@@ -25,7 +25,7 @@ back to check that it took.
 | 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Fixed, PR from `fix/13-economy7-hours` | [#13](https://github.com/fboundy/miser/issues/13) |
 | 5 | Setup's consumption questions do nothing | Fixed, PR from `fix/23-consumption-steps` | [#23](https://github.com/fboundy/miser/issues/23) |
 | 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Fixed, PR from `fix/14-size-caps` | [#14](https://github.com/fboundy/miser/issues/14) |
-| 7 | `InverterController` doesn't describe what Miser needs | Open | [#15](https://github.com/fboundy/miser/issues/15) |
+| 7 | `InverterController` doesn't describe what Miser needs | Fixed, PR from `fix/15-controller-contract` | [#15](https://github.com/fboundy/miser/issues/15) |
 | 8 | Entity discovery and controller lookup are Solis-only | Open | [#16](https://github.com/fboundy/miser/issues/16) |
 | 9 | Solis quirks live in the shared optimiser | Open | [#17](https://github.com/fboundy/miser/issues/17) |
 | 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
@@ -42,16 +42,6 @@ back to check that it took.
 None.
 
 ### Nice to have
-
-7. **`InverterController` doesn't describe what Miser needs** (`inverters/controller.py`) — [#15](https://github.com/fboundy/miser/issues/15)
-   - **What happens:** The optimiser looks up `control_idle`, `power_to_current`, `ensure_backup_soc`,
-     `supports_backup_mode` and `confirm_control` by name and silently skips any that are missing, and it sets
-     `backup_mode`/`backup_soc` attributes on the controller (`optimiser.py:534, 557, 845, 1176`). A new brand
-     without `control_idle` would never go idle. Meanwhile `set_mode`/`get_mode` are abstract but shared code never
-     calls them.
-   - **Fix:** make `control_idle` abstract; give the others default implementations on the base class (no-op, no
-     backup support, power passed in watts); replace the attribute pokes with a `set_backup(on, soc)` method; drop
-     `set_mode`/`get_mode` from the base class.
 
 8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`) — [#16](https://github.com/fboundy/miser/issues/16)
    - **What happens:** `brand`, `integration`, `entity_defs` and the model/control/config entity maps are defined on
@@ -98,6 +88,17 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+7. **`InverterController` doesn't describe what Miser needs** (`inverters/controller.py`) — [#15](https://github.com/fboundy/miser/issues/15)
+   - **What happens:** The optimiser looks up `control_idle`, `power_to_current`, `ensure_backup_soc`,
+     `supports_backup_mode` and `confirm_control` by name and silently skips any that are missing, and it sets
+     `backup_mode`/`backup_soc` attributes on the controller (`optimiser.py:534, 557, 845, 1176`). A new brand
+     without `control_idle` would never go idle. Meanwhile `set_mode`/`get_mode` are abstract but shared code never
+     calls them.
+   - **Fix:** make `control_idle` abstract; give the others default implementations on the base class (no-op, no
+     backup support, power passed in watts); replace the attribute pokes with a `set_backup(on, soc)` method; drop
+     `set_mode`/`get_mode` from the base class.
+   - **Fixed** (`fix/15-controller-contract`): `control_idle` is abstract; `confirm_control`, `power_to_current`, `ensure_backup_soc` and `supports_backup_mode` have working defaults on the base class; `set_backup(on, soc)` replaces the attribute writes; `set_mode`/`get_mode` are no longer part of the contract. The optimiser calls the contract directly instead of `getattr`. Tested in `tests/test_inverter_controller_contract.py`; the optimiser's test doubles now subclass the base.
 
 4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
    - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"

@@ -8,6 +8,8 @@ and a target SOC about one percent above present charge.
 """
 
 import pandas as pd
+
+from custom_components.miser.inverters.controller import InverterController
 import pytest
 
 from custom_components.miser.const import CONTROL_STATE, COST_ENTITY_OBJECTS, DOMAIN
@@ -335,7 +337,7 @@ def test_midwindow_discharge_keeps_segment_power_and_window_target() -> None:
 # --- Application boundary: what actually reaches the inverter controller ---
 
 
-class _RecordingController:
+class _RecordingController(InverterController):
     """Minimal inverter controller that records what it was asked to do."""
 
     def __init__(self) -> None:
@@ -357,6 +359,9 @@ class _RecordingController:
 
     async def control_matches(self, state, target_soc, power) -> bool:
         return False
+
+    async def is_online(self) -> bool:
+        return True
 
 
 class _State:
