@@ -17,67 +17,70 @@ back to check that it took.
 
 ## Status
 
-| # | Item | Status |
-|---|------|--------|
-| 1 | Negative prices are costed as zero | Open |
-| 2 | Setup's system parameters never reach the model | Open |
-| 3 | A low export price in pence can be read as pounds | Open |
-| 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open |
-| 5 | Setup's consumption questions do nothing | Open |
-| 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Open |
-| 7 | `InverterController` doesn't describe what Miser needs | Open |
-| 8 | Entity discovery and controller lookup are Solis-only | Open |
-| 9 | Solis quirks live in the shared optimiser | Open |
-| 10 | Four overlapping pence thresholds for inverter churn | Open |
-| 11 | Switches that should be automatic | Open |
-| 12 | Whole Horizon or the heuristic passes: pick one | Open |
-| 13 | Tuning numbers that should be hidden or merged | Open |
-| 14 | "Tariff codes" price source duplicates "Octopus account" | Open |
-| 15 | Intelligent Octopus Go slots and export limits not modelled | Open |
+| # | Item | Status | Issue |
+|---|------|--------|-------|
+| 1 | Negative prices are mis-costed: import and export costs cross over | Open | [#10](https://github.com/fboundy/miser/issues/10) |
+| 2 | Setup's system parameters never reach the model | Open | [#11](https://github.com/fboundy/miser/issues/11) |
+| 3 | A low export price in pence can be read as pounds | Open | [#12](https://github.com/fboundy/miser/issues/12) |
+| 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
+| 5 | Setup's consumption questions do nothing | Open | [#23](https://github.com/fboundy/miser/issues/23) |
+| 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Open | [#14](https://github.com/fboundy/miser/issues/14) |
+| 7 | `InverterController` doesn't describe what Miser needs | Open | [#15](https://github.com/fboundy/miser/issues/15) |
+| 8 | Entity discovery and controller lookup are Solis-only | Open | [#16](https://github.com/fboundy/miser/issues/16) |
+| 9 | Solis quirks live in the shared optimiser | Open | [#17](https://github.com/fboundy/miser/issues/17) |
+| 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
+| 11 | Switches that should be automatic | Open | [#19](https://github.com/fboundy/miser/issues/19) |
+| 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
+| 13 | Tuning numbers that should be hidden or merged | Open | [#21](https://github.com/fboundy/miser/issues/21) |
+| 14 | "Tariff codes" price source duplicates "Octopus account" | Not substantiated: the only Octopus source that needs no API key | — |
+| 15 | Intelligent Octopus Go slots and export limits not modelled | Open | [#22](https://github.com/fboundy/miser/issues/22) |
 
 ## Open
 
 ### Should fix
 
-1. **Negative prices are costed as zero** (`pv_model.py:252-253`, `flows`)
-   - **What happens:** `import_cost` is clipped at zero and `export_cost` at zero. On Agile, being paid to import
-     is costed as free, so the plan doesn't fill the battery or run the house from the grid in those slots. A
-     negative export price is costed as free, so the plan doesn't avoid exporting then.
-   - **Also:** Whole Horizon costs slots without the clip (`pv_model.py:910`), so the two planners disagree, and the
-     final cost Miser compares plans by comes from `flows`.
-   - **Fix:** drop both clips; `grid × price` already has the right sign. Add a test with a negative import slot.
+1. **Negative prices are mis-costed: import and export costs cross over** (`pv_model.py:252-253`, `flows`) — [#10](https://github.com/fboundy/miser/issues/10)
+   - **What happens:** `import_cost` and `export_cost` are split by the sign of `grid × price`, not of `grid`. With a
+     negative price each picks up the other direction's energy.
+   - **Reproduced 2026-11-03:** a 6 kWh grid charge at −5p import (−2p export) costs −12p in the model (the export
+     price on an import); correct is −30p. A 5.8 kWh export at −2p export (−5p import) costs +29.1p (the import
+     price on an export); correct is +11.6p.
+   - **Also:** Whole Horizon costs slots correctly (`pv_model.py:910`), so the two planners disagree on negative slots.
+   - **Fix:** `import_cost = grid.clip(lower=0) × dt × import`, `export_cost = grid.clip(upper=0) × dt × export`.
+     Add a negative-price test.
 
-2. **Setup's system parameters never reach the model** (`config_flow.py:341`, `number.py:88`)
+2. **Setup's system parameters never reach the model** (`config_flow.py:341`, `number.py:88`) — [#11](https://github.com/fboundy/miser/issues/11)
    - **What happens:** Setup asks for battery capacity, inverter power, charger power and both efficiencies and
      saves them in the entry's options, but nothing reads them. The number entities start from `DEFAULTS`, so a new
      user who enters 20 kWh is planned as 10 kWh until they change `number.miser_battery_capacity` by hand.
    - **Fix:** seed each number entity's first value from the options (restored state still wins), or drop the step.
      Where the inverter reports a figure (Solis model → charger power), use that.
 
-3. **A low export price in pence can be read as pounds** (`entity_tariff.py:109`, `_scale`)
+3. **A low export price in pence can be read as pounds** (`entity_tariff.py:109`, `_scale`) — [#12](https://github.com/fboundy/miser/issues/12)
    - **What happens:** With the price unit on "auto", an entity with no unit whose prices are all below 2 is
      multiplied by 100. A flat 1.5p SEG export becomes 150p and Miser plans to export everything.
+   - **Reproduced 2026-11-03:** a unitless export entity at `1.5` comes out as 150p/kWh.
    - **Fix:** decide from the unit only; with no unit, assume the unit the user chose in setup and log it once.
      Keep a sanity warning for implausible values rather than rescaling.
 
-4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`)
+4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
    - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"
      and "tariff codes" price sources; the Octopus Energy integration's entities carry the real times.
    - **Fix:** take the night hours from the meter's registers if the account API gives them; otherwise make the
      window a setup input shown only for E7 tariffs, or point E7 users at the entities source.
 
-5. **Setup's consumption questions do nothing** (`config_flow.py:386-442`)
+5. **Setup's consumption questions do nothing** (`config_flow.py:386-442`) — [#23](https://github.com/fboundy/miser/issues/23)
    - **What happens:** "Consumption source", "daily amount" and "scaling option" are saved and never read. The
      `use_consumption_history` switch and `daily_consumption_kwh` number decide instead.
    - **Fix:** delete the two steps (see 11 and 13 for the settings that replace them).
 
-6. **Battery capacity capped at 20 kWh, inverter power at 10 kW** (`const.py`, `NUMBER_ENTITIES`)
+6. **Battery capacity capped at 20 kWh, inverter power at 10 kW** (`const.py`, `NUMBER_ENTITIES`) — [#14](https://github.com/fboundy/miser/issues/14)
    - **What happens:** Larger and three-phase systems can't be entered. Charger power is capped at 5 kW.
    - **Fix:** raise the maxima (e.g. 100 kWh, 30 kW, 30 kW).
 
 ### Nice to have
 
-7. **`InverterController` doesn't describe what Miser needs** (`inverters/controller.py`)
+7. **`InverterController` doesn't describe what Miser needs** (`inverters/controller.py`) — [#15](https://github.com/fboundy/miser/issues/15)
    - **What happens:** The optimiser looks up `control_idle`, `power_to_current`, `ensure_backup_soc`,
      `supports_backup_mode` and `confirm_control` by name and silently skips any that are missing, and it sets
      `backup_mode`/`backup_soc` attributes on the controller (`optimiser.py:534, 557, 845, 1176`). A new brand
@@ -87,44 +90,47 @@ back to check that it took.
      backup support, power passed in watts); replace the attribute pokes with a `set_backup(on, soc)` method; drop
      `set_mode`/`get_mode` from the base class.
 
-8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`)
+8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`) — [#16](https://github.com/fboundy/miser/issues/16)
    - **What happens:** `brand`, `integration`, `entity_defs` and the model/control/config entity maps are defined on
      `SolisInverter`, but setup and the config flow rely on them. `get_inverter_controller_class` special-cases
      Solis. A second brand would have to copy Solis' structure without the base class saying so.
    - **Fix:** move those attributes to `InverterController`; look up every brand through the same registry.
 
-9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`)
+9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`) — [#17](https://github.com/fboundy/miser/issues/17)
    - **What happens:** The midnight split and 00:01/23:59 edges (`_inverter_window`), programming only one slot at a
      time, and the `CONTROL_TIMED_*` / "update times" keys are Solis behaviour in shared code. Battery power is
      turned into a current through battery voltage, which other inverters don't need.
    - **Fix:** controller properties the optimiser reads, e.g. `max_window_days`, `allows_midnight_edges`,
      `max_slots`; move the Solis entity keys into `solis.py`.
 
-10. **Four overlapping pence thresholds for inverter churn**
+10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
     - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
       "how many pence a change must be worth". Replace with one "minimum worthwhile change" number or fixed values.
 
-11. **Switches that should be automatic**
+11. **Switches that should be automatic** — [#19](https://github.com/fboundy/miser/issues/19)
     - **Use Solar:** no Solcast already means zero solar. Remove.
     - **Use consumption history / Shape consumption:** use history when there is some, else the built-in shape. Remove.
-    - **Optimise Discharging:** with a low or missing export price the plan won't export anyway. Remove.
+    - **Optimise Discharging:** with a low or missing export price the plan won't export anyway. Remove. It also
+      doesn't stop exports: it only drops the discharge and fill-first plans (`optimiser.py:264-267`), and Whole
+      Horizon still plans exports.
     - **Value Surplus SOC:** always on. Remove.
     - Keep Read Only (default on, so the first run writes nothing; say so in setup) and Backup Mode.
 
-12. **Whole Horizon or the heuristic passes: pick one**
+12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
     - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
       Horizon, delete the swap, low-cost charging, discharge and fill-first passes (about 600 lines) and the switch.
 
-13. **Tuning numbers that should be hidden or merged**
+13. **Tuning numbers that should be hidden or merged** — [#21](https://github.com/fboundy/miser/issues/21)
     - Hide with fixed defaults: inverter and charger efficiency, history days, weekday weighting, load margin,
       optimiser frequency.
     - Merge daily consumption and minimum daily consumption into one fallback figure.
     - The live install has history days at 5, which silently disables weekday weighting (it needs 7).
 
-14. **"Tariff codes" price source duplicates "Octopus account"**
-    - The account source finds the codes itself. Keep codes only if there's a user without an API key.
+14. **"Tariff codes" price source duplicates "Octopus account"** — not substantiated
+    - Checked 2026-11-03: the codes source reads Octopus' public rate endpoints with no API key, so it is the only
+      Octopus source for a user without one. Keep it; no issue raised.
 
-15. **Intelligent Octopus Go slots and export limits not modelled**
+15. **Intelligent Octopus Go slots and export limits not modelled** — [#22](https://github.com/fboundy/miser/issues/22)
     - IOG's extra cheap dispatch slots aren't seen unless the price entities include them. A G99 export cap is
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
@@ -135,7 +141,8 @@ None yet under the new numbering.
 ## Not checked
 
 - All 184 tests pass on Linux.
-- Items 1, 3 and 4 come from reading the code; none was run against a negative-price, unitless-entity or E7 case.
+- Items 1 and 3 were reproduced in the model. Item 4 is from the code: the hours are hard-coded, but which users'
+  meters differ wasn't checked. Items 2 and 5–13 are from the code paths named in each item.
 - No second inverter brand was tried.
 - Not on the inverter yet: a window split at midnight (Old 20) and a whole night with idle slots averaged (Old 21).
 - Five removed entities still show as unavailable in the live registry (`power_resolution`, `sleep_soc`,
