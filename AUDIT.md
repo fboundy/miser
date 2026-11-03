@@ -1,6 +1,6 @@
 # Miser code audit
 
-Last updated: 2026-11-01. When you fix an item, move it to **Fixed** with the commit.
+Last updated: 2026-11-03. When you fix an item, move it to **Fixed** with the commit.
 Numbers stay the same across updates, so "fix 9" always means the same item.
 
 **What this repo does:** Miser is a Home Assistant integration for one home. Every 10 minutes it plans when the
@@ -34,14 +34,34 @@ one process at once. These are the timer, a settings change and Axle events.
 | 17 | Write check trusts SolisConnect's echo, not the inverter | Fixed (see below) |
 | 18 | Inverter keeps an old charge window | Fixed `1e3e5f1` |
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
+| 20 | Windows that cross midnight or touch 00:00 are written as-is | Fixed (see below) |
+| 21 | Whole Horizon leaves idle gaps in a flat-price charge period | Open |
 
 ## Open
 
 ### Should fix
 
-None.
+21. **Whole Horizon leaves idle gaps in a flat-price charge period** (`pv_model.py`, `_average_same_price_runs`)
+    - **What happened:** On the night of 2026-11-03 (7.43p from 00:00 to 07:00) Miser charged 00:06–01:06, sat idle
+      01:06–02:00, charged 02:00–06:06, idled 10 min and charged 06:16–06:26. At 23:30 the plan was 01:30–07:00.
+    - **Cause:** Whole Horizon only charges at full power or not at all. When the battery needs less than the whole
+      period at full power, every choice of slots costs the same, so it picks some and leaves others idle, and each
+      10-minute re-plan can pick differently. `_average_same_price_runs` only joins charge slots that are next to each
+      other, so it never fills an idle slot inside the period. Reproduced offline: from 15% at 00:00 it idles to 01:30.
+    - **Cost:** small. The house runs from the battery in the gaps and is refilled at the same price, losing the
+      charge and discharge efficiency on that energy. A later start also leaves less time if something goes wrong.
+    - **Fix:** spread each charge over the whole same-price period it falls in, idle slots included, keeping the
+      existing check that the averaged plan costs no more.
 
 ## Fixed
+
+20. **Windows that crossed midnight or touched 00:00 were written as-is** (`optimiser.py`, `_inverter_window`)
+    - **What happened:** The Solis doesn't take a charge window that crosses midnight, and 00:00 as a start or end is
+      unreliable.
+    - **Fix:** Miser writes only the part of a window on the local day it is running in (or next starts in), as
+      00:01–23:59 at the edges. A compliance check scheduled one minute after midnight writes the rest. A 00:00 start
+      due within the run interval is now written ahead as 00:01. Tested in `tests/test_inverter_window_midnight.py`.
+    - **Still unchecked on the inverter:** the first split window and the first 00:01 start (tonight's 00:00–07:00).
 
 18. **The inverter kept an old charge window** (2026-11-01 06:00 and all night 2026-11-02)
     - **What happened:** Miser planned a charge from 00:00 to 07:00 on 2026-11-02, but the inverter held 06:13–06:30
@@ -128,7 +148,7 @@ None.
 
 ## Not checked
 
-- All 179 tests pass on Linux, including `tests/test_config_flow.py`.
+- All 182 tests pass on Linux, including `tests/test_config_flow.py`.
 - I didn't measure the database size for item 7.
 - Not read closely: most of `config_flow.py`, `switch.py`, the docs and the workflows.
 - Clock-change days (BST/GMT) aren't tested.

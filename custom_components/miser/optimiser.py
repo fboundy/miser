@@ -609,8 +609,9 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     rather than left showing as `Charging` while the battery sits idle, which
     is what happened when the inverter silently kept its previous slot.
     """
-    window_start = _control_window_start(slot)
-    window_end = _control_window_end(slot)
+    window_start, window_end = _inverter_window(
+        _control_window_start(slot), _control_window_end(slot), pd.Timestamp.now(tz="UTC")
+    )
     window_target_soc = _control_window_target_soc(slot)
     power = _battery_side_power(model, slot["state"], slot["power"])
     description = (
@@ -733,6 +734,18 @@ def _parse_datetime_state(value) -> pd.Timestamp | None:
     return timestamp.tz_convert("UTC")
 
 
+def _inverter_window(start: pd.Timestamp, end: pd.Timestamp, now: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
+    """Clip a window to 00:01-23:59 of the local day it is running (or next starts) in.
+
+    The Solis rejects a window that crosses midnight or starts/ends at 00:00. The rest of a
+    window that crosses midnight is written by the compliance check scheduled just after it.
+    """
+    day_start = max(start, now).tz_convert(dt_util.DEFAULT_TIME_ZONE).normalize()
+    day_end = day_start + pd.DateOffset(days=1)
+    minute = pd.Timedelta(minutes=1)
+    return max(start, day_start + minute), min(end, day_end - minute)
+
+
 def _control_window_start(slot: dict):
     """Start of the control window a segment belongs to."""
     return slot.get("window_start", slot["start"])
@@ -851,8 +864,13 @@ def _schedule_control_compliance_checks(hass: HomeAssistant, control_slots: list
     callbacks = []
 
     for slot in control_slots:
-        for boundary in ["start", "end"]:
-            check_at = slot[boundary] + delay
+        # A slot that crosses local midnight gets a check just after it, to write the second half.
+        midnight = slot["start"].tz_convert(dt_util.DEFAULT_TIME_ZONE).normalize() + pd.DateOffset(days=1)
+        boundaries = {"start": slot["start"], "end": slot["end"]}
+        if midnight < slot["end"]:
+            boundaries["midnight"] = midnight
+        for boundary, at in boundaries.items():
+            check_at = at + delay
             if check_at <= now:
                 continue
 
@@ -1165,8 +1183,9 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
     if slot is None:
         return None
 
-    window_start = _control_window_start(slot)
-    window_end = _control_window_end(slot)
+    window_start, window_end = _inverter_window(
+        _control_window_start(slot), _control_window_end(slot), pd.Timestamp.now(tz="UTC")
+    )
     window_target_soc = _control_window_target_soc(slot)
 
     return {
