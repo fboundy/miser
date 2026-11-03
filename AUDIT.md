@@ -21,7 +21,7 @@ back to check that it took.
 |---|------|--------|-------|
 | 1 | Negative prices are mis-costed: import and export costs cross over | Fixed, PR from `fix/10-negative-prices` | [#10](https://github.com/fboundy/miser/issues/10) |
 | 2 | Setup's system parameters never reach the model | Open | [#11](https://github.com/fboundy/miser/issues/11) |
-| 3 | A low export price in pence can be read as pounds | Open | [#12](https://github.com/fboundy/miser/issues/12) |
+| 3 | A low export price in pence can be read as pounds | Fixed, PR from `fix/12-price-unit` | [#12](https://github.com/fboundy/miser/issues/12) |
 | 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
 | 5 | Setup's consumption questions do nothing | Open | [#23](https://github.com/fboundy/miser/issues/23) |
 | 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Open | [#14](https://github.com/fboundy/miser/issues/14) |
@@ -45,13 +45,6 @@ back to check that it took.
      user who enters 20 kWh is planned as 10 kWh until they change `number.miser_battery_capacity` by hand.
    - **Fix:** seed each number entity's first value from the options (restored state still wins), or drop the step.
      Where the inverter reports a figure (Solis model → charger power), use that.
-
-3. **A low export price in pence can be read as pounds** (`entity_tariff.py:109`, `_scale`) — [#12](https://github.com/fboundy/miser/issues/12)
-   - **What happens:** With the price unit on "auto", an entity with no unit whose prices are all below 2 is
-     multiplied by 100. A flat 1.5p SEG export becomes 150p and Miser plans to export everything.
-   - **Reproduced 2026-11-03:** a unitless export entity at `1.5` comes out as 150p/kWh.
-   - **Fix:** decide from the unit only; with no unit, assume the unit the user chose in setup and log it once.
-     Keep a sanity warning for implausible values rather than rescaling.
 
 4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
    - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"
@@ -125,6 +118,14 @@ back to check that it took.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+3. **A low export price in pence can be read as pounds** (`entity_tariff.py:109`, `_scale`) — [#12](https://github.com/fboundy/miser/issues/12)
+   - **What happens:** With the price unit on "auto", an entity with no unit whose prices are all below 2 is
+     multiplied by 100. A flat 1.5p SEG export becomes 150p and Miser plans to export everything.
+   - **Reproduced 2026-11-03:** a unitless export entity at `1.5` comes out as 150p/kWh.
+   - **Fix:** decide from the unit only; with no unit, assume the unit the user chose in setup and log it once.
+     Keep a sanity warning for implausible values rather than rescaling.
+   - **Fixed** (`fix/12-price-unit`): A price entity's own unit (or an Octopus Energy rate event, always pounds) decides the scale. Setup no longer accepts "Detect automatically" when an entity has no unit; it asks for pounds or pence. Older "auto" entries still guess for unitless entities but log a warning naming the entity. Tested in `tests/test_entity_tariff.py`.
 
 1. **Negative prices are mis-costed: import and export costs cross over** (`pv_model.py:252-253`, `flows`) — [#10](https://github.com/fboundy/miser/issues/10)
    - **What happens:** `import_cost` and `export_cost` are split by the sign of `grid × price`, not of `grid`. With a
