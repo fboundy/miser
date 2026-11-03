@@ -5,7 +5,7 @@ import asyncio
 import pandas as pd
 import pytest
 
-from custom_components.miser.const import CONF_CYCLING_THRESHOLD, DOMAIN
+from custom_components.miser.const import DOMAIN
 from custom_components.miser.optimiser import _calculate_cost_and_flows, _drop_small_cycles
 from custom_components.miser.pv_model import BatteryModel, InverterModel, PVsystemModel
 
@@ -24,13 +24,13 @@ class _ConfigEntries:
 
 
 class _Hass:
-    def __init__(self, threshold: str) -> None:
-        states = {"number.miser_cycling_threshold": _State(threshold)}
+    def __init__(self) -> None:
+        states = {}
         self.states = type("S", (), {"get": lambda _self, entity_id: states.get(entity_id)})()
         self.config_entries = _ConfigEntries()
         self.data = {
             DOMAIN: {
-                "config_entities": {CONF_CYCLING_THRESHOLD: "number.miser_cycling_threshold"},
+                "config_entities": {},
                 "model_entities": {},
                 "control_entities": {},
             }
@@ -84,7 +84,7 @@ async def test_small_dip_dropped_big_evening_export_kept() -> None:
     model = await _optimised(_model())
     before = model.optimised_cost
 
-    await _drop_small_cycles(_Hass("20"), model)
+    await _drop_small_cycles(_Hass(), model, threshold=20)
 
     assert _at("03:00") not in _exports(model.optimised_slots)
     assert {_at(t, 25) for t in ("20:00", "20:30", "21:00", "21:30")} <= _exports(model.optimised_slots)
@@ -97,7 +97,7 @@ async def test_zero_threshold_keeps_every_cycle() -> None:
     model = await _optimised(_model())
     slots = list(model.optimised_slots)
 
-    await _drop_small_cycles(_Hass("0"), model)
+    await _drop_small_cycles(_Hass(), model, threshold=0)
 
     assert model.optimised_slots == slots
 
@@ -106,7 +106,7 @@ async def test_zero_threshold_keeps_every_cycle() -> None:
 async def test_high_threshold_drops_all_exports() -> None:
     model = await _optimised(_model())
 
-    await _drop_small_cycles(_Hass("100"), model)
+    await _drop_small_cycles(_Hass(), model, threshold=100)
 
     assert _exports(model.optimised_slots) == set()
     # Charging is untouched.
@@ -120,7 +120,7 @@ async def test_premium_export_survives_any_sensible_threshold() -> None:
     model.prices.loc[_at("20:00", 25) : _at("21:30", 25), "export"] = 100.0
     model = await _optimised(model)
 
-    await _drop_small_cycles(_Hass("50"), model)
+    await _drop_small_cycles(_Hass(), model, threshold=50)
 
     assert {_at(t, 25) for t in ("20:00", "20:30", "21:00", "21:30")} <= _exports(model.optimised_slots)
 
@@ -130,7 +130,7 @@ async def test_dropped_dip_is_filled_by_the_charge_around_it() -> None:
     # 2026-11-03: a dropped 01:30 export left 01:06-02:00 idle inside the 7.43p charge period.
     model = await _optimised(_model())
 
-    await _drop_small_cycles(_Hass("20"), model)
+    await _drop_small_cycles(_Hass(), model, threshold=20)
 
     charges = {start: power for start, power in model.optimised_slots if power > 0}
     assert _at("03:00") in charges

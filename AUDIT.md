@@ -28,7 +28,7 @@ back to check that it took.
 | 7 | `InverterController` doesn't describe what Miser needs | Fixed, PR from `fix/15-controller-contract` | [#15](https://github.com/fboundy/miser/issues/15) |
 | 8 | Entity discovery and controller lookup are Solis-only | Fixed, PR from `fix/16-brand-registry` | [#16](https://github.com/fboundy/miser/issues/16) |
 | 9 | Solis quirks live in the shared optimiser | Fixed, PR from `fix/17-solis-quirks` | [#17](https://github.com/fboundy/miser/issues/17) |
-| 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
+| 10 | Four overlapping pence thresholds for inverter churn | Fixed, PR from `fix/18-fixed-thresholds` | [#18](https://github.com/fboundy/miser/issues/18) |
 | 11 | Switches that should be automatic | Fixed, PR from `fix/19-automatic-switches` | [#19](https://github.com/fboundy/miser/issues/19) |
 | 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
 | 13 | Tuning numbers that should be hidden or merged | Open | [#21](https://github.com/fboundy/miser/issues/21) |
@@ -42,10 +42,6 @@ back to check that it took.
 None.
 
 ### Nice to have
-
-10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
-    - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
-      "how many pence a change must be worth". Replace with one "minimum worthwhile change" number or fixed values.
 
 12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
     - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
@@ -66,6 +62,11 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
+    - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
+      "how many pence a change must be worth". Replace with one "minimum worthwhile change" number or fixed values.
+    - **Fixed** (`fix/18-fixed-thresholds`): The four number entities are gone; their values are constants in `const.py` set to the live install's tuning (write minimisation 4p, Whole Horizon write cost 5p, alternation 7p, cycling 16p). The functions take the threshold as a defaulted argument so tests can vary it. Merging them into one derived number was not done: it would mean inventing ratios between them.
 
 11. **Switches that should be automatic** — [#19](https://github.com/fboundy/miser/issues/19)
     - **Use Solar:** no Solcast already means zero solar. Remove.
