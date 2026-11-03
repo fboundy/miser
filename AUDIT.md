@@ -26,7 +26,7 @@ back to check that it took.
 | 5 | Setup's consumption questions do nothing | Fixed, PR from `fix/23-consumption-steps` | [#23](https://github.com/fboundy/miser/issues/23) |
 | 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Fixed, PR from `fix/14-size-caps` | [#14](https://github.com/fboundy/miser/issues/14) |
 | 7 | `InverterController` doesn't describe what Miser needs | Fixed, PR from `fix/15-controller-contract` | [#15](https://github.com/fboundy/miser/issues/15) |
-| 8 | Entity discovery and controller lookup are Solis-only | Open | [#16](https://github.com/fboundy/miser/issues/16) |
+| 8 | Entity discovery and controller lookup are Solis-only | Fixed, PR from `fix/16-brand-registry` | [#16](https://github.com/fboundy/miser/issues/16) |
 | 9 | Solis quirks live in the shared optimiser | Open | [#17](https://github.com/fboundy/miser/issues/17) |
 | 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
 | 11 | Switches that should be automatic | Open | [#19](https://github.com/fboundy/miser/issues/19) |
@@ -42,12 +42,6 @@ back to check that it took.
 None.
 
 ### Nice to have
-
-8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`) — [#16](https://github.com/fboundy/miser/issues/16)
-   - **What happens:** `brand`, `integration`, `entity_defs` and the model/control/config entity maps are defined on
-     `SolisInverter`, but setup and the config flow rely on them. `get_inverter_controller_class` special-cases
-     Solis. A second brand would have to copy Solis' structure without the base class saying so.
-   - **Fix:** move those attributes to `InverterController`; look up every brand through the same registry.
 
 9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`) — [#17](https://github.com/fboundy/miser/issues/17)
    - **What happens:** The midnight split and 00:01/23:59 edges (`_inverter_window`), programming only one slot at a
@@ -88,6 +82,13 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+8. **Entity discovery and controller lookup are Solis-only** (`inverters/solis.py`, `inverters/__init__.py:25`) — [#16](https://github.com/fboundy/miser/issues/16)
+   - **What happens:** `brand`, `integration`, `entity_defs` and the model/control/config entity maps are defined on
+     `SolisInverter`, but setup and the config flow rely on them. `get_inverter_controller_class` special-cases
+     Solis. A second brand would have to copy Solis' structure without the base class saying so.
+   - **Fix:** move those attributes to `InverterController`; look up every brand through the same registry.
+   - **Fixed** (`fix/16-brand-registry`): `brand`, `integration`, `entity_defs`, `hass` and `integration_data` are declared on `InverterController`. `inverters/__init__.py` builds one registry from a `CONTROLLERS` list; the Solis-only lookup functions are deleted. Tested in `tests/test_inverter_controller_contract.py`.
 
 7. **`InverterController` doesn't describe what Miser needs** (`inverters/controller.py`) — [#15](https://github.com/fboundy/miser/issues/15)
    - **What happens:** The optimiser looks up `control_idle`, `power_to_current`, `ensure_backup_soc`,
