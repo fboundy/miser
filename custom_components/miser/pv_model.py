@@ -6,6 +6,7 @@ from numpy import isnan
 
 from .const import (
     DEFAULT_BATTERY_VOLTAGE,
+    EARLY_DISCHARGE_COST,
     MODEL_MIN_SLOT_POWER,
 )
 
@@ -326,6 +327,9 @@ class PVsystemModel:
         if write_cost:
             _LOGGER.info("Whole-horizon inverter write cost: %.1fp per control change", write_cost)
 
+        # Hours from each slot's start to the end of the horizon, for the early-discharge tie-break.
+        hours_left = flows["dt_hours"][::-1].cumsum()[::-1]
+
         for start, row in flows.iterrows():
             next_costs: dict[tuple[float, str], float] = {}
             next_energies: dict[tuple[float, str], float] = {}
@@ -349,6 +353,9 @@ class PVsystemModel:
                         max(grid, 0) * dt_hours * float(row["import"])
                         + min(grid, 0) * dt_hours * float(row["export"])
                     ) / 1000
+                    if forced_power is not None and forced_power < 0:
+                        # Same value later is safer: the battery keeps its energy if the forecast is wrong.
+                        slot_cost += EARLY_DISCHARGE_COST * -forced_power * dt_hours / 1000 * hours_left[start]
                     control = self._whole_horizon_control(forced_power)
                     candidate_cost = cost + slot_cost + (write_cost if control != previous_control else 0.0)
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):

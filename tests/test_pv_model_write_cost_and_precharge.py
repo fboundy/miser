@@ -87,3 +87,18 @@ async def test_averaging_fills_idle_slots_in_a_same_price_period() -> None:
     averaged = await model._average_same_price_runs(flows, [(idx[0], 3000.0), (idx[2], 3000.0)])
 
     assert averaged == [(start, 1500.0) for start in idx]
+
+
+@pytest.mark.asyncio
+async def test_whole_horizon_exports_late_when_the_price_is_flat() -> None:
+    # 2026-11-04: at a flat 13p export Whole Horizon emptied the battery straight after the night charge;
+    # the same export later keeps the energy in hand if the forecast is wrong.
+    idx = pd.date_range("2026-11-05 07:00", periods=12, freq="30min", tz="UTC")
+    model = _model(idx, pd.Series(32.87, index=idx), pd.Series(13.0, index=idx), initial_soc=70, consumption=757.0)
+    model.whole_horizon_write_cost = 5
+    model.valuation_prices = None
+
+    plan = [(start, power) for start, power in await model.whole_horizon() if power < 0]
+
+    assert plan, "expected an export"
+    assert min(start for start, _ in plan) >= idx[6], plan  # 10:00; without the tie-break it was 07:00
