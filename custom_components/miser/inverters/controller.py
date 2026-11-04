@@ -65,6 +65,13 @@ class InverterController(ABC):
         """
         return []
 
+    async def programmed_power(self, state: str) -> float | None:
+        """Battery-side power (W) the inverter now holds for "charging" or "discharging"; None if unknown.
+
+        The optimiser keeps this power when a new one is within its change threshold, to avoid needless writes.
+        """
+        return None
+
     async def power_to_current(self, power: float) -> float | None:
         """Battery current (A) for a power (W), for inverters programmed in amps; None if not used."""
         return None

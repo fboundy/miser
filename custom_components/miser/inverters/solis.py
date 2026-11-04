@@ -157,6 +157,14 @@ class SolisInverter(InverterController):
             current = min(current, inverter_model.charger_power / SOLIS_NOMINAL_BATTERY_VOLTAGE)
         return current
 
+    async def programmed_power(self, state: str) -> float | None:
+        key = {"charging": CONTROL_TIMED_CHARGE_CURRENT, "discharging": CONTROL_TIMED_DISCHARGE_CURRENT}.get(state)
+        current = self._numeric_state(key) if key else None
+        voltage = self._numeric_state(CONTROL_BATTERY_VOLTAGE)
+        if current is None or voltage is None or voltage <= 0:
+            return None
+        return current * voltage
+
     async def set_mode(self, mode: str) -> None:
         await self.hass.services.async_call(
             "select",
