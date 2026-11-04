@@ -445,10 +445,16 @@ class PVsystemModel:
             if not any(power for _start, power in run):
                 continue
             hours = sum(flows.at[start, "dt_hours"] for start, _ in run)
-            energy = sum(p * flows.at[start, "dt_hours"] for start, p in run)
             if run[0][1] >= 0:
+                # Count only the charge the battery takes: a slot clipped at full (an export dropped from the
+                # path but not the charge that refilled it) would otherwise fill the battery before the run ends.
+                energy = sum(
+                    min(p, max(-path_flows.at[start, "battery"], 0.0)) * flows.at[start, "dt_hours"] for start, p in run
+                )
                 idle_drain = sum(drained[start] for start, p in run if p == 0) / self.inverter.charger_efficiency
                 energy = max(energy - idle_drain, 0)
+            else:
+                energy = sum(p * flows.at[start, "dt_hours"] for start, p in run)
             power = round(energy / hours, 0)
             averaged.extend((start, power) for start, _ in run)
 
