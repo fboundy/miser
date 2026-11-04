@@ -195,3 +195,15 @@ async def test_current_capped_at_the_datasheet_limit_at_low_voltage() -> None:
     assert await controller.power_to_current(3000) == pytest.approx(62.5)
     hass.states.states["sensor.v"] = _State("51.5")
     assert await controller.power_to_current(3000) == pytest.approx(3000 / 51.5)
+
+
+@pytest.mark.asyncio
+async def test_programmed_power_is_current_times_voltage() -> None:
+    hass = _Hass(charge_on="on", discharge_on="off")
+    hass.states.states["number.ccur"] = _State("50")
+    controller = SolisConnectInverter(hass)
+
+    held = await controller.programmed_power("charging")
+    assert held == pytest.approx(50 * 54)
+    # Re-sending the held power converts back to the same current, so no write is needed.
+    assert await controller.power_to_current(held) == pytest.approx(50)
