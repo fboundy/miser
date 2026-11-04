@@ -265,7 +265,7 @@ class PVsystemModel:
         else:
             return flows["import_cost"]
 
-    async def whole_horizon(self, soc_step_percent: int = 5, state_resolution_wh: int = 50) -> list:
+    async def whole_horizon(self, soc_step_percent: float = 2.5, state_resolution_wh: int = 50) -> list:
         # Pure CPU-bound work; the optimiser runs this via _run_compute so it is
         # already off the event loop (see optimiser._run_compute). Only self is
         # read - no hass, no shared mutation - so it is safe in a worker thread.
@@ -282,7 +282,7 @@ class PVsystemModel:
     def _whole_horizon_compute(
         self,
         flows: pd.DataFrame,
-        soc_step_percent: int,
+        soc_step_percent: float,
         state_resolution_wh: int,
         write_cost: float,
     ) -> list:
