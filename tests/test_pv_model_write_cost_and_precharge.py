@@ -53,10 +53,15 @@ async def test_averaging_keeps_runs_at_different_prices_apart() -> None:
     assert [p for _s, p in averaged] == [2000.0, 2000.0, 1200.0, 1200.0]
 
 
-def test_power_change_counts_as_a_write() -> None:
+def test_only_a_direction_or_price_change_counts_as_a_write() -> None:
     model = _model(pd.date_range("2026-11-03", periods=1, freq="30min", tz="UTC"), 5.0, 0.0, 15)
+    cheap = {"import": 7.43, "export": 13.0}
+    dear = {"import": 32.87, "export": 13.0}
 
-    assert model._whole_horizon_control(3000.0) != model._whole_horizon_control(2000.0)
+    # Averaging gives a same-price run one power, so a power change inside it is never written.
+    assert model._whole_horizon_control(3000.0, cheap) == model._whole_horizon_control(2000.0, cheap)
+    assert model._whole_horizon_control(3000.0, cheap) != model._whole_horizon_control(3000.0, dear)
+    assert model._whole_horizon_control(3000.0, cheap) != model._whole_horizon_control(-3000.0, cheap)
     assert model._whole_horizon_control(None) == model._whole_horizon_control(5.0) == "idle"
 
 
@@ -117,3 +122,26 @@ async def test_averaging_spreads_only_the_charge_the_battery_takes() -> None:
 
     assert len({p for _s, p in averaged}) == 1
     assert soc.iloc[-2] < 99.5 and soc.iloc[-1] > 99.5, list(soc)
+
+
+@pytest.mark.asyncio
+async def test_whole_horizon_idles_after_the_night_charge_and_exports_late() -> None:
+    # 2026-11-05: Whole Horizon ran the night charge straight into a 07:00-13:00 export: one write fewer
+    # than charge, idle, export, and the early-discharge cost was too small to pay for the extra write.
+    idx = pd.date_range("2026-11-06 00:00", periods=48, freq="30min", tz="UTC")
+    hour = idx.hour
+    imp = pd.Series(32.87, index=idx)
+    imp[hour < 7] = 7.43
+    imp[(hour >= 16) & (hour < 20)] = 46.96
+    load = pd.Series(500.0, index=idx)
+    load[hour < 7] = 300.0
+    load[hour >= 16] = 900.0
+    model = _model(idx, imp, pd.Series(13.0, index=idx), initial_soc=15, consumption=load)
+    model.whole_horizon_write_cost = 5
+    model.valuation_prices = None
+
+    flows = await model.flows(slots=await model.whole_horizon())
+    exports = flows.index[flows["grid"] < -50]
+
+    assert len(exports), "expected an export"
+    assert exports[0].hour >= 20, list(exports)
