@@ -356,7 +356,7 @@ class PVsystemModel:
                     if forced_power is not None and forced_power < 0:
                         # Same value later is safer: the battery keeps its energy if the forecast is wrong.
                         slot_cost += EARLY_DISCHARGE_COST * -forced_power * dt_hours / 1000 * hours_left[start]
-                    control = self._whole_horizon_control(forced_power)
+                    control = self._whole_horizon_control(forced_power, row)
                     candidate_cost = cost + slot_cost + (write_cost if control != previous_control else 0.0)
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
                         continue
@@ -407,11 +407,18 @@ class PVsystemModel:
     def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
         return round(energy / state_resolution_wh) * state_resolution_wh
 
-    def _whole_horizon_control(self, forced_power: float | None) -> object:
-        """What the inverter is told to do: "idle" or a forced power to the watt."""
+    def _whole_horizon_control(self, forced_power: float | None, row=None) -> object:
+        """What the inverter is told to do: "idle", or a charge or discharge at the slot's price.
+
+        _average_same_price_runs gives each same-price charge or export run one power, so a power
+        change inside a run is never written. Pricing it made a late export cost an extra write: after
+        a day's drain the battery is off the SOC steps and only full power keeps one power (2026-11-05).
+        """
         if forced_power is None or abs(forced_power) < MODEL_MIN_SLOT_POWER:
             return "idle"
-        return round(forced_power)
+        if forced_power > 0:
+            return ("charge", None if row is None else float(row["import"]))
+        return ("discharge", None if row is None else float(row["export"]))
 
     async def _average_same_price_runs(self, flows: pd.DataFrame, path: list) -> list:
         """Spread each charge over its whole same-price period, idle slots included, and each run of
