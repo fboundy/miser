@@ -111,7 +111,8 @@ WRITE_MINIMISATION_COST = 4  # a plan with fewer inverter writes may cost this m
 WHOLE_HORIZON_WRITE_COST = 5  # Whole Horizon charges this for each control change
 EARLY_DISCHARGE_COST = 0.01  # p per kWh discharged per hour before the horizon ends: ties go to the later discharge
 ALTERNATION_COST_THRESHOLD = 7  # a plan without rapid charge/discharge reversal may cost this much more
-CYCLING_THRESHOLD = 16  # a forced export must be worth this much to stay in the plan
+CYCLING_THRESHOLD = 8  # a forced export must be worth this much to stay in the plan
+CYCLING_MARGIN = 3  # the threshold moves this far from the last run's decision, so a borderline export doesn't flip-flop
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
 

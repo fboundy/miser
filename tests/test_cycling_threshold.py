@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from custom_components.miser.const import DOMAIN
-from custom_components.miser.optimiser import _calculate_cost_and_flows, _drop_small_cycles
+from custom_components.miser.optimiser import _calculate_cost_and_flows, _drop_small_cycles, _respread_and_cost
 from custom_components.miser.pv_model import BatteryModel, InverterModel, PVsystemModel
 
 START = pd.Timestamp("2026-10-25 18:30", tz="UTC")
@@ -135,3 +135,22 @@ async def test_dropped_dip_is_filled_by_the_charge_around_it() -> None:
     charges = {start: power for start, power in model.optimised_slots if power > 0}
     assert _at("03:00") in charges
     assert len(set(charges.values())) == 1
+
+
+@pytest.mark.asyncio
+async def test_borderline_cycle_does_not_flip_flop() -> None:
+    # 2026-11-05: an export worth about the threshold was kept and dropped on alternate runs.
+    model = await _optimised(_model())
+    without_dip = [s for s in model.optimised_slots if s[0] != _at("03:00")]
+    _slots, cost, _flows = await _respread_and_cost(model, model.optimised_flows, without_dip)
+    worth = cost - model.optimised_cost
+
+    kept = await _optimised(_model())
+    kept.kept_marginal_cycle = True  # last run kept it
+    await _drop_small_cycles(_Hass(), kept, threshold=worth + 1)
+    assert _at("03:00") in _exports(kept.optimised_slots)
+
+    dropped = await _optimised(_model())
+    dropped.kept_marginal_cycle = False  # last run dropped it
+    await _drop_small_cycles(_Hass(), dropped, threshold=worth - 1)
+    assert _at("03:00") not in _exports(dropped.optimised_slots)
