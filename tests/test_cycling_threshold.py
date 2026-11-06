@@ -160,13 +160,27 @@ def test_control_in_force_reads_the_last_plan_at_the_run_start() -> None:
     from custom_components.miser.optimiser import _control_in_force
 
     model = _model()
-    index = pd.date_range(START, periods=3, freq="30min")
-    previous = pd.DataFrame({"forced": [2500.0, 0.0, -2000.0]}, index=index)
+    index = pd.date_range(START, periods=4, freq="30min")
+    previous = pd.DataFrame({"forced": [2500.0, 2500.0, 0.0, -2000.0]}, index=index)
 
     model.set_start(index[0] + pd.Timedelta(minutes=8))
-    assert _control_in_force(model, previous) == "charge"
-    model.set_start(index[2] + pd.Timedelta(minutes=1))
-    assert _control_in_force(model, previous) == "discharge"
-    model.set_start(index[1])
-    assert _control_in_force(model, previous) == "idle"
-    assert _control_in_force(model, None) == "idle"
+    assert _control_in_force(model, previous) == ("charge", index[2])
+    model.set_start(index[3] + pd.Timedelta(minutes=1))
+    assert _control_in_force(model, previous) == ("discharge", None)  # runs past the last plan
+    model.set_start(index[2])
+    assert _control_in_force(model, previous) == ("idle", None)
+    assert _control_in_force(model, None) == ("idle", None)
+
+
+def test_writes_are_window_changes() -> None:
+    write = PVsystemModel._whole_horizon_write
+    t0, t1 = pd.Timestamp("2026-11-06 05:30", tz="UTC"), pd.Timestamp("2026-11-06 07:00", tz="UTC")
+    charge, held = ("charge", 7.43), ("held", ("charge", 7.43))
+
+    assert write("idle", charge, t0, None) == (charge, True)  # a new window
+    assert write(charge, "idle", t0, None) == ("idle", False)  # a window ending
+    assert write(held, charge, t0, t1) == (held, False)  # the programmed window carries on
+    assert write(held, "idle", t0, t1) == ("idle", True)  # ended early: its times change
+    assert write(held, "idle", t1, t1) == ("idle", False)  # ended as programmed
+    assert write(held, charge, t1, t1) == (charge, True)  # extended past its end
+    assert write(held, ("charge", 32.87), t0, t1) == (("charge", 32.87), True)
