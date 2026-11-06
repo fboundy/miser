@@ -212,6 +212,7 @@ async def _optimise(hass: HomeAssistant) -> None:
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
     model.whole_horizon_write_cost = WHOLE_HORIZON_WRITE_COST
+    model.whole_horizon_initial_control = _control_in_force(model, getattr(model, "optimised_flows", None))
     model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
     model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
         hass,
@@ -247,6 +248,26 @@ async def _optimise(hass: HomeAssistant) -> None:
         return
 
     await _apply_inverter_control(hass, model)
+
+
+def _control_in_force(model, previous_flows) -> str:
+    """"charge", "discharge" or "idle": what the last plan has the inverter doing now.
+
+    Whole Horizon prices a change from this, so carrying on with a charge costs no write and stopping it
+    does. Assuming idle made every re-plan during a charge pay 5p to continue, so a charge stopped as
+    soon as its remainder was worth less (2026-11-06: 85% at 05:38, cheap power until 07:00).
+    """
+    if previous_flows is None or previous_flows.empty or "forced" not in previous_flows:
+        return "idle"
+    held = previous_flows.loc[: model.index[0]]
+    if held.empty:
+        return "idle"
+    forced = held["forced"].iloc[-1]
+    if forced >= MODEL_MIN_SLOT_POWER:
+        return "charge"
+    if forced <= -MODEL_MIN_SLOT_POWER:
+        return "discharge"
+    return "idle"
 
 
 async def _select_optimised_key(
