@@ -1,3 +1,4 @@
+import copy
 import logging
 from math import isfinite
 
@@ -7,6 +8,7 @@ from numpy import isnan
 from .const import (
     DEFAULT_BATTERY_VOLTAGE,
     EARLY_DISCHARGE_COST,
+    LOAD_UNCERTAINTY,
     MODEL_MIN_SLOT_POWER,
 )
 
@@ -279,6 +281,57 @@ class PVsystemModel:
             write_cost,
         )
         return await self._average_same_price_runs(flows, path)
+
+    async def robust_whole_horizon(self) -> list:
+        """Plan for the forecast load and for LOAD_UNCERTAINTY more and less, and keep the plan that is
+        cheapest averaged over all three loads, writes included.
+
+        Plans that tie at the forecast often differ when it is wrong: one that empties the battery
+        early buys at the peak if the load is 10% higher (2026-11-05/06: an export straight after the
+        night charge, and a charge stopped at 85%).
+        """
+        scenarios = [self] + [self._with_load(1 + change) for change in (LOAD_UNCERTAINTY, -LOAD_UNCERTAINTY)]
+        plans: list[list] = []
+        for scenario in scenarios:
+            plan = await scenario.whole_horizon()
+            if plan not in plans:
+                plans.append(plan)
+        if len(plans) == 1:
+            return plans[0]
+
+        scores = [await self._scenario_score(plan, scenarios) for plan in plans]
+        _LOGGER.info("Whole-horizon load scenarios: plan scores %s", ", ".join(f"{s:.1f}p" for s in scores))
+        return plans[scores.index(min(scores))]
+
+    def _with_load(self, factor: float) -> "PVsystemModel":
+        scenario = copy.copy(self)
+        scenario.consumption = self.consumption * factor
+        return scenario
+
+    async def _scenario_score(self, plan: list, scenarios: list) -> float:
+        total = 0.0
+        for scenario in scenarios:
+            flows = await scenario.flows(slots=plan)
+            cost = (await scenario.net_cost(slots=plan)).sum()
+            total += cost + scenario.terminal_soc_value(flows["soc_end"].iloc[-1] / 100 * self.battery.capacity)
+        writes = self._plan_writes(await self.flows(slots=[]), plan)
+        return total / len(scenarios) + writes * (getattr(self, "whole_horizon_write_cost", 0) or 0)
+
+    def _plan_writes(self, flows: pd.DataFrame, plan: list) -> int:
+        """Writes the plan needs, by the same rules Whole Horizon prices them."""
+        forced = dict(plan)
+        held_end = getattr(self, "whole_horizon_initial_end", None)
+        direction = getattr(self, "whole_horizon_initial_control", "idle")
+        control = self._whole_horizon_control({"charge": 1000.0, "discharge": -1000.0}.get(direction), flows.iloc[0])
+        if control != "idle":
+            control = ("held", control)
+        writes = 0
+        for start, row in flows.iterrows():
+            control, write = self._whole_horizon_write(
+                control, self._whole_horizon_control(forced.get(start), row), start, held_end
+            )
+            writes += write
+        return writes
 
     def _whole_horizon_compute(
         self,

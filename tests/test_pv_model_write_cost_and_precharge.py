@@ -166,3 +166,26 @@ async def test_a_charge_in_progress_runs_to_the_end_of_the_cheap_window() -> Non
     flows = await model.flows(slots=await model.whole_horizon())
 
     assert flows["soc_end"].iloc[2] > 99.9, list(flows["soc_end"].iloc[:3])
+
+
+@pytest.mark.asyncio
+async def test_load_scenarios_keep_a_reserve_rather_than_export_it() -> None:
+    # Exporting down to the floor ties at the forecast load, but with 10% more load the battery runs out
+    # and the house buys at 32.87p and 46.96p, so averaged over the load scenarios a reserve is cheaper.
+    def tariff(index):
+        price = pd.Series(32.87, index=index)
+        price[index.hour < 7] = 7.43
+        price[(index.hour >= 16) & (index.hour < 20)] = 46.96
+        return price
+
+    idx = pd.date_range("2026-11-06 05:30", periods=37, freq="30min", tz="UTC")
+    later = pd.date_range("2026-11-07 00:00", periods=48, freq="30min", tz="UTC")
+    lowest = []
+    for plan_for_scenarios in (False, True):
+        model = _model(idx, tariff(idx), pd.Series(13.0, index=idx), initial_soc=85, consumption=900.0)
+        model.whole_horizon_write_cost = 5
+        model.valuation_prices = pd.DataFrame({"import": tariff(later), "export": 13.0}, index=later)
+        plan = await (model.robust_whole_horizon() if plan_for_scenarios else model.whole_horizon())
+        lowest.append((await model.flows(slots=plan))["soc_end"].min())
+
+    assert lowest[0] < 15.5 < 20 < lowest[1], lowest
