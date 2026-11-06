@@ -288,6 +288,8 @@ class PVsystemModel:
         write_cost: float,
     ) -> list:
         required_cols = ["dt_hours", "consumption", "solar", "import", "export"]
+        if flows.empty:
+            return []
         invalid = flows[required_cols].isna().any(axis=1)
         if invalid.any():
             _LOGGER.warning("Whole-horizon skipped because model inputs still contain missing values")
@@ -313,7 +315,10 @@ class PVsystemModel:
 
         # A state is (energy, control in force); the control is "idle" or a rounded forced power,
         # so the write cost can price every change the inverter would have to be sent.
-        initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), "idle")
+        # The control already in force: continuing it is free, changing it is a write.
+        direction = getattr(self, "whole_horizon_initial_control", "idle")
+        initial_control = self._whole_horizon_control({"charge": 1000.0, "discharge": -1000.0}.get(direction), flows.iloc[0])
+        initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), initial_control)
         costs: dict[tuple[float, object], float] = {initial_key: 0.0}
         energies: dict[tuple[float, object], float] = {initial_key: initial_energy}
         paths: dict[tuple[float, object], list[tuple[pd.Timestamp, float]]] = {initial_key: []}

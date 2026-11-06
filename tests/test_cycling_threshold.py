@@ -154,3 +154,19 @@ async def test_borderline_cycle_does_not_flip_flop() -> None:
     dropped.kept_marginal_cycle = False  # last run dropped it
     await _drop_small_cycles(_Hass(), dropped, threshold=worth - 1)
     assert _at("03:00") not in _exports(dropped.optimised_slots)
+
+
+def test_control_in_force_reads_the_last_plan_at_the_run_start() -> None:
+    from custom_components.miser.optimiser import _control_in_force
+
+    model = _model()
+    index = pd.date_range(START, periods=3, freq="30min")
+    previous = pd.DataFrame({"forced": [2500.0, 0.0, -2000.0]}, index=index)
+
+    model.set_start(index[0] + pd.Timedelta(minutes=8))
+    assert _control_in_force(model, previous) == "charge"
+    model.set_start(index[2] + pd.Timedelta(minutes=1))
+    assert _control_in_force(model, previous) == "discharge"
+    model.set_start(index[1])
+    assert _control_in_force(model, previous) == "idle"
+    assert _control_in_force(model, None) == "idle"
