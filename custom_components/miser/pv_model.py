@@ -313,11 +313,15 @@ class PVsystemModel:
         )
         initial_energy = round(initial_energy, 1)
 
-        # A state is (energy, control in force); the control is "idle" or a rounded forced power,
-        # so the write cost can price every change the inverter would have to be sent.
-        # The control already in force: continuing it is free, changing it is a write.
+        # A state is (energy, control in force). A write is a change to the inverter's windows: starting
+        # a window or changing its direction or price costs write_cost, and a window ending costs nothing.
+        # The window the inverter already holds is ("held", control): carrying it on is free, and ending
+        # it costs a write unless it ends at its programmed time.
         direction = getattr(self, "whole_horizon_initial_control", "idle")
+        held_end = getattr(self, "whole_horizon_initial_end", None)
         initial_control = self._whole_horizon_control({"charge": 1000.0, "discharge": -1000.0}.get(direction), flows.iloc[0])
+        if initial_control != "idle":
+            initial_control = ("held", initial_control)
         initial_key = (self._whole_horizon_state_key(initial_energy, state_resolution_wh), initial_control)
         costs: dict[tuple[float, object], float] = {initial_key: 0.0}
         energies: dict[tuple[float, object], float] = {initial_key: initial_energy}
@@ -361,8 +365,10 @@ class PVsystemModel:
                     if forced_power is not None and forced_power < 0:
                         # Same value later is safer: the battery keeps its energy if the forecast is wrong.
                         slot_cost += EARLY_DISCHARGE_COST * -forced_power * dt_hours / 1000 * hours_left[start]
-                    control = self._whole_horizon_control(forced_power, row)
-                    candidate_cost = cost + slot_cost + (write_cost if control != previous_control else 0.0)
+                    control, write = self._whole_horizon_write(
+                        previous_control, self._whole_horizon_control(forced_power, row), start, held_end
+                    )
+                    candidate_cost = cost + slot_cost + (write_cost if write else 0.0)
                     if not all(_is_finite(v) for v in [next_energy, grid, candidate_cost]):
                         continue
                     next_key = (
@@ -411,6 +417,20 @@ class PVsystemModel:
 
     def _whole_horizon_state_key(self, energy: float, state_resolution_wh: int) -> float:
         return round(energy / state_resolution_wh) * state_resolution_wh
+
+    @staticmethod
+    def _whole_horizon_write(previous: object, control: object, start: pd.Timestamp, held_end) -> tuple[object, bool]:
+        """The next state's control, and whether getting there writes to the inverter."""
+        if isinstance(previous, tuple) and previous[0] == "held":
+            ended = held_end is not None and start >= held_end
+            if control == previous[1] and not ended:
+                return previous, False
+            if control == "idle":
+                return control, not ended and held_end != start
+            return control, True  # a new window, or this one changed or extended past its end
+        if control == "idle" or control == previous:
+            return control, False
+        return control, True
 
     def _whole_horizon_control(self, forced_power: float | None, row=None) -> object:
         """What the inverter is told to do: "idle", or a charge or discharge at the slot's price.
