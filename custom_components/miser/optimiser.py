@@ -45,6 +45,7 @@ from .const import (
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
     ALTERNATION_COST_THRESHOLD,
+    CYCLING_MARGIN,
     CYCLING_THRESHOLD,
     WHOLE_HORIZON_WRITE_COST,
     WRITE_MINIMISATION_COST,
@@ -1138,11 +1139,20 @@ async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCL
     wear the battery for pennies - are removed, least valuable first,
     re-costing after each removal. Valuable cycles (a big evening export, or an
     Axle VPP event at a premium export price) clear the threshold and stay.
+
+    The threshold sits CYCLING_MARGIN lower if the last run kept an export near it, and higher if
+    it didn't, so a cycle worth about the threshold isn't kept and dropped on alternate runs
+    (2026-11-05: charge, idle, charge, idle between 05:21 and 06:01).
     """
+    kept_marginal = getattr(model, "kept_marginal_cycle", None)
+    model.kept_marginal_cycle = False
     if model.optimised_flows is None or not model.optimised_slots:
         return
     if threshold <= 0:
         return
+    base_threshold = threshold
+    if kept_marginal is not None:
+        threshold += -CYCLING_MARGIN if kept_marginal else CYCLING_MARGIN
 
     slots = list(model.optimised_slots)
     cost = model.optimised_cost
@@ -1151,6 +1161,7 @@ async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCL
 
     for _ in range(CYCLE_PRUNE_MAX_PASSES):
         weakest = None
+        least_worth = float("inf")
         for window in _control_windows(flows):
             if window["state"] != "discharging":
                 continue
@@ -1167,10 +1178,13 @@ async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCL
             if not _is_finite(candidate_cost):
                 continue
             worth = candidate_cost - cost
+            least_worth = min(least_worth, worth)
             if worth < threshold and (weakest is None or worth < weakest[0]):
                 weakest = (worth, window, candidate, candidate_cost, candidate_flows)
 
         if weakest is None:
+            # Every export left is worth at least the threshold; remember if one only just made it.
+            model.kept_marginal_cycle = least_worth < base_threshold + CYCLING_MARGIN
             break
         worth, window, slots, cost, flows = weakest
         dropped += 1
