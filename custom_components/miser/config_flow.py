@@ -23,7 +23,7 @@ from .const import (
     TARIFF_SOURCE_ENTITIES,
     TARIFF_SOURCE_OCTOPUS_ENERGY,
 )
-from .entity_tariff import PRICE_UNIT_AUTO, PRICE_UNIT_GBP, PRICE_UNIT_PENCE, EntityTariff
+from .entity_tariff import PRICE_UNIT_AUTO, PRICE_UNIT_GBP, PRICE_UNIT_PENCE, EntityTariff, declared_scale
 from .inverters import INVERTER_DEFS, get_inverter_controller_class
 from .utils import (
     entity_template_candidates,
@@ -41,6 +41,16 @@ def _entities_give_prices(hass: HomeAssistant, entity_ids: list[str], price_unit
         return False
     rates, flat = EntityTariff(hass, entity_ids, price_unit=price_unit).read_rates()
     return bool(rates) or flat is not None
+
+
+def _unitless_entities(hass: HomeAssistant, entity_ids: list[str]) -> list[str]:
+    """Entities whose prices don't say whether they are in pounds or pence."""
+    unitless = []
+    for entity_id in entity_ids:
+        state = hass.states.get(entity_id)
+        if state is not None and declared_scale(entity_id, state.attributes) is None:
+            unitless.append(entity_id)
+    return unitless
 
 
 def _default_price_entities(hass: HomeAssistant) -> tuple[list[str], list[str]]:
@@ -309,6 +319,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["import_entities"] = "no_prices"
             if export_entities and not _entities_give_prices(self.hass, export_entities, price_unit):
                 errors["export_entities"] = "no_prices"
+            if price_unit == PRICE_UNIT_AUTO and not errors and _unitless_entities(self.hass, import_entities + export_entities):
+                errors["price_unit"] = "price_unit_unknown"
 
             if not errors:
                 self._options["import_entities"] = import_entities

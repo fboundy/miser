@@ -48,6 +48,7 @@ class EntityTariff:
         self.entity_ids = list(entity_ids)
         self._export = export
         self.price_unit = price_unit if price_unit in PRICE_UNITS else PRICE_UNIT_AUTO
+        self._warned: set[str] = set()
 
     @property
     def tariff_code(self) -> str:
@@ -63,7 +64,7 @@ class EntityTariff:
                 _LOGGER.debug("Price entity %s not found", entity_id)
                 continue
             entity_rates = _rates_from_attributes(state.attributes)
-            scale = self._scale(state.attributes, [value for _, _, value in entity_rates] or [_number(state.state)])
+            scale = self._scale(entity_id, state.attributes, [value for _, _, value in entity_rates] or [_number(state.state)])
             if entity_rates:
                 rates.extend((start, end, value * scale) for start, end, value in entity_rates)
             elif flat is None:
@@ -91,24 +92,41 @@ class EntityTariff:
 
         return pd.DataFrame({"unit": series})
 
-    def _scale(self, attributes: dict[str, Any], values: list[float | None]) -> float:
+    def _scale(self, entity_id: str, attributes: dict[str, Any], values: list[float | None]) -> float:
         """Multiplier to convert this entity's prices to pence."""
         if self.price_unit == PRICE_UNIT_GBP:
             return 100.0
         if self.price_unit == PRICE_UNIT_PENCE:
             return 1.0
+        declared = declared_scale(entity_id, attributes)
+        if declared is not None:
+            return declared
 
-        unit = str(attributes.get("unit_of_measurement") or "").lower()
-        if unit:
-            if unit.startswith(("p/", "p ", "gbp/100", "pence", "c/", "cent")) or unit in ("p", "gbx/kwh"):
-                return 1.0
-            if any(token in unit for token in ("gbp", "£", "eur", "€", "usd", "$")):
-                return 100.0
-
+        # shortcut: guesses from magnitude, so a unitless 1.5p reads as 150p (#12); setup now makes new
+        # entries pick a unit for unitless entities, this only serves older "auto" entries.
         known = [abs(v) for v in values if v is not None]
-        if known and max(known) < GBP_DETECTION_LIMIT:
+        scale = 100.0 if known and max(known) < GBP_DETECTION_LIMIT else 1.0
+        if entity_id not in self._warned:
+            self._warned.add(entity_id)
+            _LOGGER.warning(
+                "%s has no price unit; assuming %s. Set the price unit in Miser's setup to be sure.",
+                entity_id,
+                "pounds" if scale == 100.0 else "pence",
+            )
+        return scale
+
+
+def declared_scale(entity_id: str, attributes: dict[str, Any]) -> float | None:
+    """Multiplier to pence from the entity's own unit, or None if it doesn't say."""
+    unit = str(attributes.get("unit_of_measurement") or "").lower()
+    if unit:
+        if unit.startswith(("p/", "p ", "gbp/100", "pence", "c/", "cent")) or unit in ("p", "gbx/kwh"):
+            return 1.0
+        if any(token in unit for token in ("gbp", "£", "eur", "€", "usd", "$")):
             return 100.0
-        return 1.0
+    if entity_id.startswith("event.octopus_energy_"):
+        return 100.0  # the Octopus Energy integration's rate events are always in pounds
+    return None
 
 
 def _number(value) -> float | None:

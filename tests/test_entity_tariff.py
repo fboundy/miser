@@ -139,3 +139,20 @@ async def test_missing_entities_raise() -> None:
 
 def test_tariff_code_identifies_the_entities() -> None:
     assert EntityTariff(_Hass({}), [CURRENT, NEXT]).tariff_code == f"entities:{CURRENT},{NEXT}"
+
+
+def test_declared_scale_trusts_units_and_octopus_events_only() -> None:
+    from custom_components.miser.entity_tariff import declared_scale
+
+    assert declared_scale("sensor.p", {"unit_of_measurement": "p/kWh"}) == 1.0
+    assert declared_scale("sensor.g", {"unit_of_measurement": "GBP/kWh"}) == 100.0
+    assert declared_scale("event.octopus_energy_electricity_x_current_day_rates", {}) == 100.0
+    # #12: a unitless 1.5 (a 1.5p SEG export) must not be decided by its size.
+    assert declared_scale("sensor.seg_export", {}) is None
+
+
+def test_setup_asks_for_the_unit_when_an_entity_has_none() -> None:
+    from custom_components.miser.config_flow import _unitless_entities
+
+    hass = _Hass({"sensor.seg_export": _State("1.5"), "sensor.price": _State("26.67", {"unit_of_measurement": "p/kWh"})})
+    assert _unitless_entities(hass, ["sensor.seg_export", "sensor.price"]) == ["sensor.seg_export"]
