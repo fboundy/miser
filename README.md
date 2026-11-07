@@ -91,7 +91,6 @@ Important numbers include:
 - `Miser Battery Capacity`
 - `Miser Inverter Power`
 - `Miser Charger Power`
-- `Miser Optimiser Frequency`
 - `Miser Daily Consumption kWh`
 
 ## Service Actions, Triggers, And Conditions

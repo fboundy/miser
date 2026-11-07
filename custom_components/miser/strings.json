@@ -52,13 +52,11 @@
         },
         "system_parameters": {
           "title": "Enter System Parameters",
-          "description": "Provide the specifications for your energy system, such as battery capacity and efficiency. These are initial values and can be edited via the Miser UI.",
+          "description": "Provide the specifications for your energy system, such as battery capacity and power. These are initial values and can be edited via the Miser UI.",
           "data": {
             "battery_capacity": "Battery Capacity (Wh)",
             "inverter_power": "Inverter Power (W)",
-            "charger_power": "Charger Power (W)",
-            "inverter_efficiency": "Inverter Efficiency (%)",
-            "charger_efficiency": "Charger Efficiency (%)"
+            "charger_power": "Charger Power (W)"
           }
         }
       },

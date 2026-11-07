@@ -31,7 +31,7 @@ back to check that it took.
 | 10 | Four overlapping pence thresholds for inverter churn | Fixed, PR from `fix/18-fixed-thresholds` | [#18](https://github.com/fboundy/miser/issues/18) |
 | 11 | Switches that should be automatic | Fixed, PR from `fix/19-automatic-switches` | [#19](https://github.com/fboundy/miser/issues/19) |
 | 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
-| 13 | Tuning numbers that should be hidden or merged | Open | [#21](https://github.com/fboundy/miser/issues/21) |
+| 13 | Tuning numbers that should be hidden or merged | Fixed, PR from `fix/21-hide-tuning` | [#21](https://github.com/fboundy/miser/issues/21) |
 | 14 | "Tariff codes" price source duplicates "Octopus account" | Not substantiated: the only Octopus source that needs no API key | — |
 | 15 | Intelligent Octopus Go slots and export limits not modelled | Open | [#22](https://github.com/fboundy/miser/issues/22) |
 
@@ -47,12 +47,6 @@ None.
     - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
       Horizon, delete the swap, low-cost charging, discharge and fill-first passes (about 600 lines) and the switch.
 
-13. **Tuning numbers that should be hidden or merged** — [#21](https://github.com/fboundy/miser/issues/21)
-    - Hide with fixed defaults: inverter and charger efficiency, history days, weekday weighting, load margin,
-      optimiser frequency.
-    - Merge daily consumption and minimum daily consumption into one fallback figure.
-    - The live install has history days at 5, which silently disables weekday weighting (it needs 7).
-
 14. **"Tariff codes" price source duplicates "Octopus account"** — not substantiated
     - Checked 2026-11-03: the codes source reads Octopus' public rate endpoints with no API key, so it is the only
       Octopus source for a user without one. Keep it; no issue raised.
@@ -62,6 +56,13 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+13. **Tuning numbers that should be hidden or merged** — [#21](https://github.com/fboundy/miser/issues/21)
+    - Hide with fixed defaults: inverter and charger efficiency, history days, weekday weighting, load margin,
+      optimiser frequency.
+    - Merge daily consumption and minimum daily consumption into one fallback figure.
+    - The live install has history days at 5, which silently disables weekday weighting (it needs 7).
+    - **Fixed** (`fix/21-hide-tuning`): Optimiser frequency (10 min), history days (7), weekday weighting (50%), load margin (10%), inverter and charger efficiency (97%, 91%) and the minimum daily consumption floor (5 kWh) are fixed at their defaults; their number entities and setup's efficiency fields are gone. Daily consumption stays a setting: it can't merge with the floor, because one is a typical day and the other a lower bound. On the live install history days goes from 5 to 7, which turns weekday weighting on.
 
 10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
     - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
