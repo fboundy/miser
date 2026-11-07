@@ -53,6 +53,8 @@ CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
 CONF_READ_ONLY = "read_only"
 CONF_BACKUP_MODE = "backup_mode"
 CONF_BACKUP_SOC = "backup_soc"
+# Optional grid export cap in W (G98/G99), set in setup or options; 0 or blank means none.
+CONF_EXPORT_LIMIT = "export_limit"
 
 # Tariff sources offered by the config flow (stored in options["tariff_source"]).
 TARIFF_SOURCE_OCTOPUS_ENERGY = "Get tariff codes from Octopus Energy integration"

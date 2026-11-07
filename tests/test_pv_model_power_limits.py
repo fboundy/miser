@@ -68,3 +68,18 @@ def test_forced_charge_at_limit_puts_full_rate_into_battery() -> None:
     flows = asyncio.run(model.flows(slots=[(idx[0], model.charge_power_limit)]))
     gained_wh = flows["chg_end"].iloc[0] - flows["chg"].iloc[0]
     assert round(gained_wh, 0) == round(3000 * 0.5, 0)
+
+
+def test_export_limit_caps_forced_discharge_only_when_set() -> None:
+    # #22: a G98/G99 export cap below the inverter's own limit.
+    from custom_components.miser.pv_model import BatteryModel, InverterModel, PVsystemModel
+
+    model = PVsystemModel(
+        inverter=InverterModel(97, 91, 3600, 3000),
+        battery=BatteryModel(battery_capacity=20000, battery_minimum_soc=15, battery_current_limit=62.5),
+    )
+    uncapped = model.discharge_power_limit
+    model.export_limit = 2000
+    assert model.discharge_power_limit == 2000
+    model.export_limit = 5000
+    assert model.discharge_power_limit == uncapped
