@@ -11,8 +11,7 @@ charge entirely.
 import pandas as pd
 import pytest
 
-from custom_components.miser.const import COST_ENTITY_OBJECTS, DEFAULTS, DOMAIN
-from custom_components.miser.const import CONF_ALTERNATION_COST_THRESHOLD
+from custom_components.miser.const import COST_ENTITY_OBJECTS, DOMAIN
 from custom_components.miser.optimiser import (
     _control_windows,
     _select_optimised_key,
@@ -74,11 +73,7 @@ class _FakeHass:
                 COST_ENTITY_OBJECTS: {},
                 "model_entities": {},
                 "control_entities": {},
-                "config_entities": (
-                    {CONF_ALTERNATION_COST_THRESHOLD: "number.miser_alternation_cost_threshold"}
-                    if threshold is not None
-                    else {}
-                ),
+                "config_entities": {},
             }
         }
         self.states = _FakeStates(threshold)
@@ -115,7 +110,7 @@ async def test_cheapest_plan_wins_when_not_alternating() -> None:
 async def test_substitution_happens_when_within_threshold() -> None:
     model = _FakeModel(
         whole_horizon=(-61.1, _rapid_flows()),
-        discharge=(-55.0, _calm_flows()),  # 6.1p worse, within the 10p default
+        discharge=(-55.0, _calm_flows()),  # 6.1p worse, within the 7p default
     )
     key = await _select_optimised_key(_FakeHass(), model, ["whole_horizon_cost", "discharge_cost"])
     assert key == "discharge_cost"
@@ -172,20 +167,18 @@ async def test_threshold_boundary(delta: float, expected: str) -> None:
         whole_horizon=(winner_cost, _rapid_flows()),
         discharge=(winner_cost + delta, _calm_flows()),
     )
-    key = await _select_optimised_key(_FakeHass(), model, ["whole_horizon_cost", "discharge_cost"])
+    key = await _select_optimised_key(_FakeHass(), model, ["whole_horizon_cost", "discharge_cost"], threshold=10)
     assert key == expected
 
 
 @pytest.mark.asyncio
 async def test_configured_threshold_is_honoured() -> None:
-    """A 40p threshold permits a swap the 10p default would refuse."""
+    """A 40p threshold permits a swap the 7p default would refuse."""
     model = _FakeModel(
         whole_horizon=(-20.0, _rapid_flows()),
         discharge=(10.0, _calm_flows()),  # 30p worse
     )
-    assert await _select_optimised_key(
-        _FakeHass(threshold=40), model, ["whole_horizon_cost", "discharge_cost"]
-    ) == "discharge_cost"
+    assert await _select_optimised_key(_FakeHass(), model, ["whole_horizon_cost", "discharge_cost"], threshold=40) == "discharge_cost"
     assert await _select_optimised_key(
         _FakeHass(), model, ["whole_horizon_cost", "discharge_cost"]
     ) == "whole_horizon_cost"
@@ -198,30 +191,13 @@ async def test_zero_threshold_permits_only_non_regressive_swaps() -> None:
         whole_horizon=(-20.0, _rapid_flows()),
         discharge=(-19.9, _calm_flows()),  # 0.1p worse
     )
-    assert await _select_optimised_key(
-        _FakeHass(threshold=0), regressive, ["whole_horizon_cost", "discharge_cost"]
-    ) == "whole_horizon_cost"
+    assert await _select_optimised_key(_FakeHass(), regressive, ["whole_horizon_cost", "discharge_cost"], threshold=0) == "whole_horizon_cost"
 
     free = _FakeModel(
         whole_horizon=(-20.0, _rapid_flows()),
         discharge=(-20.0, _calm_flows()),  # equal cost
     )
-    assert await _select_optimised_key(
-        _FakeHass(threshold=0), free, ["whole_horizon_cost", "discharge_cost"]
-    ) == "discharge_cost"
-
-
-@pytest.mark.asyncio
-async def test_non_finite_threshold_falls_back_to_default() -> None:
-    model = _FakeModel(
-        whole_horizon=(-20.0, _rapid_flows()),
-        discharge=(50.0, _calm_flows()),  # 70p worse, far beyond any sane default
-    )
-    key = await _select_optimised_key(
-        _FakeHass(threshold="unavailable"), model, ["whole_horizon_cost", "discharge_cost"]
-    )
-    assert key == "whole_horizon_cost"
-    assert DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD] == 10
+    assert await _select_optimised_key(_FakeHass(), free, ["whole_horizon_cost", "discharge_cost"], threshold=0) == "discharge_cost"
 
 
 @pytest.mark.asyncio
@@ -239,5 +215,5 @@ async def test_refusal_is_logged_with_costs_delta_and_threshold(caplog) -> None:
     assert "-23.6" in message
     assert "52.7" in message
     assert "76.3" in message   # the delta
-    assert "10.0" in message   # the threshold
+    assert "7.0" in message   # the threshold
     assert "charging" in message  # rapid-window summary

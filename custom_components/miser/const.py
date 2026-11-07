@@ -54,10 +54,6 @@ CONF_OPTIMISER_FREQUENCY = "optimiser_frequency"
 CONF_SOLCAST_CONFIDENCE = "solcast_confidence"
 CONF_READ_ONLY = "read_only"
 CONF_WHOLE_HORIZON_BETA = "whole_horizon_beta"
-CONF_WRITE_MINIMISATION_COST_THRESHOLD = "write_minimisation_cost_threshold"
-CONF_WHOLE_HORIZON_WRITE_COST = "whole_horizon_write_cost"
-CONF_ALTERNATION_COST_THRESHOLD = "alternation_cost_threshold"
-CONF_CYCLING_THRESHOLD = "cycling_threshold"
 CONF_BACKUP_MODE = "backup_mode"
 CONF_BACKUP_SOC = "backup_soc"
 
@@ -86,15 +82,6 @@ DEFAULTS = {
     CONF_SOLCAST_CONFIDENCE: 50,
     CONF_READ_ONLY: True,
     CONF_WHOLE_HORIZON_BETA: False,
-    CONF_WRITE_MINIMISATION_COST_THRESHOLD: 10,
-    CONF_WHOLE_HORIZON_WRITE_COST: 0,
-    # Maximum raw financial regression, in pence across the whole optimisation
-    # horizon, that may be accepted to avoid a rapidly alternating plan.
-    CONF_ALTERNATION_COST_THRESHOLD: 10,
-    # Minimum a forced export (one charge/discharge cycle) must be worth, in
-    # pence over the horizon, to stay in the plan. Drops small or alternating
-    # cycles that wear the battery for pennies; 0 allows all cycling.
-    CONF_CYCLING_THRESHOLD: 20,
     # Hold the inverter's Backup SOC (e.g. when power cuts are likely): plan with
     # it as the battery floor and run the inverter in its backup/reserve mode.
     CONF_BACKUP_MODE: False,
@@ -124,6 +111,11 @@ MODEL_MIN_SLOT_POWER = 10  # W
 MODEL_MAX_SEARCH_WINDOW_SOC = 97  # %
 
 CONTROL_PASS_THREHOLD = 4
+# Pence thresholds for inverter churn, fixed at the values tuned on the first live install (#18).
+WRITE_MINIMISATION_COST = 4  # a plan with fewer inverter writes may cost this much more
+WHOLE_HORIZON_WRITE_COST = 5  # Whole Horizon charges this for each control change
+ALTERNATION_COST_THRESHOLD = 7  # a plan without rapid charge/discharge reversal may cost this much more
+CYCLING_THRESHOLD = 16  # a forced export must be worth this much to stay in the plan
 CONTROL_SLOT_THRESHOLD = 1
 
 DATETIME_FORMAT_LONG = "%Y-%m-%d %H:%M:%S %z"
@@ -277,34 +269,6 @@ NUMBER_ENTITIES = {
         "step": 1,
         "default": DEFAULTS[CONF_MINIMUM_DAILY_CONSUMPTION_KWH],
         "unit": UnitOfEnergy.KILO_WATT_HOUR,
-    },
-    CONF_WRITE_MINIMISATION_COST_THRESHOLD: {
-        "min": 0,
-        "max": 20,
-        "step": 1,
-        "default": DEFAULTS[CONF_WRITE_MINIMISATION_COST_THRESHOLD],
-        "unit": "p",
-    },
-    CONF_WHOLE_HORIZON_WRITE_COST: {
-        "min": 0,
-        "max": 50,
-        "step": 1,
-        "default": DEFAULTS[CONF_WHOLE_HORIZON_WRITE_COST],
-        "unit": "p",
-    },
-    CONF_ALTERNATION_COST_THRESHOLD: {
-        "min": 0,
-        "max": 50,
-        "step": 1,
-        "default": DEFAULTS[CONF_ALTERNATION_COST_THRESHOLD],
-        "unit": "p",
-    },
-    CONF_CYCLING_THRESHOLD: {
-        "min": 0,
-        "max": 100,
-        "step": 1,
-        "default": DEFAULTS[CONF_CYCLING_THRESHOLD],
-        "unit": "p",
     },
     CONF_BACKUP_SOC: {
         "min": 0,
