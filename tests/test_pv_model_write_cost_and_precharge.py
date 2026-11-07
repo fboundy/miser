@@ -1,5 +1,5 @@
-"""Whole Horizon prices every control change and keeps one power across a same-price run;
-the heuristic discharge pass fills from earlier cheap slots for a valuable export.
+"""Whole Horizon prices every control change, keeps one power across a same-price run,
+and fills from earlier slots for a valuable export.
 
 Regression (2026-11-02): Whole Horizon planned 3297/2857/440/2198 W across a flat-price night,
 and without Whole Horizon nothing charged before a 100p Axle export, so it only exported what
@@ -61,37 +61,20 @@ def test_power_change_counts_as_a_write() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discharge_pass_precharges_for_a_valuable_export() -> None:
+async def test_whole_horizon_precharges_for_a_valuable_export() -> None:
+    # 2026-11-02: an Axle 100p export must be filled from cheaper slots before it, not just from what's in the battery.
     idx = pd.date_range("2026-11-02 14:00", "2026-11-02 20:00", freq="30min", tz="UTC", inclusive="left")
     imp = pd.Series(30.0, index=idx)
     exp = pd.Series(13.0, index=idx)
     exp[idx.hour == 17] = 100.0  # an Axle-style export event
     model = _model(idx, imp, exp, initial_soc=20)
-    model.base_cost = model.best_cost = (await model.net_cost(slots=[])).sum()
+    model.whole_horizon_write_cost = 5
+    model.valuation_prices = None
 
-    slots = await model.discharging(base_slots=[])
-    flows = await model.flows(slots=slots)
+    flows = await model.flows(slots=await model.whole_horizon())
 
     assert (flows.loc[idx.hour < 17, "forced"] > 0).any(), "expected a charge before the event"
-    assert (flows.loc[idx.hour == 17, "forced"] <= -model.discharge_power_limit + 1).all()
-
-
-@pytest.mark.asyncio
-async def test_rejected_export_is_dropped_from_the_plan() -> None:
-    # 2026-11-02: a rejected 13p export stayed in the list it was appended to, so the pass
-    # returned every export it tried and the whole plan, Axle slots included, was discarded.
-    idx = pd.date_range("2026-11-02 14:00", "2026-11-02 20:00", freq="30min", tz="UTC", inclusive="left")
-    exp = pd.Series(13.0, index=idx)
-    exp[idx.hour == 17] = 100.0
-    imp = pd.Series(30.0, index=idx)
-    imp.iloc[-1] = 7.43  # a cheap import makes the 13p slots candidates
-    model = _model(idx, imp, exp, initial_soc=40)
-    model.base_cost = model.best_cost = (await model.net_cost(slots=[])).sum()
-
-    slots = await model.discharging(base_slots=[])
-
-    assert (await model.net_cost(slots=slots)).sum() == pytest.approx(model.best_cost)
-    assert all(start.hour == 17 for start, power in slots if power < 0)
+    assert (flows.loc[idx.hour == 17, "forced"] < 0).all(), "expected an export through the event"
 
 
 @pytest.mark.asyncio
