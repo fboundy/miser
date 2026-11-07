@@ -19,7 +19,7 @@ back to check that it took.
 
 | # | Item | Status | Issue |
 |---|------|--------|-------|
-| 1 | Negative prices are mis-costed: import and export costs cross over | Open | [#10](https://github.com/fboundy/miser/issues/10) |
+| 1 | Negative prices are mis-costed: import and export costs cross over | Fixed, PR from `fix/10-negative-prices` | [#10](https://github.com/fboundy/miser/issues/10) |
 | 2 | Setup's system parameters never reach the model | Open | [#11](https://github.com/fboundy/miser/issues/11) |
 | 3 | A low export price in pence can be read as pounds | Open | [#12](https://github.com/fboundy/miser/issues/12) |
 | 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
@@ -38,16 +38,6 @@ back to check that it took.
 ## Open
 
 ### Should fix
-
-1. **Negative prices are mis-costed: import and export costs cross over** (`pv_model.py:252-253`, `flows`) — [#10](https://github.com/fboundy/miser/issues/10)
-   - **What happens:** `import_cost` and `export_cost` are split by the sign of `grid × price`, not of `grid`. With a
-     negative price each picks up the other direction's energy.
-   - **Reproduced 2026-11-03:** a 6 kWh grid charge at −5p import (−2p export) costs −12p in the model (the export
-     price on an import); correct is −30p. A 5.8 kWh export at −2p export (−5p import) costs +29.1p (the import
-     price on an export); correct is +11.6p.
-   - **Also:** Whole Horizon costs slots correctly (`pv_model.py:910`), so the two planners disagree on negative slots.
-   - **Fix:** `import_cost = grid.clip(lower=0) × dt × import`, `export_cost = grid.clip(upper=0) × dt × export`.
-     Add a negative-price test.
 
 2. **Setup's system parameters never reach the model** (`config_flow.py:341`, `number.py:88`) — [#11](https://github.com/fboundy/miser/issues/11)
    - **What happens:** Setup asks for battery capacity, inverter power, charger power and both efficiencies and
@@ -136,7 +126,16 @@ back to check that it took.
 
 ## Fixed
 
-None yet under the new numbering.
+1. **Negative prices are mis-costed: import and export costs cross over** (`pv_model.py:252-253`, `flows`) — [#10](https://github.com/fboundy/miser/issues/10)
+   - **What happens:** `import_cost` and `export_cost` are split by the sign of `grid × price`, not of `grid`. With a
+     negative price each picks up the other direction's energy.
+   - **Reproduced 2026-11-03:** a 6 kWh grid charge at −5p import (−2p export) costs −12p in the model (the export
+     price on an import); correct is −30p. A 5.8 kWh export at −2p export (−5p import) costs +29.1p (the import
+     price on an export); correct is +11.6p.
+   - **Also:** Whole Horizon costs slots correctly (`pv_model.py:910`), so the two planners disagree on negative slots.
+   - **Fix:** `import_cost = grid.clip(lower=0) × dt × import`, `export_cost = grid.clip(upper=0) × dt × export`.
+     Add a negative-price test.
+   - **Fixed** (`fix/10-negative-prices`): `flows` splits import and export cost by the sign of `grid` (direction of flow), so negative prices are costed correctly. Tested in `tests/test_negative_prices.py`.
 
 ## Not checked
 
