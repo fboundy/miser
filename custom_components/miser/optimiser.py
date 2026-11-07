@@ -26,20 +26,15 @@ from .const import (
     SOLCAST_DETAILED_FORECAST_ATTRIBUTE,
     SOLCAST_FORECAST_PERIODS,
     SOLCAST_COLUMNS,
-    CONF_USE_CONSUMPTION_HISTORY,
     CONF_DAILY_CONSUMPTION_KWH,
     CONF_MINIMUM_DAILY_CONSUMPTION_KWH,
     CONF_HISTORY_DAYS,
     CONF_LOAD_MARGIN,
     CONF_WEEKDAY_WEIGHTING,
     CONF_SOLCAST_CONFIDENCE,
-    CONF_USE_SOLAR,
-    CONF_SHAPE_CONSUMPTION,
-    CONF_OPTIMISE_DISCHARGING,
     CONF_OPTIMISER_FREQUENCY,
     CONF_WHOLE_HORIZON_BETA,
     CONF_WHOLE_HORIZON_WRITE_COST,
-    CONF_VALUE_SURPLUS_SOC,
     CONF_READ_ONLY,
     CONF_CYCLING_THRESHOLD,
     CONF_BACKUP_MODE,
@@ -212,16 +207,6 @@ async def _optimise(hass: HomeAssistant) -> None:
     model.battery.max_dod = floor_soc / 100
     model.backup_soc = floor_soc if backup_active else None
 
-    # Read once on the loop and stash it: the terminal valuation is used inside
-    # the compute passes that run in the executor, which cannot touch hass.
-    model.value_surplus_soc = bool(
-        await get_value(
-            hass,
-            CONF_VALUE_SURPLUS_SOC,
-            default_value=DEFAULTS[CONF_VALUE_SURPLUS_SOC],
-        )
-    )
-
     model.base_slots = []
     model.base_cost, model.base_flows = await _run_compute(hass, lambda: _calculate_cost_and_flows(model, model.base_slots))
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
@@ -261,10 +246,7 @@ async def _optimise(hass: HomeAssistant) -> None:
     )
     _LOGGER.debug(f"Fill-first cost: {model.fill_first_cost:6.1f}")
 
-    optimise_discharging = await get_value(hass, CONF_OPTIMISE_DISCHARGING)
-    cost_keys = ["base_cost", "swap_cost", "lcc_cost"]
-    if optimise_discharging:
-        cost_keys.extend(["discharge_cost", "fill_first_cost"])
+    cost_keys = ["base_cost", "swap_cost", "lcc_cost", "discharge_cost", "fill_first_cost"]
 
     model.whole_horizon_slots = []
     model.whole_horizon_cost = None
@@ -1802,9 +1784,9 @@ async def _get_consumption(hass: HomeAssistant, start: pd.Timestamp, end: pd.Tim
     consumption["time_of_day"] = consumption.index.time
     consumption["dow_tod"] = consumption.index.day_of_week + consumption.index.hour / 24
 
-    use_consumption = await get_value(hass, CONF_USE_CONSUMPTION_HISTORY)
-    if use_consumption:
-        entity_id = get_entity_for_key(hass, MODEL_CONSUMPTION_TODAY)
+    # History when the inverter reports house load; otherwise the shaped fallback.
+    entity_id = get_entity_for_key(hass, MODEL_CONSUMPTION_TODAY)
+    if entity_id is not None:
         history_days = await get_value(hass, CONF_HISTORY_DAYS)
         load_margin = await get_value(hass, CONF_LOAD_MARGIN)
         weekday_weighting = await get_value(hass, CONF_WEEKDAY_WEIGHTING)
@@ -1919,21 +1901,18 @@ async def _fallback_consumption(hass: HomeAssistant, consumption: pd.DataFrame) 
         )
         daily_consumption = DEFAULTS[CONF_DAILY_CONSUMPTION_KWH]
 
-    if await get_value(hass, CONF_SHAPE_CONSUMPTION):
-        daily = (
-            pd.DataFrame(CONSUMPTION_SHAPE)
-            .set_index("hours")
-            .reindex(arange(0, 24.5, 0.5))
-            .interpolate()
-            .iloc[:-1]
-        )
-        daily["fallback"] = daily["consumption"] * daily_consumption / (daily["consumption"].sum() / 2000)
-        daily.index = pd.to_datetime(daily.index, unit="h").time
-        # The shape is in local clock time; the index is UTC.
-        local_times = consumption.index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time
-        return daily["fallback"].reindex(local_times).set_axis(consumption.index)
-
-    return pd.Series(index=consumption.index, data=daily_consumption * 1000 / 24)
+    daily = (
+        pd.DataFrame(CONSUMPTION_SHAPE)
+        .set_index("hours")
+        .reindex(arange(0, 24.5, 0.5))
+        .interpolate()
+        .iloc[:-1]
+    )
+    daily["fallback"] = daily["consumption"] * daily_consumption / (daily["consumption"].sum() / 2000)
+    daily.index = pd.to_datetime(daily.index, unit="h").time
+    # The shape is in local clock time; the index is UTC.
+    local_times = consumption.index.tz_convert(dt_util.DEFAULT_TIME_ZONE).time
+    return daily["fallback"].reindex(local_times).set_axis(consumption.index)
 
 
 async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timestamp, freq: pd.Timedelta) -> bool:
@@ -1941,9 +1920,7 @@ async def _get_solcast(hass: HomeAssistant, start: pd.Timestamp, end: pd.Timesta
     index = pd.date_range(start=start, end=end, freq=freq, inclusive="left")
     solcast = pd.DataFrame(index=index, data={"weighted": 0})
 
-    if not await get_value(hass, CONF_USE_SOLAR, default_value=DEFAULTS[CONF_USE_SOLAR]):
-        _LOGGER.debug("Use Solar is off; using zero solar forecast")
-    elif config_entries:
+    if config_entries:
         # _LOGGER.debug("Solcast integration:")
         entry = config_entries[0]
         # log_config_entry(entry)

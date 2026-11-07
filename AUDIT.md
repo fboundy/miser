@@ -29,7 +29,7 @@ back to check that it took.
 | 8 | Entity discovery and controller lookup are Solis-only | Fixed, PR from `fix/16-brand-registry` | [#16](https://github.com/fboundy/miser/issues/16) |
 | 9 | Solis quirks live in the shared optimiser | Fixed, PR from `fix/17-solis-quirks` | [#17](https://github.com/fboundy/miser/issues/17) |
 | 10 | Four overlapping pence thresholds for inverter churn | Open | [#18](https://github.com/fboundy/miser/issues/18) |
-| 11 | Switches that should be automatic | Open | [#19](https://github.com/fboundy/miser/issues/19) |
+| 11 | Switches that should be automatic | Fixed, PR from `fix/19-automatic-switches` | [#19](https://github.com/fboundy/miser/issues/19) |
 | 12 | Whole Horizon or the heuristic passes: pick one | Open | [#20](https://github.com/fboundy/miser/issues/20) |
 | 13 | Tuning numbers that should be hidden or merged | Open | [#21](https://github.com/fboundy/miser/issues/21) |
 | 14 | "Tariff codes" price source duplicates "Octopus account" | Not substantiated: the only Octopus source that needs no API key | — |
@@ -46,15 +46,6 @@ None.
 10. **Four overlapping pence thresholds for inverter churn** — [#18](https://github.com/fboundy/miser/issues/18)
     - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
       "how many pence a change must be worth". Replace with one "minimum worthwhile change" number or fixed values.
-
-11. **Switches that should be automatic** — [#19](https://github.com/fboundy/miser/issues/19)
-    - **Use Solar:** no Solcast already means zero solar. Remove.
-    - **Use consumption history / Shape consumption:** use history when there is some, else the built-in shape. Remove.
-    - **Optimise Discharging:** with a low or missing export price the plan won't export anyway. Remove. It also
-      doesn't stop exports: it only drops the discharge and fill-first plans (`optimiser.py:264-267`), and Whole
-      Horizon still plans exports.
-    - **Value Surplus SOC:** always on. Remove.
-    - Keep Read Only (default on, so the first run writes nothing; say so in setup) and Backup Mode.
 
 12. **Whole Horizon or the heuristic passes: pick one** — [#20](https://github.com/fboundy/miser/issues/20)
     - The Whole Horizon (beta) switch runs two planners side by side. Decide which is better on real nights; if Whole
@@ -75,6 +66,16 @@ None.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+11. **Switches that should be automatic** — [#19](https://github.com/fboundy/miser/issues/19)
+    - **Use Solar:** no Solcast already means zero solar. Remove.
+    - **Use consumption history / Shape consumption:** use history when there is some, else the built-in shape. Remove.
+    - **Optimise Discharging:** with a low or missing export price the plan won't export anyway. Remove. It also
+      doesn't stop exports: it only drops the discharge and fill-first plans (`optimiser.py:264-267`), and Whole
+      Horizon still plans exports.
+    - **Value Surplus SOC:** always on. Remove.
+    - Keep Read Only (default on, so the first run writes nothing; say so in setup) and Backup Mode.
+    - **Fixed** (`fix/19-automatic-switches`): Removed Use Solar, Use Consumption History, Shape Consumption, Optimise Discharging and Value Surplus SOC; Miser always does what they did when on (the live settings). The README lists the remaining switches. HA keeps the five old entities as unavailable until removed in the UI.
 
 9. **Solis quirks live in the shared optimiser** (`optimiser.py:740`, `optimiser.py:805`, `const.py`) — [#17](https://github.com/fboundy/miser/issues/17)
    - **What happens:** The midnight split and 00:01/23:59 edges (`_inverter_window`), programming only one slot at a

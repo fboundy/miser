@@ -7,12 +7,12 @@ import pandas as pd
 import pytest
 
 from custom_components.miser import optimiser
-from custom_components.miser.const import CONF_DAILY_CONSUMPTION_KWH, CONF_SHAPE_CONSUMPTION
+from custom_components.miser.const import CONF_DAILY_CONSUMPTION_KWH
 
 
 @pytest.mark.asyncio
 async def test_shape_follows_local_time(monkeypatch) -> None:
-    values = {CONF_DAILY_CONSUMPTION_KWH: 12, CONF_SHAPE_CONSUMPTION: True}
+    values = {CONF_DAILY_CONSUMPTION_KWH: 12}
     monkeypatch.setattr(optimiser, "get_value", AsyncMock(side_effect=lambda hass, key, **kw: values[key]))
     index = pd.date_range("2026-07-01 00:00", periods=48, freq="30min", tz="UTC")
 

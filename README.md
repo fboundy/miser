@@ -76,13 +76,15 @@ Cost sensors include `slots` and `flows` attributes for dashboards and analysis.
 The Read the Docs user guide includes an ApexCharts example for predicted SOC,
 forced charge/discharge power, and optimised cost.
 
-Important switches include:
+Switches:
 
-- `Miser Optimise Discharging`
+- `Miser Read Only`: on by default, so a new install plans but writes nothing to the inverter until you turn it off.
 - `Miser Whole Horizon Beta`
-- `Miser Include Export`
-- `Miser Use Solar`
-- `Miser Use Consumption History`
+- `Miser Backup Mode`
+
+Solar comes from Solcast when it's installed, consumption from the inverter's house-load history when it has some
+(otherwise a typical daily shape scaled to `Miser Daily Consumption kWh`), and exports are planned whenever the export
+price makes them worthwhile.
 
 Important numbers include:
 
