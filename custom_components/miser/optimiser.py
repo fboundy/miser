@@ -215,7 +215,7 @@ async def _optimise(hass: HomeAssistant) -> None:
     model.whole_horizon_initial_control, model.whole_horizon_initial_end = _control_in_force(
         model, getattr(model, "optimised_flows", None)
     )
-    model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
+    model.whole_horizon_slots = await _run_compute(hass, lambda: model.robust_whole_horizon())
     model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
         hass,
         lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
