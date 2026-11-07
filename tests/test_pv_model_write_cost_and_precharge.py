@@ -102,3 +102,18 @@ async def test_whole_horizon_exports_late_when_the_price_is_flat() -> None:
 
     assert plan, "expected an export"
     assert min(start for start, _ in plan) >= idx[6], plan  # 10:00; without the tie-break it was 07:00
+
+
+@pytest.mark.asyncio
+async def test_averaging_spreads_only_the_charge_the_battery_takes() -> None:
+    # 2026-11-04: dropping an overnight export left the charge that refilled it, so the averaged
+    # 00:00-07:00 charge filled the battery by 05:40 and "charged" a full battery to 07:00.
+    idx = pd.date_range("2026-11-05 00:00", periods=4, freq="30min", tz="UTC")
+    model = _model(idx, pd.Series(7.43, index=idx), 0.0, initial_soc=90, consumption=0.0)
+    flows = await model.flows(slots=[])
+
+    averaged = await model._average_same_price_runs(flows, [(start, 3000.0) for start in idx])
+    soc = (await model.flows(slots=averaged))["soc_end"]
+
+    assert len({p for _s, p in averaged}) == 1
+    assert soc.iloc[-2] < 99.5 and soc.iloc[-1] > 99.5, list(soc)
