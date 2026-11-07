@@ -604,9 +604,9 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     rather than left showing as `Charging` while the battery sits idle, which
     is what happened when the inverter silently kept its previous slot.
     """
-    window_start, window_end = _inverter_window(
-        _control_window_start(slot), _control_window_end(slot), pd.Timestamp.now(tz="UTC")
-    )
+    window_start, window_end = _control_window_start(slot), _control_window_end(slot)
+    if inverter_controller.day_bounded_windows:
+        window_start, window_end = _inverter_window(window_start, window_end, pd.Timestamp.now(tz="UTC"))
     window_target_soc = _control_window_target_soc(slot)
     power = _battery_side_power(model, slot["state"], slot["power"])
     description = (
@@ -730,8 +730,8 @@ def _parse_datetime_state(value) -> pd.Timestamp | None:
 def _inverter_window(start: pd.Timestamp, end: pd.Timestamp, now: pd.Timestamp) -> tuple[pd.Timestamp, pd.Timestamp]:
     """Clip a window to 00:01-23:59 of the local day it is running (or next starts) in.
 
-    The Solis rejects a window that crosses midnight or starts/ends at 00:00. The rest of a
-    window that crosses midnight is written by the compliance check scheduled just after it.
+    For controllers with `day_bounded_windows` (Solis). The rest of a window that crosses midnight
+    is written by the compliance check scheduled just after it.
     """
     day_start = max(start, now).tz_convert(dt_util.DEFAULT_TIME_ZONE).normalize()
     day_end = day_start + pd.DateOffset(days=1)
@@ -796,7 +796,8 @@ def _slot_to_apply(
 
     The inverter must never hold a charge and a discharge slot that both cover
     the present: given both, a Solis just charges, so planned discharges did not
-    happen and Miser reported "Discharging" while the battery charged. The next
+    happen and Miser reported "Discharging" while the battery charged. One slot at a
+    time is safe for any inverter, so this applies to all. The next
     window is picked up by the compliance check scheduled at each slot boundary.
     """
     if current_slot is not None:
@@ -1171,9 +1172,8 @@ def _serialise_control_slot(slot: dict | None) -> dict | None:
     if slot is None:
         return None
 
-    window_start, window_end = _inverter_window(
-        _control_window_start(slot), _control_window_end(slot), pd.Timestamp.now(tz="UTC")
-    )
+    window_start = _control_window_start(slot)
+    window_end = _control_window_end(slot)
     window_target_soc = _control_window_target_soc(slot)
 
     return {

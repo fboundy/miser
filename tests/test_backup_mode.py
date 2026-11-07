@@ -8,11 +8,13 @@ import pytest
 from custom_components.miser.const import (
     CONF_BACKUP_MODE,
     CONF_BACKUP_SOC,
-    CONTROL_BACKUP_MODE_SOC,
     CONTROL_STATE,
     COST_ENTITY_OBJECTS,
     DOMAIN,
     MODEL_BATTERY_MINIMUM_SOC,
+)
+from custom_components.miser.inverters.solis import (
+    CONTROL_BACKUP_MODE_SOC,
 )
 from custom_components.miser.inverters.solis import SolisConnectInverter
 from custom_components.miser.optimiser import _apply_inverter_control, _battery_floor_soc, _display_state
