@@ -231,8 +231,9 @@ class Tariff:
     def __init__(self, tariff_code, export=False) -> None:
         self._tariff_code = tariff_code
         self._export = export
-        # Economy 7 night (UTC): 01:00 for 7 hours.
-        self._eco7_start = pd.Timestamp("01:00", tz="UTC")
+        # Economy 7 night: Octopus' standard 00:30-07:30 UTC (01:30-08:30 BST). The API doesn't say which
+        # hours a meter uses; meters on other hours need the price-entities source (#13).
+        self._eco7_start = pd.Timestamp("00:30", tz="UTC")
         self._fetched_at: pd.Timestamp | None = None
         self.agile_predict = None
         self._agile_predict_at: pd.Timestamp | None = None

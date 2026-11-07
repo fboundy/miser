@@ -22,7 +22,7 @@ back to check that it took.
 | 1 | Negative prices are mis-costed: import and export costs cross over | Fixed, PR from `fix/10-negative-prices` | [#10](https://github.com/fboundy/miser/issues/10) |
 | 2 | Setup's system parameters never reach the model | Fixed, PR from `fix/11-setup-parameters` | [#11](https://github.com/fboundy/miser/issues/11) |
 | 3 | A low export price in pence can be read as pounds | Fixed, PR from `fix/12-price-unit` | [#12](https://github.com/fboundy/miser/issues/12) |
-| 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Open | [#13](https://github.com/fboundy/miser/issues/13) |
+| 4 | Economy 7 night hard-coded as 01:00–08:00 UTC | Fixed, PR from `fix/13-economy7-hours` | [#13](https://github.com/fboundy/miser/issues/13) |
 | 5 | Setup's consumption questions do nothing | Fixed, PR from `fix/23-consumption-steps` | [#23](https://github.com/fboundy/miser/issues/23) |
 | 6 | Battery capacity capped at 20 kWh, inverter power at 10 kW | Fixed, PR from `fix/14-size-caps` | [#14](https://github.com/fboundy/miser/issues/14) |
 | 7 | `InverterController` doesn't describe what Miser needs | Open | [#15](https://github.com/fboundy/miser/issues/15) |
@@ -39,11 +39,7 @@ back to check that it took.
 
 ### Should fix
 
-4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
-   - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"
-     and "tariff codes" price sources; the Octopus Energy integration's entities carry the real times.
-   - **Fix:** take the night hours from the meter's registers if the account API gives them; otherwise make the
-     window a setup input shown only for E7 tariffs, or point E7 users at the entities source.
+None.
 
 ### Nice to have
 
@@ -102,6 +98,13 @@ back to check that it took.
       treated as full inverter power. Document both, or read the cap as a setting only when exporting is limited.
 
 ## Fixed
+
+4. **Economy 7 night hard-coded as 01:00–08:00 UTC** (`octopus.py:235`) — [#13](https://github.com/fboundy/miser/issues/13)
+   - **What happens:** Real E7 hours vary by region and meter, and some are split. Affects the "Octopus account"
+     and "tariff codes" price sources; the Octopus Energy integration's entities carry the real times.
+   - **Fix:** take the night hours from the meter's registers if the account API gives them; otherwise make the
+     window a setup input shown only for E7 tariffs, or point E7 users at the entities source.
+   - **Fixed** (`fix/13-economy7-hours`): The night window is Octopus' standard 00:30–07:30 UTC (01:30–08:30 BST), per Octopus' guidance; it was 01:00–08:00 UTC. The rates API gives no times, so meters on other hours still need the price-entities source; the code comment says so. Tested in `tests/test_octopus_tariff_rates.py`.
 
 6. **Battery capacity capped at 20 kWh, inverter power at 10 kW** (`const.py`, `NUMBER_ENTITIES`) — [#14](https://github.com/fboundy/miser/issues/14)
    - **What happens:** Larger and three-phase systems can't be entered. Charger power is capped at 5 kW.
