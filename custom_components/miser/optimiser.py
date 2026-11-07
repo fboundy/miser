@@ -58,6 +58,8 @@ from .utils import get_value, get_entity_for_key, redact_sensitive
 
 _LOGGER = logging.getLogger(f"custom_components.{DOMAIN}")
 CONTROL_COMPLIANCE_DELAY_SECONDS = 60
+# A new charge/discharge power within this fraction of the battery's power limit keeps the power already programmed.
+POWER_CHANGE_THRESHOLD = 0.1
 # Attempts at writing one control before it is reported as failed. Each attempt
 # is read back from the inverter by the controller before the next is made.
 CONTROL_CONFIRM_ATTEMPTS = 3
@@ -470,6 +472,16 @@ async def _ensure_backup_reserve(inverter_controller) -> None:
         _LOGGER.warning("Unable to set the inverter's Backup SOC: %s", err)
 
 
+async def _held_power(inverter_controller, model, state: str, power: float) -> float:
+    """The power already programmed if `power` is within POWER_CHANGE_THRESHOLD of the battery limit of it, else `power`."""
+    limit = getattr(model, "battery_charge_limit" if state == "charging" else "battery_discharge_limit", None)
+    held = await inverter_controller.programmed_power(state)
+    if held is None or not _is_finite(limit) or abs(held - abs(power)) >= POWER_CHANGE_THRESHOLD * limit:
+        return power
+    _LOGGER.debug("Keeping %s power at %.0fW: %.0fW is within %.0fW of it", state, held, abs(power), POWER_CHANGE_THRESHOLD * limit)
+    return held
+
+
 def _battery_side_power(model, state: str, power: float) -> float:
     """Convert a plan's grid-side forced power to the battery-side power to command.
 
@@ -520,7 +532,7 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     if inverter_controller.day_bounded_windows:
         window_start, window_end = _inverter_window(window_start, window_end, pd.Timestamp.now(tz="UTC"))
     window_target_soc = _control_window_target_soc(slot)
-    power = _battery_side_power(model, slot["state"], slot["power"])
+    power = await _held_power(inverter_controller, model, slot["state"], _battery_side_power(model, slot["state"], slot["power"]))
     description = (
         f"{slot['state']} window {window_start}-{window_end} (segment {slot['start']}-{slot['end']}) "
         f"{slot['power']:.1f}W grid / {power:.1f}W battery target {window_target_soc:.1f}%"

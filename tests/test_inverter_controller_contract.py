@@ -34,6 +34,7 @@ async def test_optional_methods_have_working_defaults() -> None:
     controller = _Minimal(hass=None)
     assert await controller.confirm_control("charging", None, None, 100, 3000) == []
     assert await controller.power_to_current(3000) is None
+    assert await controller.programmed_power("charging") is None
     assert controller.supports_backup_mode is False
     controller.set_backup(True, 40)
     assert (controller.backup_mode, controller.backup_soc) == (True, 40)
