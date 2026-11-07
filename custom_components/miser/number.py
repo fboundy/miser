@@ -35,7 +35,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             min_value=entity["min"],
             max_value=entity["max"],
             step=entity["step"],
-            default=entity["default"],
+            default=initial_value(config_entry.options, name, entity["default"]),
             unit_of_measurement=entity.get("unit", None),
             device_class=entity.get("device_class", None),
         )
@@ -53,6 +53,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         hass.data[DOMAIN]["config_entities"][entity.key] = entity_registry.async_get_entity_id(
             "number", DOMAIN, entity.unique_id
         )
+
+
+def initial_value(options, key: str, default: float) -> float:
+    """A value entered in setup (battery capacity, powers, efficiencies) seeds the entity; a restored state still wins."""
+    try:
+        return float(options[key])
+    except (KeyError, TypeError, ValueError):
+        return default
 
 
 class OptimiserNumber(MiserEntity, NumberEntity):
