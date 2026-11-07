@@ -145,3 +145,24 @@ async def test_whole_horizon_idles_after_the_night_charge_and_exports_late() -> 
 
     assert len(exports), "expected an export"
     assert exports[0].hour >= 20, list(exports)
+
+
+@pytest.mark.asyncio
+async def test_a_charge_in_progress_runs_to_the_end_of_the_cheap_window() -> None:
+    # 2026-11-06: re-planning at 05:38 with the inverter charging until 07:00, Whole Horizon assumed it was
+    # idle, so carrying on cost a write. The charge stopped at 85% with cheap power until 07:00. The last
+    # 1% here is worth under the 5p write a new window costs, but carrying on the programmed one is free.
+    idx = pd.date_range("2026-11-06 05:30", periods=20, freq="30min", tz="UTC")
+    imp = pd.Series(32.87, index=idx)
+    imp[idx.hour < 7] = 7.43
+    load = pd.Series(2500.0, index=idx)
+    load[idx.hour < 7] = 0.0
+    model = _model(idx, imp, pd.Series(0.0, index=idx), initial_soc=99, consumption=load)
+    model.whole_horizon_write_cost = 5
+    model.valuation_prices = None
+    model.whole_horizon_initial_control = "charge"
+    model.whole_horizon_initial_end = pd.Timestamp("2026-11-06 07:00", tz="UTC")
+
+    flows = await model.flows(slots=await model.whole_horizon())
+
+    assert flows["soc_end"].iloc[2] > 99.9, list(flows["soc_end"].iloc[:3])

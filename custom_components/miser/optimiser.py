@@ -212,6 +212,9 @@ async def _optimise(hass: HomeAssistant) -> None:
     _LOGGER.debug(f"Base cost: {model.base_cost:6.1f}")
 
     model.whole_horizon_write_cost = WHOLE_HORIZON_WRITE_COST
+    model.whole_horizon_initial_control, model.whole_horizon_initial_end = _control_in_force(
+        model, getattr(model, "optimised_flows", None)
+    )
     model.whole_horizon_slots = await _run_compute(hass, lambda: model.whole_horizon())
     model.whole_horizon_cost, model.whole_horizon_flows = await _run_compute(
         hass,
@@ -247,6 +250,35 @@ async def _optimise(hass: HomeAssistant) -> None:
         return
 
     await _apply_inverter_control(hass, model)
+
+
+def _control_in_force(model, previous_flows) -> tuple[str, pd.Timestamp | None]:
+    """The window the inverter holds now, from the last plan: ("charge" | "discharge" | "idle", its end).
+
+    Whole Horizon prices writes against it: carrying on to the programmed end costs nothing, ending it
+    at any other time is a write. Assuming idle made carrying on a charge cost a write, so a charge
+    stopped once its remainder was worth less (2026-11-06: 85% at 05:38, cheap power until 07:00).
+    The end is None if the window runs past the last plan.
+    """
+    if previous_flows is None or previous_flows.empty or "forced" not in previous_flows:
+        return "idle", None
+    held = previous_flows.loc[: model.index[0]]
+    if held.empty:
+        return "idle", None
+    direction = _direction(held["forced"].iloc[-1])
+    if direction == "idle":
+        return "idle", None
+    later = previous_flows.loc[previous_flows.index > held.index[-1], "forced"]
+    changed = [start for start, forced in later.items() if _direction(forced) != direction]
+    return direction, (changed[0] if changed else None)
+
+
+def _direction(forced: float) -> str:
+    if forced >= MODEL_MIN_SLOT_POWER:
+        return "charge"
+    if forced <= -MODEL_MIN_SLOT_POWER:
+        return "discharge"
+    return "idle"
 
 
 async def _select_optimised_key(
