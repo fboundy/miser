@@ -44,7 +44,6 @@ from .const import (
     CONTROL_NEXT_SLOT_TARGET_SOC,
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
-    ALTERNATION_COST_THRESHOLD,
     CYCLING_MARGIN,
     CYCLING_THRESHOLD,
     WHOLE_HORIZON_WRITE_COST,
@@ -221,7 +220,7 @@ async def _optimise(hass: HomeAssistant) -> None:
         lambda: _calculate_cost_and_flows(model, model.whole_horizon_slots),
     )
     _LOGGER.debug(f"Whole-horizon cost: {model.whole_horizon_cost:6.1f}")
-    # Doing nothing (base) stays a candidate, so a failed or alternating plan falls back to it.
+    # Doing nothing (base) is the fallback when Whole Horizon fails.
     cost_keys = ["base_cost", "whole_horizon_cost"]
 
     finite_cost_keys = [key for key in cost_keys if _is_finite(getattr(model, key, None))]
@@ -230,7 +229,7 @@ async def _optimise(hass: HomeAssistant) -> None:
         await _write_status(hass, "Idle")
         return
 
-    optimised_key = await _select_optimised_key(hass, model, finite_cost_keys)
+    optimised_key = "whole_horizon_cost" if "whole_horizon_cost" in finite_cost_keys else "base_cost"
 
     model.optimised_cost = getattr(model, optimised_key)
     model.optimised_slots = list(getattr(model, optimised_key.replace("_cost", "_slots")))
@@ -279,89 +278,6 @@ def _direction(forced: float) -> str:
     if forced <= -MODEL_MIN_SLOT_POWER:
         return "discharge"
     return "idle"
-
-
-async def _select_optimised_key(
-    hass: HomeAssistant, model, finite_cost_keys: list[str], threshold: float = ALTERNATION_COST_THRESHOLD
-) -> str:
-    """Choose the plan to apply, bounding how much a rapid-alternation swap may cost.
-
-    The cheapest plan wins unless it alternates rapidly. If it does, the
-    cheapest non-rapid alternative is substituted only when doing so costs no
-    more than the configured threshold in raw pence across the horizon.
-    Otherwise the original is kept: bounded inverter churn is preferable to an
-    unbounded financial regression, and the previous unbounded substitution
-    once replaced a -61p plan with a +15p one, taking the overnight charge with
-    it.
-
-    Deltas here are raw money only. Write penalties are reported separately and
-    must not be folded into this comparison.
-    """
-    winner = min(finite_cost_keys, key=lambda key: getattr(model, key))
-    if not _flows_have_rapid_alternation(_flows_for_key(model, winner)):
-        return winner
-
-    safe_keys = [
-        key
-        for key in finite_cost_keys
-        if not _flows_have_rapid_alternation(_flows_for_key(model, key))
-    ]
-    rapid_summary = _rapid_alternation_summary(_flows_for_key(model, winner))
-
-    if not safe_keys:
-        _LOGGER.warning(
-            "All optimiser outputs alternate rapidly; keeping %s (%.1fp). %s",
-            winner,
-            getattr(model, winner),
-            rapid_summary,
-        )
-        return winner
-
-    best_safe = min(safe_keys, key=lambda key: getattr(model, key))
-    winner_cost = float(getattr(model, winner))
-    safe_cost = float(getattr(model, best_safe))
-    delta = safe_cost - winner_cost
-
-    if delta <= threshold:
-        _LOGGER.warning(
-            "Replacing rapidly alternating %s (raw %.1fp) with %s (raw %.1fp); "
-            "delta %.1fp within %.1fp threshold. %s",
-            winner,
-            winner_cost,
-            best_safe,
-            safe_cost,
-            delta,
-            threshold,
-            rapid_summary,
-        )
-        return best_safe
-
-    _LOGGER.warning(
-        "Keeping rapidly alternating %s (raw %.1fp): cheapest non-alternating "
-        "option %s (raw %.1fp) would cost %.1fp more, exceeding the %.1fp "
-        "threshold. %s",
-        winner,
-        winner_cost,
-        best_safe,
-        safe_cost,
-        delta,
-        threshold,
-        rapid_summary,
-    )
-    return winner
-
-
-def _flows_for_key(model, cost_key: str) -> pd.DataFrame | None:
-    return getattr(model, cost_key.replace("_cost", "_flows"), None)
-
-
-def _rapid_alternation_summary(flows: pd.DataFrame | None) -> str:
-    windows = _control_windows(flows)
-    if not windows:
-        return "No control windows."
-    return "Windows: " + ", ".join(
-        f"{window['state']} {window['start']}-{window['end']}" for window in windows
-    )
 
 
 async def _write_status(hass: HomeAssistant, state: str) -> None:
@@ -1334,7 +1250,7 @@ def _minimise_inverter_write_slot_candidates(flows: pd.DataFrame) -> list[tuple[
 
 
 def _minimise_discharge_price_period_write_slots(flows: pd.DataFrame) -> list[tuple[pd.Timestamp, float]]:
-    final_forced = flows["forced"].copy()
+    final_forced = flows["forced"].astype(float)  # an all-whole-number plan is int64 and rejects a spread power
     final_forced.loc[final_forced < 0] = 0.0
 
     for period in _similar_price_periods(flows, direction=-1, price_col="export"):

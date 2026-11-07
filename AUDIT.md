@@ -70,6 +70,7 @@ None.
     - Write-minimisation threshold, Whole Horizon write cost, alternation cost threshold and cycling threshold are all
       "how many pence a change must be worth". Replace with one "minimum worthwhile change" number or fixed values.
     - **Fixed** (`fix/18-fixed-thresholds`): The four number entities are gone; their values are constants in `const.py` set to the live install's tuning (write minimisation 4p, Whole Horizon write cost 5p, alternation 7p, cycling 16p). The functions take the threshold as a defaulted argument so tests can vary it. Merging them into one derived number was not done: it would mean inventing ratios between them.
+    - **Updated** (`fix/write-cost-2p`): Tested on 12 days of real Agile import and export prices plus Go-style, Flux and Cosy shapes (30 cases). The Whole Horizon write cost is now 2p: above that, Agile plans dropped trades worth 7–9p each (5p cost Agile 9p a day on average, 64p at worst; 2p costs nothing on the other tariffs). The alternation threshold and its selector are removed: Whole Horizon prices writes itself and the selector never chose doing nothing in any case. Write minimisation (4p) stays: it merged windows at no cost (Go 4.2 → 2.8 window changes, Flux 2 → 1.3); it also crashed on a plan with all-whole-number powers (int64 column), now fixed. Cycling stays at 8p.
 
 11. **Switches that should be automatic** — [#19](https://github.com/fboundy/miser/issues/19)
     - **Use Solar:** no Solcast already means zero solar. Remove.
