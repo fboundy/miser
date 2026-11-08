@@ -194,8 +194,28 @@ Numbering before 2026-11-03. All items are closed; kept for the record.
 | 19 | A planned charge blocks export in a high-export slot (missed Axle event) | Fixed (see below) |
 | 20 | Windows that cross midnight or touch 00:00 are written as-is | Fixed (see below) |
 | 21 | Whole Horizon leaves idle gaps in a flat-price charge period | Fixed (see below) |
+| 22 | A full battery feeds the house before the cheap window ends | Fixed (see below) |
 
 ### Fixed (old numbering)
+
+- **Old 22:** **A full battery fed the house before the cheap window ended** (`pv_model.py`, `_whole_horizon_actions`)
+  - **What happened:** On 2026-11-07 the BMS jumped SOC from 96% to 100% at 06:35. The 06:36 re-plan dropped the
+      00:00–07:00 charge window, and the house drew about 0.8 kWh from the battery at 7p before 07:00, energy later
+      replaced at the peak price.
+  - **Cause:** At a full battery Whole Horizon clipped the charge action to nothing and skipped it, so idle was the only
+      choice. On the Solis, idle means the battery supplies the house.
+  - **Tested on the inverter:** a charge window holds the battery at 0 W with the grid supplying the house. On 2026-11-07
+      at 89% with the cut-off at the current SOC, the battery held at both 0 A and 31.3 A. On 2026-11-08 the window
+      reached 100% at 06:45 and held until 07:00, with Miser in read-only mode. The battery showed about 100 W of
+      BMS overhead, but the grid covered the house load to within about 15 W. The BMS didn't override the window.
+  - **Fix:** At a full battery with house load, Whole Horizon now offers a hold: a charge at the minimum slot power
+      that keeps the battery full while the grid supplies the house. Carrying on a programmed window costs no write.
+      `_average_same_price_runs` keeps a run that only holds as a charge window. Tested in
+      `tests/test_pv_model_write_cost_and_precharge.py` and `tests/test_pv_model_whole_horizon_limits.py`.
+  - **Sweep (30 cases):** no change on Agile or Cosy. Go saves 1.6p a day on average (up to 9.9p) with 0.8 fewer
+      windows. Flux saves 3.1p a day (up to 14.5p): it holds a full battery through the 27p day to export at the
+      29p peak, which adds up to 5 windows in one case.
+  - **Still unchecked:** a hold below 100% on the inverter (a 10 W charge with the cut-off at 100%).
 
 - **Old 21:** **Whole Horizon left idle gaps in a flat-price charge period** (`pv_model.py`, `_average_same_price_runs`)
   - **What happened:** On the night of 2026-11-03 (7.43p from 00:00 to 07:00) Miser charged 00:06–01:06, sat idle
