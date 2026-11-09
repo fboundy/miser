@@ -151,6 +151,25 @@ class PVsystemModel:
         # Capping forced export at the grid limit is conservative: house load uses some of it first.
         return min(limit, self.export_limit) if self.export_limit else limit
 
+    def _battery_dc(self, power: float, surplus: float) -> float:
+        """AC-side battery power (+ out, - in) to the DC power at the battery.
+
+        Charging takes the solar surplus first, DC to DC with no loss; only the rest comes through the
+        charger. Before this, solar was charged at the charger's 91% and the plan capped the battery to
+        export solar instead (2026-11-09 12:08-13:28).
+        """
+        if power >= 0:
+            return power / self.inverter.inverter_efficiency
+        solar = min(-power, surplus)
+        return -(solar + (-power - solar) * self.inverter.charger_efficiency)
+
+    def _battery_ac(self, power: float, surplus: float) -> float:
+        """Inverse of _battery_dc: DC battery power to its AC-side equivalent."""
+        if power >= 0:
+            return power * self.inverter.inverter_efficiency
+        solar = min(-power, surplus)
+        return -(solar + (-power - solar) / self.inverter.charger_efficiency)
+
     def set_start(self, start: pd.Timestamp) -> bool:
         self._index = [start.floor("1min")] + list(self.consumption.index[1:])
 
@@ -213,12 +232,10 @@ class PVsystemModel:
 
         chg = [self.initial_soc / 100 * self.battery.capacity]
 
+        surplus = (df["solar"] - df["consumption"]).clip(lower=0).tolist()
         # Plain floats: a per-row .loc lookup made this loop most of a run's time.
-        for flow, dt_hours in zip(df["battery_temp"].tolist(), df["dt_hours"].tolist()):
-            if flow > 0:
-                flow = flow / self.inverter.inverter_efficiency
-            else:
-                flow = flow * self.inverter.charger_efficiency
+        for flow, dt_hours, slot_surplus in zip(df["battery_temp"].tolist(), df["dt_hours"].tolist(), surplus):
+            flow = max(self._battery_dc(flow, slot_surplus), -self.battery_charge_limit)
 
             chg.append(
                 round(
@@ -244,8 +261,7 @@ class PVsystemModel:
         df["chg_end"] = df["chg_end"].bfill()
         df["battery"] = pd.Series(chg).diff(-1)[:-1].to_list()
         df["battery"] /= df["dt_hours"]
-        df.loc[df["battery"] > 0, "battery"] = df["battery"] * self.inverter.inverter_efficiency
-        df.loc[df["battery"] < 0, "battery"] = df["battery"] / self.inverter.charger_efficiency
+        df["battery"] = [self._battery_ac(power, slot_surplus) for power, slot_surplus in zip(df["battery"], surplus)]
         df["grid"] = (df["battery_grid_requirement"] - df["battery"]).round(0)
         df["soc"] = (df["chg"] / self.battery.capacity) * 100
         df["soc_end"] = (df["chg_end"] / self.battery.capacity) * 100
@@ -585,7 +601,7 @@ class PVsystemModel:
             if forced_power > 0:
                 forced_power = min(
                     forced_power,
-                    (max_energy - energy) / self.inverter.charger_efficiency / dt_hours,
+                    -self._battery_ac(-(max_energy - energy) / dt_hours, max(-requirement, 0)),
                 )
             else:
                 forced_power = max(
@@ -615,7 +631,7 @@ class PVsystemModel:
                 continue
 
             if delta > 0:
-                forced_power = delta / self.inverter.charger_efficiency / dt_hours
+                forced_power = -self._battery_ac(-delta / dt_hours, max(-requirement, 0))
                 max_power = self.charge_power_limit
             else:
                 if requirement < 0:
@@ -645,18 +661,12 @@ class PVsystemModel:
         min_energy = self.battery.max_dod * self.battery.capacity
         max_energy = self.battery.capacity
 
+        surplus = max(-requirement, 0)
         battery_temp = requirement if forced_power is None else -forced_power
-        if battery_temp > 0:
-            battery_flow = battery_temp / self.inverter.inverter_efficiency
-        else:
-            battery_flow = battery_temp * self.inverter.charger_efficiency
+        battery_flow = self._battery_dc(battery_temp, surplus)
 
         next_energy = round(min(max(energy - battery_flow * dt_hours, min_energy), max_energy), 1)
-        battery_power = (energy - next_energy) / dt_hours
-        if battery_power > 0:
-            battery_power *= self.inverter.inverter_efficiency
-        elif battery_power < 0:
-            battery_power /= self.inverter.charger_efficiency
+        battery_power = self._battery_ac((energy - next_energy) / dt_hours, surplus)
 
         grid = round(requirement - battery_power, 0)
         return next_energy, grid
