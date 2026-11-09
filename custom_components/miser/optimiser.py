@@ -42,6 +42,7 @@ from .const import (
     CONTROL_NEXT_SLOT_POWER,
     CONTROL_NEXT_SLOT_START,
     CONTROL_NEXT_SLOT_TARGET_SOC,
+    SOC_FORECASTS,
     CONTROL_STATE,
     CONTROL_TARGET_SOC,
     CYCLING_MARGIN,
@@ -314,6 +315,25 @@ async def _write_cost_entities(hass: HomeAssistant, model) -> None:
                 len(slots),
                 len(serialised_flows),
             )
+
+    flows = getattr(model, "optimised_flows", None)
+    for key, hours in SOC_FORECASTS.items():
+        entity = cost_entities.get(key)
+        if entity is not None and flows is not None and not flows.empty:
+            await entity.async_set_native_value(_predicted_soc(flows, flows.index[0] + pd.Timedelta(hours=hours)))
+
+
+def _predicted_soc(flows: pd.DataFrame, at: pd.Timestamp) -> float | None:
+    """The plan's SOC at `at`, interpolated within its slot; None outside the plan."""
+    started = flows.index[flows.index <= at]
+    if started.empty:
+        return None
+    start = started[-1]
+    row = flows.loc[start]
+    fraction = (at - start) / pd.Timedelta(hours=float(row["dt_hours"]))
+    if fraction > 1:
+        return None
+    return float(row["soc"] + (row["soc_end"] - row["soc"]) * fraction)
 
 
 async def _apply_inverter_control(hass: HomeAssistant, model, schedule_checks: bool = True) -> None:

@@ -162,6 +162,8 @@ CONTROL_NEXT_SLOT_START = "next_slot_start"
 CONTROL_NEXT_SLOT_END = "next_slot_end"
 CONTROL_NEXT_SLOT_POWER = "next_slot_power"
 CONTROL_NEXT_SLOT_TARGET_SOC = "next_slot_target_soc"
+# The optimised plan's predicted SOC this far ahead of each run, to watch how stable the plan is.
+SOC_FORECASTS = {"soc_15m": 0.25, "soc_1h": 1, "soc_2h": 2, "soc_4h": 4}  # hours
 
 EMPTY_ATTR: dict[str, Any] = {
     LAST_UPDATED: None,
@@ -264,6 +266,10 @@ SENSOR_ENTITIES = {
         "unit": PERCENTAGE,
         "state_class": SensorStateClass.MEASUREMENT,
         "device_class": SensorDeviceClass.BATTERY,
+    },
+    **{
+        key: {"unit": PERCENTAGE, "state_class": SensorStateClass.MEASUREMENT, "device_class": SensorDeviceClass.BATTERY}
+        for key in SOC_FORECASTS
     },
 }
 
