@@ -541,6 +541,8 @@ class PVsystemModel:
             else:
                 energy = sum(p * flows.at[start, "dt_hours"] for start, p in run)
             power = round(energy / hours, 0)
+            if run[0][1] >= 0 and energy <= 0:
+                power = MODEL_MIN_SLOT_POWER  # a run that only holds a full battery stays a charge window
             averaged.extend((start, power) for start, _ in run)
 
         # Solar or load can still make a slot cost differ; keep the original if averaging costs more.
@@ -592,7 +594,12 @@ class PVsystemModel:
                 )
 
             if abs(forced_power) < MODEL_MIN_SLOT_POWER:
-                continue
+                if forced_power < 0 or requirement <= 0:
+                    continue
+                # Hold: a charge window at a full battery keeps it full and the grid supplies the house.
+                # Idle would let the house drain it at cheap-rate end (2026-11-07: 0.8 kWh before 07:00;
+                # tested 2026-11-08: a Solis charge window at 100% held with the grid taking the load).
+                forced_power = float(MODEL_MIN_SLOT_POWER)
 
             actual_energy, grid = self._whole_horizon_transition(
                 energy=energy,
