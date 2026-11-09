@@ -8,7 +8,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 import homeassistant.util.dt as dt_util
-from homeassistant.helpers.event import async_track_point_in_utc_time, async_track_time_interval, async_track_state_change
+from homeassistant.helpers.event import (
+    async_track_point_in_utc_time,
+    async_track_state_change,
+    async_track_time_change,
+    async_track_time_interval,
+)
 
 from .const import (
     PV_SYSTEM_ENTITIES,
@@ -384,8 +389,9 @@ async def _schedule_optimiser(hass):
         return
 
     optimiser_minutes = DEFAULTS[CONF_OPTIMISER_FREQUENCY]
-    _LOGGER.debug(f"Optimiser frequency: {optimiser_minutes} minutes")
-    optimiser_interval = timedelta(minutes=optimiser_minutes)
+    # A minute before each boundary, so each half-hour price period is planned on the latest data.
+    optimiser_run_minutes = list(range(optimiser_minutes - 1, 60, optimiser_minutes))
+    _LOGGER.debug(f"Optimiser runs at minutes {optimiser_run_minutes} past the hour")
 
     try:
         # Cancel the current schedule if it exists
@@ -413,10 +419,10 @@ async def _schedule_optimiser(hass):
             _LOGGER.debug("Initial run of _optimise completed.")
 
             # Schedule the recurring runs
-            hass.data[DOMAIN]["optimiser_schedule"] = async_track_time_interval(
-                hass, partial(optimise, hass), optimiser_interval
+            hass.data[DOMAIN]["optimiser_schedule"] = async_track_time_change(
+                hass, partial(optimise, hass), minute=optimiser_run_minutes, second=0
             )
-            _LOGGER.debug("Recurring async_track_time_interval successfully set up.")
+            _LOGGER.debug("Recurring optimiser schedule successfully set up.")
 
         # Schedule the initial run after 2 minutes
         hass.data[DOMAIN]["optimiser_initial_schedule"] = hass.loop.call_later(
