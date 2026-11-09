@@ -341,6 +341,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     # change; without this a few-minute reversal at a slot boundary flaps the
     # battery every cycle (see _drop_short_control_windows).
     control_slots = _drop_short_control_windows(control_slots, apply_window)
+    control_slots = _short_lead_takes_next_power(control_slots, apply_window)
     current_slot = _find_current_control_slot(control_slots, now)
 
     backup_soc = getattr(model, "backup_soc", None)
@@ -353,7 +354,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     desired_target_soc = _control_window_target_soc(current_slot) if current_slot is not None else None
     desired_current = await _power_to_current(
         inverter_controller,
-        _battery_side_power(model, desired_state, desired_power) if desired_state != "idle" else 0,
+        _battery_side_power(model, desired_state, desired_power, current_slot and current_slot["start"]) if desired_state != "idle" else 0,
     )
 
     next_slot = _find_next_control_slot(control_slots, now)
@@ -431,7 +432,19 @@ async def _held_power(inverter_controller, model, state: str, power: float) -> f
     return held
 
 
-def _battery_side_power(model, state: str, power: float) -> float:
+def _solar_surplus(model, start) -> float:
+    """Planned solar beyond the house's load in the slot holding start (W)."""
+    flows = getattr(model, "optimised_flows", None)
+    if start is None or not isinstance(flows, pd.DataFrame) or not {"solar", "consumption"} <= set(flows.columns):
+        return 0.0
+    row = flows.loc[:start]
+    if row.empty:
+        return 0.0
+    surplus = float(row["solar"].iloc[-1] - row["consumption"].iloc[-1])
+    return surplus if _is_finite(surplus) and surplus > 0 else 0.0
+
+
+def _battery_side_power(model, state: str, power: float, start=None) -> float:
     """Convert a plan's grid-side forced power to the battery-side power to command.
 
     The model's forced power is AC (grid-side): a 3 kW forced charge plans
@@ -448,8 +461,10 @@ def _battery_side_power(model, state: str, power: float) -> float:
     if inverter is None:
         return abs(power)
     if state == "charging":
+        # Solar surplus in the slot goes in DC to DC, without the charger loss.
         efficiency = getattr(inverter, "charger_efficiency", 1) or 1
-        return abs(power) * efficiency
+        solar = min(abs(power), _solar_surplus(model, start))
+        return solar + (abs(power) - solar) * efficiency
     efficiency = getattr(inverter, "inverter_efficiency", 1) or 1
     return abs(power) / efficiency
 
@@ -464,7 +479,7 @@ def _reported_battery_power(model, slot: dict | None) -> float | None:
     if slot is None:
         return None
     power = slot["power"]
-    battery_power = _battery_side_power(model, slot["state"], power)
+    battery_power = _battery_side_power(model, slot["state"], power, slot["start"])
     return battery_power if power >= 0 else -battery_power
 
 
@@ -481,7 +496,7 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     if inverter_controller.day_bounded_windows:
         window_start, window_end = _inverter_window(window_start, window_end, pd.Timestamp.now(tz="UTC"))
     window_target_soc = _control_window_target_soc(slot)
-    power = await _held_power(inverter_controller, model, slot["state"], _battery_side_power(model, slot["state"], slot["power"]))
+    power = await _held_power(inverter_controller, model, slot["state"], _battery_side_power(model, slot["state"], slot["power"], slot["start"]))
     description = (
         f"{slot['state']} window {window_start}-{window_end} (segment {slot['start']}-{slot['end']}) "
         f"{slot['power']:.1f}W grid / {power:.1f}W battery target {window_target_soc:.1f}%"
@@ -625,6 +640,24 @@ def _control_window_end(slot: dict):
 def _control_window_target_soc(slot: dict) -> float:
     """Terminal SOC of the control window a segment belongs to."""
     return slot.get("window_target_soc", slot["target_soc"])
+
+
+def _short_lead_takes_next_power(control_slots: list[dict], min_duration: pd.Timedelta) -> list[dict]:
+    """Give a leading segment shorter than min_duration the power of the next segment in its window.
+
+    The partial slot from now to the half-hour boundary is too short for a SOC step, so the plan can
+    give it full power for a couple of minutes (2026-11-09 12:28 and 12:58: 3 kW between 1 kW segments).
+    """
+    if len(control_slots) < 2:
+        return control_slots
+    first, second = control_slots[0], control_slots[1]
+    if (
+        first["end"] - first["start"] >= min_duration
+        or first["end"] != second["start"]
+        or _control_window_start(first) != _control_window_start(second)
+    ):
+        return control_slots
+    return [{**first, "power": second["power"]}, *control_slots[1:]]
 
 
 def _drop_short_control_windows(control_slots: list[dict], min_duration: pd.Timedelta) -> list[dict]:
