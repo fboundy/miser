@@ -61,8 +61,11 @@ def test_full_battery_is_not_offered_forced_charging_during_solar_surplus() -> N
     assert _charges(_actions(energy=float(CAPACITY), requirement=-1500.0)) == []
 
 
-def test_full_battery_is_not_offered_forced_charging_under_load() -> None:
-    assert _charges(_actions(energy=float(CAPACITY), requirement=1200.0)) == []
+def test_full_battery_under_load_is_offered_only_a_hold() -> None:
+    # The grid supplies the house and the battery stays full, at the minimum power.
+    assert _charges(_actions(energy=float(CAPACITY), requirement=1200.0)) == [
+        (float(CAPACITY), float(MODEL_MIN_SLOT_POWER), 1200.0)
+    ]
 
 
 def test_full_battery_can_still_discharge() -> None:

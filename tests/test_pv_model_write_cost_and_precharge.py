@@ -169,6 +169,28 @@ async def test_a_charge_in_progress_runs_to_the_end_of_the_cheap_window() -> Non
 
 
 @pytest.mark.asyncio
+async def test_a_full_battery_holds_until_the_cheap_window_ends() -> None:
+    # 2026-11-07: the BMS jumped SOC to 100% at 06:35 and the 06:36 re-plan could only idle at a full
+    # battery, so the house drew 0.8 kWh from it before 07:00 instead of from the 7p grid.
+    idx = pd.date_range("2026-11-07 06:00", periods=20, freq="30min", tz="UTC")
+    imp = pd.Series(32.87, index=idx)
+    imp[idx.hour < 7] = 7.43
+    load = pd.Series(2500.0, index=idx)  # enough to empty the battery, so each kWh kept saves the peak price
+    load[idx.hour < 7] = 800.0
+    model = _model(idx, imp, pd.Series(0.0, index=idx), initial_soc=100, consumption=load)
+    model.whole_horizon_write_cost = 2
+    model.valuation_prices = None
+    model.whole_horizon_initial_control = "charge"
+    model.whole_horizon_initial_end = pd.Timestamp("2026-11-07 07:00", tz="UTC")
+
+    plan = await model.whole_horizon()
+    flows = await model.flows(slots=plan)
+
+    assert [start for start, power in plan if power > 0] == list(idx[:2]), plan
+    assert flows["soc_end"].iloc[1] == 100, list(flows["soc_end"].iloc[:3])
+
+
+@pytest.mark.asyncio
 async def test_load_scenarios_keep_a_reserve_rather_than_export_it() -> None:
     # Exporting down to the floor ties at the forecast load, but with 10% more load the battery runs out
     # and the house buys at 32.87p and 46.96p, so averaged over the load scenarios a reserve is cheaper.
