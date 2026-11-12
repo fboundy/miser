@@ -156,6 +156,19 @@ async def test_borderline_cycle_does_not_flip_flop() -> None:
     assert _at("03:00") not in _exports(dropped.optimised_slots)
 
 
+@pytest.mark.asyncio
+async def test_export_in_force_is_not_dropped() -> None:
+    # 2026-11-12: an export that cleared the threshold at 04:59 was dropped at 05:09, 9 minutes in.
+    model = _model()
+    model.optimised_slots = [(START, -3000.0), *_plan()]
+    model.optimised_cost, model.optimised_flows = await _calculate_cost_and_flows(model, model.optimised_slots)
+    model.whole_horizon_initial_control = "discharge"
+
+    await _drop_small_cycles(_Hass(), model, threshold=100)
+
+    assert _exports(model.optimised_slots) == {START}
+
+
 def test_control_in_force_reads_the_last_plan_at_the_run_start() -> None:
     from custom_components.miser.optimiser import _control_in_force
 

@@ -1144,6 +1144,7 @@ async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCL
     The threshold sits CYCLING_MARGIN lower if the last run kept an export near it, and higher if
     it didn't, so a cycle worth about the threshold isn't kept and dropped on alternate runs
     (2026-11-05: charge, idle, charge, idle between 05:21 and 06:01).
+    An export the inverter is already running is kept.
     """
     kept_marginal = getattr(model, "kept_marginal_cycle", None)
     model.kept_marginal_cycle = False
@@ -1159,12 +1160,17 @@ async def _drop_small_cycles(hass: HomeAssistant, model, threshold: float = CYCL
     cost = model.optimised_cost
     flows = model.optimised_flows
     dropped = 0
+    in_force = getattr(model, "whole_horizon_initial_control", None) == "discharge"
 
     for _ in range(CYCLE_PRUNE_MAX_PASSES):
         weakest = None
         least_worth = float("inf")
         for window in _control_windows(flows):
             if window["state"] != "discharging":
+                continue
+            if in_force and window["start"] <= flows.index[0]:
+                # Already cleared the threshold when it started; what's left shrinks every run, so judging
+                # it again stopped exports partway (2026-11-11 22:39 at 33%, 2026-11-12 05:09 at 97%).
                 continue
             candidate = [
                 (start, power)
