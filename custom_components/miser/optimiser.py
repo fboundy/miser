@@ -66,6 +66,7 @@ POWER_CHANGE_THRESHOLD = 0.1
 CONTROL_CONFIRM_ATTEMPTS = 3
 CONTROL_FAILED_STATE = "Control failed"
 CONTROL_FAILED_NOTIFICATION_ID = "miser_control_failed"
+CONTROL_FAILURE = "control_failure"
 # Forced flows below this are not worth an inverter write: 38 W once became a
 # half-hour timed-charge slot that the inverter then fell back to all night.
 CONTROL_MIN_FORCE_POWER = 100  # W
@@ -281,11 +282,11 @@ def _direction(forced: float) -> str:
     return "idle"
 
 
-async def _write_status(hass: HomeAssistant, state: str) -> None:
+async def _write_status(hass: HomeAssistant, state: str, attributes: dict | None = None) -> None:
     sensor_entities = hass.data.get(DOMAIN, {}).get(COST_ENTITY_OBJECTS, {})
     entity = sensor_entities.get(CONTROL_STATE)
     if entity is not None:
-        await entity.async_set_native_value(state)
+        await entity.async_set_native_value(state, attributes=attributes)
 
 
 def _is_unloading(hass: HomeAssistant) -> bool:
@@ -431,7 +432,7 @@ async def _apply_inverter_control_unlocked(hass: HomeAssistant, model, schedule_
     if all_confirmed:
         _clear_control_failure(hass)
     else:
-        await _write_status(hass, CONTROL_FAILED_STATE)
+        await _write_status(hass, CONTROL_FAILED_STATE, hass.data[DOMAIN].get(CONTROL_FAILURE))
 
 
 async def _ensure_backup_reserve(inverter_controller) -> None:
@@ -530,6 +531,7 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
         return False
 
     mismatches: list[str] = []
+    attempts: list[str] = []
     for attempt in range(1, CONTROL_CONFIRM_ATTEMPTS + 1):
         if _is_unloading(hass):
             return True
@@ -552,6 +554,7 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
                 _LOGGER.info("Inverter control confirmed on attempt %d: %s", attempt, description)
             return True
 
+        attempts.append(f"{pd.Timestamp.now(tz='UTC').isoformat(timespec='seconds')}: {'; '.join(mismatches)}")
         _LOGGER.warning(
             "Inverter did not take control (attempt %d/%d): %s. Mismatches: %s",
             attempt,
@@ -563,6 +566,13 @@ async def _programme_control_slot(hass: HomeAssistant, inverter_controller, slot
     message = f"Inverter did not take {description} after {CONTROL_CONFIRM_ATTEMPTS} attempts: {'; '.join(mismatches)}"
     _LOGGER.error(message)
     _notify_control_failure(hass, message)
+    # Kept on miser_state (and so in the recorder/InfluxDB) after the log has rotated.
+    hass.data[DOMAIN][CONTROL_FAILURE] = {
+        "last_control_failure": pd.Timestamp.now(tz="UTC").isoformat(timespec="seconds"),
+        "failed_control": description,
+        "failed_mismatches": mismatches,
+        "failed_attempts": attempts,
+    }
     return False
 
 
