@@ -506,9 +506,11 @@ class _RejectingController(_RecordingController):
 class _StateEntity:
     def __init__(self) -> None:
         self.values: list = []
+        self.attributes: dict = {}
 
     async def async_set_native_value(self, value, **kwargs) -> None:
         self.values.append(value)
+        self.attributes.update(kwargs.get("attributes") or {})
 
 
 @pytest.mark.asyncio
@@ -523,6 +525,9 @@ async def test_unconfirmed_control_is_retried_then_reported_failed() -> None:
 
     assert len(controller.charge_calls) == CONTROL_CONFIRM_ATTEMPTS
     assert state_entity.values[-1] == CONTROL_FAILED_STATE
+    assert len(state_entity.attributes["failed_attempts"]) == CONTROL_CONFIRM_ATTEMPTS
+    assert state_entity.attributes["failed_mismatches"]
+    assert state_entity.attributes["failed_control"].startswith("charging window")
 
 
 @pytest.mark.asyncio
