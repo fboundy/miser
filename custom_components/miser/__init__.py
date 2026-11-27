@@ -10,7 +10,7 @@ from homeassistant.exceptions import ConfigEntryError, ConfigEntryNotReady
 import homeassistant.util.dt as dt_util
 from homeassistant.helpers.event import (
     async_track_point_in_utc_time,
-    async_track_state_change,
+    async_track_state_change_event,
     async_track_time_change,
     async_track_time_interval,
 )
@@ -454,7 +454,7 @@ async def _setup_config_callbacks(hass):
     callbacks = []
     for entity_id in hass.data[DOMAIN]["config_entities"].values():
         callback = partial(_state_change_callback, hass)
-        callbacks.append(async_track_state_change(hass, entity_id, callback))
+        callbacks.append(async_track_state_change_event(hass, entity_id, callback))
     hass.data[DOMAIN]["config_callbacks"] = callbacks
     return True
 
@@ -495,7 +495,7 @@ async def _refresh_axle_vpp_callbacks(hass: HomeAssistant, optimise_on_window_ch
     if not data.get("axle_vpp_callbacks"):
         callbacks = []
         for entity_id in AXLE_VPP_START_ENTITIES + AXLE_VPP_END_ENTITIES:
-            callbacks.append(async_track_state_change(hass, entity_id, _axle_vpp_state_change_callback(hass)))
+            callbacks.append(async_track_state_change_event(hass, entity_id, _axle_vpp_state_change_callback(hass)))
         data["axle_vpp_callbacks"] = callbacks
         _LOGGER.debug("Registered Axle VPP state-change callbacks")
 
@@ -530,9 +530,10 @@ def _axle_vpp_refresh_callback(hass: HomeAssistant):
 
 
 def _axle_vpp_state_change_callback(hass: HomeAssistant):
-    async def _callback(entity_id, old_state, new_state):
+    async def _callback(event):
         if hass.data.get(DOMAIN, {}).get("unloading"):
             return
+        entity_id, old_state, new_state = event.data["entity_id"], event.data["old_state"], event.data["new_state"]
 
         _LOGGER.debug(
             "Axle VPP entity %s changed from %s to %s",
@@ -608,11 +609,12 @@ def _axle_vpp_boundary_callback(hass: HomeAssistant, boundary: str):
     return _callback
 
 
-async def _state_change_callback(hass, entity_id, old_state, new_state):
+async def _state_change_callback(hass, event):
     """Callback function triggered when the config entity state changes."""
     if hass.data.get(DOMAIN, {}).get("unloading"):
         _LOGGER.debug("Ignoring config callback while Miser is unloading")
         return
+    entity_id, old_state, new_state = event.data["entity_id"], event.data["old_state"], event.data["new_state"]
 
     _LOGGER.debug(
         f"Entity {entity_id} changed from {old_state.state if old_state else 'None'} to {new_state.state if new_state else 'None'}"

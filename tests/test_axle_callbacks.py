@@ -49,7 +49,7 @@ async def test_refresh_registers_axle_callbacks_after_late_install(monkeypatch):
         registered.append((entity_id, callback))
         return lambda: None
 
-    monkeypatch.setattr(miser_init, "async_track_state_change", _track_state_change)
+    monkeypatch.setattr(miser_init, "async_track_state_change_event", _track_state_change)
 
     hass = _hass(installed=True)
 
@@ -58,6 +58,23 @@ async def test_refresh_registers_axle_callbacks_after_late_install(monkeypatch):
     assert hass.data[DOMAIN]["axle_vpp_installed"] is True
     assert [entity_id for entity_id, _callback in registered] == AXLE_VPP_START_ENTITIES + AXLE_VPP_END_ENTITIES
     assert len(hass.data[DOMAIN]["axle_vpp_callbacks"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_axle_callback_takes_a_state_change_event(monkeypatch):
+    """HA 2026.11 removed async_track_state_change; the _event variant passes one Event."""
+    registered = []
+    monkeypatch.setattr(miser_init, "async_track_state_change_event", lambda hass, entity_id, cb: registered.append(cb) or (lambda: None))
+    monkeypatch.setattr(miser_init, "async_track_point_in_utc_time", lambda *args: (lambda: None))
+    optimise = AsyncMock()
+    monkeypatch.setattr(miser_init, "optimise", optimise)
+    hass = _hass(installed=True)
+    await miser_init._refresh_axle_vpp_callbacks(hass)
+
+    event = SimpleNamespace(data={"entity_id": AXLE_VPP_START_ENTITIES[0], "old_state": None, "new_state": None})
+    await registered[0](event)
+
+    optimise.assert_awaited_once_with(hass=hass)
 
 
 @pytest.mark.asyncio
@@ -76,7 +93,7 @@ async def test_refresh_reruns_optimiser_when_window_is_discovered_inside_the_eve
     optimise = AsyncMock()
 
     monkeypatch.setattr(miser_init, "optimise", optimise)
-    monkeypatch.setattr(miser_init, "async_track_state_change", lambda *args: (lambda: None))
+    monkeypatch.setattr(miser_init, "async_track_state_change_event", lambda *args: (lambda: None))
     monkeypatch.setattr(miser_init, "async_track_point_in_utc_time", lambda *args: (lambda: None))
 
     await miser_init._refresh_axle_vpp_callbacks(hass, optimise_on_window_change=True)
@@ -96,7 +113,7 @@ async def test_refresh_waits_for_event_start_when_only_inside_buffer(monkeypatch
     optimise = AsyncMock()
 
     monkeypatch.setattr(miser_init, "optimise", optimise)
-    monkeypatch.setattr(miser_init, "async_track_state_change", lambda *args: (lambda: None))
+    monkeypatch.setattr(miser_init, "async_track_state_change_event", lambda *args: (lambda: None))
     monkeypatch.setattr(miser_init, "async_track_point_in_utc_time", lambda *args: (lambda: None))
 
     await miser_init._refresh_axle_vpp_callbacks(hass, optimise_on_window_change=True)

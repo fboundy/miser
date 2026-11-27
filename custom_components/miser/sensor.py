@@ -55,8 +55,10 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     for entity in entities_to_add:
         hass.data[DOMAIN][COST_ENTITY_OBJECTS][entity.key] = entity
         entity_id = entity_registry.async_get_entity_id("sensor", DOMAIN, entity.unique_id)
-        if entity_id is not None and entity.key.endswith("_cost"):
-            entity_registry.async_update_entity(entity_id, name=f"Miser {entity.name}")
+        # Undo the "Miser <name>" override earlier versions wrote; the user's own renames are left alone.
+        registry_entry = entity_registry.async_get(entity_id) if entity_id is not None else None
+        if registry_entry is not None and registry_entry.name == f"Miser {entity.name}":
+            entity_registry.async_update_entity(entity_id, name=None)
 
 
 class OptimiserSensor(MiserEntity, SensorEntity):
