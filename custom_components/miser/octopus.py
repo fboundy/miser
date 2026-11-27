@@ -14,7 +14,7 @@ from .const import (
 )
 
 from .entity_tariff import extend_daily_pattern
-from .utils import log_config_entry, redact_sensitive
+from .utils import redact_sensitive
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -104,10 +104,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
     if config_entries:
         _LOGGER.debug("Octopus Energy integration:")
         entry = config_entries[0]
-        log_config_entry(entry)
-
-        config_keys = ["account_id", "api_key"]
-        octopus_info = {key: entry.data.get(key, None) for key in config_keys}
+        octopus_info = {}
 
         entity_registry = er.async_get(hass=hass)
         octopus_entities = [
@@ -125,7 +122,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
                 if state is None:
                     _LOGGER.debug(f"  - State unavailable for {entity.entity_id}")
                     continue
-                if "xport" in state.attributes.get("friendly_name", ""):
+                if "export" in entity.entity_id or "xport" in (entity.original_name or ""):
                     direction = "export"
                 else:
                     direction = "import"
@@ -133,9 +130,7 @@ async def get_octopus_integration_data(hass: HomeAssistant) -> dict:
             if all([octopus_info[key][direction] is None for direction in IMPORT_EXPORT]):
                 octopus_info[key] = None
 
-        all_keys = config_keys + entity_keys
-
-        if any([octopus_info[key] is None for key in all_keys]):
+        if any([octopus_info[key] is None for key in entity_keys]):
             _LOGGER.debug("  Incomplete Octopus data")
             return None
         else:
